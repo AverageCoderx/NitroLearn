@@ -1,0 +1,10 @@
+# Flip resets: the reset itself and the approach to it, both at weight 1.
+# Based on Opti's flip reset rewards.
+
+[[rewards]]
+name = "flip_reset_simple"
+weight = 1.0
+
+[[rewards]]
+name = "flip_reset_approach"
+weight = 1.0

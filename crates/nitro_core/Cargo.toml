@@ -1,0 +1,18 @@
+[package]
+name = "nitro_core"
+description = "Simulation, environments and rollout collection for NitroLearn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rocketsim = { workspace = true }
+fastrand = "2.3.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Reads compressed recordings (.rlpr.zst), such as the real-game recordings RocketSim ships.
+zstd = "0.14"
+
+[lints]
+workspace = true

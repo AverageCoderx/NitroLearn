@@ -1,0 +1,185 @@
+/* The shared pieces every page is built from: type, buttons, tags, fields, switches, tabs, panels, banners,
+   dialogs and toasts. Flat blocks, square corners and ruled lines; buttons and tags lean forward (a leaning
+   block drawn behind upright content). No rounded corners, no shadows, no glows. */
+* { box-sizing: border-box; scrollbar-color: var(--rule2) transparent; }
+[hidden] { display: none !important; }
+html { height: 100%; }
+body { min-height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans); }
+button, input, select, textarea { font: inherit; color: inherit; border-radius: 0; }
+button { cursor: pointer; }
+::selection { background: var(--yellow); color: var(--on-yellow); }
+/* Keyboard focus: a yellow outline with a dark line inside it, so it shows on light and dark surfaces. */
+:focus-visible { outline: 3px solid var(--yellow); outline-offset: 2px; box-shadow: 0 0 0 2px #141413; }
+/* Selectable even where the window turns selection off for the page (pywebview's text_select). */
+pre, .console, .banner, input, textarea { -webkit-user-select: text; user-select: text; }
+
+/* ---------- type ---------- */
+/* .display: names and big numbers. .cap: labels in narrow capitals. .num: figures. .mono: keys and code. */
+h1, h2, h3 { margin: 0; }
+.display, h1, h2 { font-stretch: 125%; font-weight: 900; font-style: italic; letter-spacing: -0.01em; line-height: 1.05; }
+h1 { font-size: 30px; }
+h2 { font-size: 20px; }
+h3 { font-size: 16px; font-weight: 800; line-height: 1.25; }
+.cap, .eyebrow { font-stretch: 75%; font-weight: 700; font-style: normal; text-transform: uppercase; letter-spacing: 0.09em; font-size: 12px; }
+.eyebrow { color: var(--dim); }
+.num { font-stretch: 112%; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
+.mono, code, pre { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.name, h1.display { overflow-wrap: anywhere; }
+.muted, .ink2 { color: var(--dim); }
+.sr { position: absolute; left: -9999px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.grow { flex: 1 1 auto; }
+.up { color: var(--text); } .down { color: var(--dim); }
+
+/* ---------- buttons ---------- */
+/* .btn is a plain grey block; .primary yellow (one a view), .strong chalk, .danger for what cannot be
+   undone, .ghost no block, .link a text link, .small a size. */
+.btn { position: relative; isolation: isolate; display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border: 0; background: none; color: var(--text); white-space: nowrap; font-stretch: 80%; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; font-size: 13.5px; line-height: 1.25; }
+.btn::before, .tag::before, .pill::before, .chip::before, .badge::before, .sharechip::before, .tabs .count::before { content: ""; position: absolute; inset: 0; z-index: -1; background: var(--block); transform: var(--lean); }
+.btn:hover::before { background: var(--rule2); }
+.btn.primary { color: var(--on-yellow); }
+.btn.primary::before { background: var(--yellow); }
+.btn.strong { color: var(--on-strong); }
+.btn.strong::before { background: var(--strong); }
+.btn.primary:hover::before, .btn.strong:hover::before { filter: brightness(0.9); }
+.btn.danger { color: var(--bad-text); }
+.btn.small { padding: 7px 13px; font-size: 12.5px; }
+.btn.ghost { color: var(--dim); }
+.btn.ghost::before { background: transparent; }
+.btn.ghost:hover { color: var(--text); }
+.btn.ghost:hover::before { background: var(--block); }
+.btn.link, .more { padding: 1px 0; border: 0; color: var(--link); font-stretch: 100%; font-weight: 700; font-size: 13px; text-transform: none; letter-spacing: 0; background: linear-gradient(transparent 62%, var(--link-mark) 62%); }
+.btn.link::before { display: none; }
+.btn.link:hover, .more:hover { text-decoration: underline; text-underline-offset: 3px; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+/* A button that cannot be pressed now (not one busy with its own click): an empty dashed frame, plainly
+   unlike every button that can. */
+.btn:not(.link):disabled:not([data-busy]) { opacity: 1; color: var(--dim); }
+.btn:not(.link):disabled:not([data-busy])::before, .btn:not(.link):disabled:not([data-busy]):hover::before { background: transparent; outline: 1.5px dashed var(--rule2); outline-offset: -1.5px; filter: none; }
+.btn:disabled:hover::before { filter: none; }
+.btn:not(.primary):not(.strong):disabled:hover::before { background: var(--block); }
+.btn.ghost:disabled:hover::before { background: transparent; }
+.iconbtn { width: 32px; height: 32px; border: 0; background: transparent; color: var(--dim); display: inline-grid; place-items: center; flex: none; }
+.iconbtn:hover { background: var(--block); color: var(--text); }
+.iconbtn.on { color: var(--text); border-bottom: 3px solid var(--yellow); }
+
+/* ---------- tags ---------- */
+/* .tag is a small leaning label: plain, .good (running well), .hot (yellow: changed, new, waiting),
+   .strong (chalk: under way) or .bad (a problem). */
+.tag, .pill, .chip, .badge, .sharechip { position: relative; isolation: isolate; display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 2px; color: var(--dim); white-space: nowrap; font-stretch: 75%; font-weight: 800; font-style: normal; text-transform: uppercase; letter-spacing: 0.1em; font-size: 11.5px; line-height: 1.4; }
+.chip { white-space: normal; }
+.tag.good, .pill.training { color: var(--on-good); }
+.tag.good::before, .pill.training::before { background: var(--good); }
+.tag.hot, .badge.new, .badge.hot, .sharechip.warn, .tabs .count { color: var(--on-yellow); }
+.tag.hot::before, .badge.new::before, .badge.hot::before, .sharechip.warn::before, .tabs .count::before { background: var(--yellow); }
+.tag.strong, .pill.starting, .pill.copying { color: var(--on-strong); }
+.tag.strong::before, .pill.starting::before, .pill.copying::before { background: var(--strong); }
+.tag.bad, .pill.problem { color: var(--on-bad); }
+.tag.bad::before, .pill.problem::before { background: var(--bad); }
+.sharechip { color: var(--text); font-family: var(--mono); letter-spacing: 0; font-size: 12px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+button.chip { border: 0; background: none; }
+button.chip:hover { color: var(--text); }
+button.chip:hover::before { background: var(--rule2); }
+.dot { width: 8px; height: 8px; flex: none; background: var(--dim); transform: var(--lean); }
+.dot.training { background: var(--good); }
+.dot.starting, .dot.copying { background: var(--strong); }
+.dot.problem { background: var(--bad); }
+.pill .dot { background: currentColor; }
+
+/* ---------- panels, rules and headings ---------- */
+/* .card is a flat panel. .heading is a section's title row with the thick rule under it. .ruled puts a
+   thin rule under each of its children. .hazard is the yellow and black stripe: only where something
+   waits for the user. */
+.card { background: var(--panel); }
+.pad { padding: 18px 20px; }
+.heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; padding-bottom: 7px; border-bottom: 3px solid var(--text); }
+.heading > .display, .heading > h2 { font-size: 20px; }
+.ruled > * { border-bottom: 1px solid var(--rule); }
+.hazard { background: var(--hazard); }
+.empty { padding: 34px; text-align: center; color: var(--dim); }
+.stat { min-width: 96px; }
+.stat .k { color: var(--dim); font-stretch: 75%; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; font-size: 12px; }
+.stat .v { font-size: 26px; margin-top: 2px; white-space: nowrap; }
+.banner { position: relative; display: flex; gap: 12px; align-items: center; padding: 12px 16px 12px 22px; background: var(--panel); }
+.card .banner, .modal .banner { background: var(--raised); }
+.banner::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 6px; background: var(--rule2); }
+.banner.warn::before { background: var(--yellow); }
+.banner.bad { padding: 18px 16px 12px; }
+.banner.bad::before { right: 0; bottom: auto; width: auto; height: 6px; background: var(--hazard); }
+.banner pre { margin: 0; white-space: pre-wrap; font-size: 12.5px; }
+.guide { margin-top: 8px; padding: 12px 14px; background: var(--raised); font-size: 13px; display: flex; flex-direction: column; gap: 8px; max-width: 72ch; }
+.guide p { margin: 0; line-height: 1.5; color: var(--dim); }
+.guide b { color: var(--text); }
+.guide ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; color: var(--dim); }
+.notebox { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.notetext { font-size: 12.5px; background: var(--raised); border-left: 4px solid var(--yellow); padding: 6px 10px; margin-top: 6px; white-space: pre-wrap; }
+.bar { grid-column: 1 / -1; height: 8px; background: var(--rule); overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--text); }
+.bar.warn > span { background: var(--hazard); }
+.console { margin: 0; background: var(--code); color: var(--text); padding: 14px 16px; height: 62vh; overflow: auto; font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+
+/* ---------- tabs ---------- */
+.tabs { display: flex; gap: 0 24px; flex-wrap: wrap; border-bottom: 1px solid var(--rule); }
+.tabs button { display: inline-flex; align-items: center; gap: 8px; padding: 9px 0 7px; border: 0; border-bottom: 4px solid transparent; margin-bottom: -1px; background: transparent; color: var(--dim); font-stretch: 75%; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; font-size: 12.5px; white-space: nowrap; }
+.tabs button:hover { color: var(--text); }
+.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--text); }
+.tabs .count { position: relative; isolation: isolate; padding: 1px 7px 0; font-size: 11px; font-weight: 800; letter-spacing: 0.04em; }
+
+/* ---------- fields, switches and choices ---------- */
+/* .field is a flat block with a thick rule under it; the rule turns yellow in focus and inside .changed. */
+.field { width: 100%; font-size: 14px; color: var(--text); background-color: var(--panel); border: 0; border-bottom: 3px solid var(--field-rule); padding: 8px 10px 5px; }
+.card .field, .modal .field { background-color: var(--raised); }
+.field::placeholder { color: var(--dim); opacity: 1; }
+.field:focus, .changed .field { border-bottom-color: var(--yellow); }
+.field:disabled { color: var(--dim); border-bottom-style: dashed; }
+select.field { -webkit-appearance: none; appearance: none; padding-right: 32px; background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: right 15px top 52%, right 9px top 52%; background-size: 6px 6px; background-repeat: no-repeat; }
+textarea.field, .notebox textarea { min-height: 70px; resize: vertical; }
+.search { position: relative; flex: 1 1 240px; max-width: 380px; }
+.search svg { position: absolute; left: 10px; top: 50%; margin-top: -9px; pointer-events: none; color: var(--dim); }
+.search .field { padding-left: 34px; }
+.modal .search { flex: none; max-width: none; }
+.sw { -webkit-appearance: none; appearance: none; width: 44px; height: 22px; margin: 0 3px; flex: none; position: relative; cursor: pointer; background: var(--field-rule); transform: var(--lean); }
+.sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; background: var(--panel); }
+.sw:checked { background: var(--yellow); }
+.sw:checked::after { left: 25px; background: var(--on-yellow); }
+.sw:disabled { opacity: 0.45; cursor: default; }
+input[type="checkbox"]:not(.sw) { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; margin: 0; flex: none; display: inline-grid; place-content: center; cursor: pointer; background: var(--panel); border: 2px solid var(--field-rule); }
+input[type="checkbox"]:not(.sw):checked { background: var(--yellow); border-color: var(--yellow); }
+input[type="checkbox"]:not(.sw):checked::after { content: ""; width: 9px; height: 5px; margin-top: -2px; border-left: 3px solid var(--on-yellow); border-bottom: 3px solid var(--on-yellow); transform: rotate(-45deg); }
+input[type="checkbox"]:not(.sw):disabled { opacity: 0.45; cursor: default; }
+.check, .modal label.f.check { display: flex; flex-direction: row; gap: 10px; align-items: flex-start; font-weight: 400; }
+.check input { margin-top: 2px; }
+.seg { display: inline-flex; gap: 2px; flex-wrap: wrap; }
+.seg button { padding: 8px 14px; border: 0; background: var(--block); color: var(--dim); font-stretch: 80%; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; font-size: 12.5px; }
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--strong); color: var(--on-strong); }
+
+/* ---------- dialogs ---------- */
+/* modal(html) in 10_shell.js draws one: a flat panel whose first child, an h2, is its black title band;
+   .foot holds its buttons. */
+.modal-back { position: fixed; inset: 0; background: var(--shade); display: grid; place-items: center; z-index: 50; padding: 20px; }
+.modal { width: min(580px, 100%); max-height: 90vh; overflow: auto; background: var(--panel); padding: 22px; display: flex; flex-direction: column; gap: 14px; }
+.modal.wide { width: min(800px, 100%); }
+.modal > h2:first-child { margin: -22px -22px 2px; padding: 15px 22px 12px; background: var(--band); color: var(--band-text); border-bottom: 3px solid var(--yellow); font-size: 19px; overflow-wrap: anywhere; }
+.modal > h2:first-child .cap { float: right; margin: 4px 0 0 16px; color: var(--band-dim); }
+.modal label.f { display: flex; flex-direction: column; gap: 6px; font-weight: 700; }
+.modal label.f span.h { font-weight: 400; font-size: 13px; color: var(--dim); }
+.modal .foot { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; padding-top: 14px; border-top: 1px solid var(--rule); }
+
+/* Installing RLBot v5 (65_rlbot.js): its button, the note under it, what it is doing and its console text. */
+.rli { display: flex; flex-direction: column; gap: 8px; }
+.rli:empty { display: none; }
+.wbody .rli { margin-top: 6px; }
+.rli-note { font-size: 12.5px; color: var(--dim); max-width: 80ch; }
+.rli .rli-toggle { align-self: flex-start; }
+.rli .rli-text { height: 18vh; }
+.modal .rli .foot { margin-top: 6px; }
+
+/* ---------- toasts ---------- */
+#toasts { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; z-index: 60; }
+.toast { position: relative; padding: 11px 16px 11px 24px; background: var(--band); color: var(--band-text); border: 1px solid var(--band-rule); max-width: 440px; font-weight: 600; }
+.toast::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 6px; background: var(--yellow); }
+.toast.bad::before { background: var(--bad); }
+body.has-pending #toasts { bottom: 92px; }

@@ -1,0 +1,6 @@
+# The Rust every build of NitroLearn uses, so a build here is the build that was tested. The installer puts
+# this version in NitroLearn's folder; rustup reads this file wherever cargo runs inside the folder.
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

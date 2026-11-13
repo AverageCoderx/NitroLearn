@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="NitroLearn">
+  <path d="M0 0h36l12 12v36H0z" fill="#141413"/>
+  <path d="M13.39 37.61A15 15 0 1 1 34.61 37.61" fill="none" stroke="#4D4A44" stroke-width="6"/>
+  <path d="M13.39 37.61A15 15 0 1 1 35.49 17.36" fill="none" stroke="#FFD60A" stroke-width="6"/>
+  <path d="M22.07 24.7 37.02 16.07 25.93 29.3z" fill="#F3F1EC"/>
+  <circle cx="24" cy="27" r="3.2" fill="#F3F1EC"/>
+  <rect x="19" y="39.5" width="10" height="3.5" fill="#FFD60A"/>
+</svg>

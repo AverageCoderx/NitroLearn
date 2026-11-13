@@ -1,0 +1,80 @@
+/* The new-bot wizard: the step list at the left, the step itself beside it (kinds of bot and brain sizes as
+   large choices, the name with its plate and car, the detailed fields one ruled block each, the review). */
+.wizard { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 40px; width: 100%; max-width: 1240px; margin: 0 auto; padding-top: 6px; --pitch: #1E2A22; }
+:root[data-theme="light"] .wizard { --pitch: #DCE6DD; }
+.wiz-steps { display: flex; flex-direction: column; align-self: start; position: sticky; top: 86px; }
+.wiz-steps > .cap { padding-bottom: 8px; }
+.wiz-steps button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 0; border: 0; border-bottom: 1px solid var(--rule); background: none; color: var(--dim); text-align: left; }
+.wiz-steps button b { font-weight: 700; }
+.wiz-steps button:disabled { cursor: default; }
+.wiz-steps button:not(:disabled):hover, .wiz-steps button[aria-current="step"] { color: var(--text); }
+.wiz-steps i { width: 26px; height: 26px; flex: none; display: grid; place-items: center; background: var(--block); font-style: normal; }
+.wiz-steps button.done i { background: var(--strong); color: var(--on-strong); }
+.wiz-steps button[aria-current="step"] i { background: var(--yellow); color: var(--on-yellow); }
+.wiz-body { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.wiz-title { font-size: 34px; }
+.wiz-lede { margin-top: 6px; max-width: 80ch; }
+.wiz-nav { position: sticky; bottom: 0; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 12px 8px; background: var(--bg); border-top: 1px solid var(--rule); }
+
+.wiz-kinds { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.wiz-kind { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-height: 164px; padding: 12px 14px 14px; border: 2px solid transparent; background: var(--panel); color: var(--text); text-align: left; }
+.wiz-kind:hover { background: var(--raised); }
+.wiz-kind[aria-pressed="true"] { border-color: var(--text); }
+.wiz-kind .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.wiz-kind .mini { display: block; width: 90px; height: 54px; flex: none; }
+.wiz-kind .tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; min-width: 0; }
+.wiz-kind .tag { max-width: 100%; white-space: normal; }
+.wiz-kind.brain > .tag { align-self: flex-start; }
+.wiz-kind b { font-size: 17px; font-weight: 800; }
+.wiz-kind .about { color: var(--dim); font-size: 13px; }
+.wiz-brains { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.wiz-kind.brain { min-height: 0; gap: 5px; }
+.wiz-kind.brain .layers { font-size: 12.5px; }
+.wiz-kind.brain .count { min-height: 17px; color: var(--text); }
+#wz-count { min-height: 1.5em; }
+.wiz-more { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; background: var(--panel); border-left: 6px solid var(--text); }
+.wizard .f { display: flex; flex-direction: column; gap: 6px; }
+.wizard .lab { font-weight: 700; }
+.wizard .h { font-size: 13px; color: var(--dim); }
+.wizard .field { max-width: 460px; }
+.wiz-file .field { max-width: 720px; }
+
+.wiz-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 380px); gap: 28px; align-items: start; }
+.wiz-fields { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.wiz-fields .err:empty { display: none; }
+.wiz-fields .err { margin-top: -8px; font-size: 13px; }
+.wizard .wiz-number { max-width: 90px; font-size: 16px; }
+.wiz-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.wiz-swatch { width: 38px; height: 38px; padding: 0; border: 2px solid var(--rule2); background: none; display: grid; grid-template-rows: 1fr 9px; }
+.wiz-swatch[aria-pressed="true"] { border-color: var(--text); }
+.wiz-colour { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+.wiz-colour input { width: 46px; height: 32px; padding: 0; border: 0; background: none; cursor: pointer; }
+.wiz-colour input::-webkit-color-swatch-wrapper { padding: 0; }
+.wiz-colour input::-webkit-color-swatch { border: 2px solid var(--rule2); }
+.wiz-preview { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px; background: var(--raised); }
+.wiz-preview .row { flex-wrap: nowrap; gap: 14px; }
+.wiz-preview-name { font-size: 24px; min-width: 0; overflow-wrap: anywhere; }
+.wiz-made { display: flex; align-items: center; gap: 16px; padding: 14px 18px; background: var(--panel); }
+
+.wiz-group { display: flex; flex-direction: column; }
+.wiz-group .heading { align-items: baseline; justify-content: flex-start; }
+.wiz-item { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-top: 1px solid var(--rule); }
+.wiz-item:first-child { border-top: 0; }
+.wiz-item .help { font-size: 12.5px; color: var(--dim); max-width: 90ch; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.wiz-item .help.full { -webkit-line-clamp: unset; display: block; }
+.wiz-item .field { max-width: 360px; }
+.wiz-review { display: grid; grid-template-columns: minmax(110px, auto) 1fr; gap: 8px 18px; font-size: 14px; }
+.wiz-fixed { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; background: var(--panel); font-size: 13px; }
+.wiz-fixed .cap { display: flex; align-items: center; gap: 7px; }
+
+@media (max-width: 1000px) {
+  .wizard { grid-template-columns: minmax(0, 1fr); gap: 14px; padding-top: 0; }
+  .wiz-steps { position: static; flex-direction: row; gap: 0 14px; }
+  .wiz-steps > .cap { display: none; }
+  .wiz-steps button { flex: 1 1 0; min-width: 0; padding: 6px 0 8px; }
+  .wiz-steps button b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .wiz-title { font-size: 28px; }
+  .wiz-two { grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); gap: 20px; }
+  .wiz-kind { min-height: 0; }
+}
+@media (max-width: 700px) { .wiz-kinds { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

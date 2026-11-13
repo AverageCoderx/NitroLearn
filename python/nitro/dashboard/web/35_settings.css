@@ -1,0 +1,134 @@
+/* The Settings tab: the group list on the left, the chosen group's settings on the right as ruled rows (a
+   setting's title and name in the file, its control at the right, its help and its links), the cards that lead
+   a group, and the "Nerd explanation" box with its lines to copy. Other pages list their rows the same way. */
+.settings-tools { display: flex; gap: 10px 12px; align-items: center; flex-wrap: wrap; }
+.settings-tools .search { min-width: 260px; }
+.muted.small { font-size: 12.5px; }
+
+.set-layout { display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 30px; align-items: start; }
+.set-nav { position: sticky; top: var(--set-top, 80px); display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - var(--set-top, 80px) - 14px); overflow: auto; padding: 3px; margin: -3px; }
+body.has-pending .set-nav { max-height: calc(100vh - var(--set-top, 80px) - 84px); }
+.set-nav .search { flex: none; max-width: none; }
+.set-groups { display: flex; flex-direction: column; gap: 2px; }
+.set-group { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 12px; border: 0; background: none; color: var(--dim); text-align: left; font-stretch: 75%; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; font-size: 12.5px; }
+.set-group:hover { color: var(--text); background: var(--block); }
+.set-group[aria-current="true"] { background: var(--strong); color: var(--on-strong); }
+.set-group .t { flex: 1 1 auto; min-width: 0; }
+.set-group .n { font-variant-numeric: tabular-nums; }
+.set-group .mark { flex: none; width: 9px; height: 9px; background: var(--yellow); transform: var(--lean); }
+.set-group[aria-current="true"] .mark { outline: 2px solid var(--on-strong); }
+.set-adv { display: flex; gap: 12px; align-items: center; padding: 6px 9px 8px; cursor: pointer; }
+.set-adv > span { display: flex; flex-direction: column; font-size: 14px; }
+.set-adv .muted { font-size: 12px; }
+.set-main { min-width: 0; }
+.set-head > h2 { flex: none; }
+.set-head > .muted { font-size: 13px; padding-bottom: 2px; }
+.set-found { margin-bottom: 22px; }
+.set-found > .heading h3 { font-size: 13.5px; }
+.set-found > .heading .muted { font-size: 12.5px; }
+.set-found > .banner { margin-top: 10px; }
+.set-found .setting > .what { cursor: pointer; }
+.set-found .setting > .what:hover .name { text-decoration: underline; }
+.set-group.none { opacity: 0.5; }
+.set-fixed { display: flex; gap: 9px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--rule); color: var(--dim); font-size: 13px; }
+.set-fixed svg { flex: none; margin-top: 3px; }
+.set-hint { display: flex; gap: 6px 14px; align-items: center; flex-wrap: wrap; padding: 14px 0; color: var(--dim); font-size: 13px; }
+
+/* One setting. The yellow mark of a change waiting for Apply sits in the gutter left of the row. */
+.set-rows { display: flex; flex-direction: column; }
+.setting { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 4px 24px; align-items: start; padding: 14px 0; border-bottom: 1px solid var(--rule); }
+.setting.wide { grid-template-columns: minmax(0, 1fr) minmax(260px, 44%); }
+.setting.changed::before { content: ""; position: absolute; left: -14px; top: 14px; bottom: 14px; width: 6px; background: var(--yellow); }
+.setting .what { grid-column: 1; min-width: 0; }
+.setting .name { font-weight: 800; font-size: 16px; line-height: 1.3; display: flex; align-items: center; gap: 5px 8px; flex-wrap: wrap; }
+.setting .path { margin-top: 1px; font-size: 11.5px; color: var(--dim); overflow-wrap: anywhere; }
+.setting .control { grid-column: 2; grid-row: 1 / span 3; display: flex; flex-direction: column; gap: 5px; align-items: flex-end; min-width: 0; text-align: right; }
+.setting .control .field { width: 100%; }
+.setting .control .field.number { width: 150px; text-align: right; }
+.setting .control select.field { width: auto; max-width: 100%; }
+.setting .help { grid-column: 1; font-size: 13.5px; color: var(--dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 68ch; }
+.setting .help.full { -webkit-line-clamp: unset; display: block; }
+.setting .links { grid-column: 1; display: flex; gap: 2px 18px; flex-wrap: wrap; margin-top: 3px; }
+.setting > .guide, .setting > .nerd, .setting > .notetext, .setting > .notebox { grid-column: 1 / -1; }
+/* On the page's own background the opened texts are panels; inside a card they are a shade off the card. */
+.setting > .guide, .setting > .notetext, .reward > .guide, .reward > .notetext { background: var(--panel); }
+.card .setting > .guide, .card .setting > .notetext, .modal .guide { background: var(--raised); }
+.setting .was { font-size: 12px; color: var(--dim); }
+.setting .was .more { font-size: 12px; }
+.setting .err, .err { font-size: 12.5px; color: var(--bad-text); }
+.set-flash { outline: 3px solid transparent; outline-offset: 4px; animation: set-flash 2.6s; }
+@keyframes set-flash { 0%, 55% { outline-color: var(--yellow); } 100% { outline-color: transparent; } }
+
+/* A card that leads a group: its title and state, a line on what the bot does now, then its rows. */
+.set-card { margin-top: 12px; }
+.set-card-head { display: flex; gap: 12px; align-items: flex-start; padding: 16px 20px 12px; }
+.set-card-head .muted { margin-top: 2px; font-size: 13px; max-width: 84ch; }
+.set-card-head .tag { flex: none; margin-top: 2px; }
+.set-card-line { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 0 20px 14px; font-size: 13.5px; }
+.set-card .set-rows { padding: 0 20px; }
+.set-card-head ~ .set-rows { border-top: 3px solid var(--text); }
+.set-card .set-rows > :last-child { border-bottom: 0; }
+.set-card .set-hint { padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.cp-list { display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0; text-align: left; }
+.cp-folder { display: flex; gap: 10px; align-items: center; font-size: 13px; min-width: 0; }
+.cp-folder .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cp-sizes { display: flex; gap: 16px; flex-wrap: wrap; }
+
+/* "Nerd explanation": a written text if there is one, the facts, and the lines to copy. */
+.nerd { margin-top: 6px; padding: 12px 14px 14px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.card .nerd, .modal .nerd { background: var(--raised); }
+.nerd > .cap { font-size: 11.5px; }
+.nerd .cap.muted { margin-top: 4px; }
+.nerd-text { display: flex; flex-direction: column; gap: 8px; max-width: 86ch; }
+.nerd-text p { margin: 0; line-height: 1.5; }
+.nerd-text ul { margin: 0; padding-left: 18px; }
+.facts { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 18px; }
+.facts > div { display: contents; }
+.facts dt { padding-top: 2px; color: var(--dim); font-size: 11.5px; }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.codeblock { position: relative; background: var(--code); }
+.card .nerd .codeblock, .modal .nerd .codeblock { background: var(--panel); }
+.codeblock pre { margin: 0; padding: 10px 86px 10px 12px; font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+.codeblock .btn { position: absolute; top: 4px; right: 6px; }
+
+/* The Resources and App settings pages: sections of ruled rows that name something, a tool at the right. */
+.set-group:disabled { opacity: 0.45; cursor: default; }
+.set-group:disabled:hover { background: none; color: var(--dim); }
+.res-main, .prefs { display: flex; flex-direction: column; gap: 34px; }
+.prefs { max-width: 1040px; padding-top: 8px; }
+.res-section > .heading > .muted, .prefs .heading > .muted { font-size: 13px; padding-bottom: 2px; }
+.res-card { margin-top: 12px; }
+.setting.res-row { grid-template-columns: minmax(0, 1fr) auto; }
+.res-row .control { flex-direction: row; align-items: center; }
+.res-row .control .muted { font-size: 13.5px; }
+.about-block { display: flex; flex-wrap: wrap; gap: 18px 44px; align-items: center; padding: 20px 0 24px; }
+.about-lockup { display: inline-flex; align-items: center; gap: 12px; }
+.about-lockup svg { width: 54px; height: 54px; flex: none; display: block; }
+.about-lockup .wordmark { font-size: 32px; }
+.about-facts { flex: 1 1 380px; display: flex; flex-wrap: wrap; gap: 12px 34px; align-items: center; font-size: 13.5px; }
+.heading.sub { border-bottom-width: 1px; border-bottom-color: var(--rule2); }
+.heading.sub h3 { font-size: 12px; color: var(--dim); }
+.about-licences .setting { padding: 10px 0; }
+.about-licences .name { font-size: 14.5px; font-weight: 700; }
+
+@media (max-width: 1000px) {
+  .set-layout { grid-template-columns: 200px minmax(0, 1fr); gap: 22px; }
+  .setting { grid-template-columns: minmax(0, 1fr) 190px; gap: 4px 16px; }
+  .setting .control .field.number { width: 130px; }
+  .setting.wide { grid-template-columns: minmax(0, 1fr); }
+  .setting.wide .control { grid-column: 1; grid-row: auto; order: 2; align-items: flex-start; margin: 4px 0; text-align: left; }
+  .setting.wide .help { order: 1; }
+  .setting.wide .links { order: 3; }
+  .setting.wide > .guide, .setting.wide > .nerd, .setting.wide > .notetext, .setting.wide > .notebox { order: 4; }
+}
+/* App settings: Update NitroLearn and Editing NitroLearn. */
+.upd-card { display: flex; flex-direction: column; gap: 12px; padding: 18px 20px; }
+.upd-line { font-size: 14.5px; }
+.upd-news { font-size: 16px; }
+.upd-notes { margin: 0; padding: 10px 14px; background: var(--code); color: var(--text); font-family: var(--sans); font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; max-height: 26vh; overflow: auto; }
+.upd-replaced, .upd-removed { font-size: 13.5px; }
+.upd-replaced ul, .upd-removed ul { margin: 6px 0 0; padding-left: 20px; }
+.upd-console { height: 26vh; }
+.edit-build { display: flex; flex-direction: column; gap: 8px; }
+.edit-build:empty { display: none; }
+.nowrap { white-space: nowrap; }

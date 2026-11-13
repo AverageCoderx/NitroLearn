@@ -1,0 +1,31 @@
+# Reset mustys: high flip resets only, then a musty flick off the reset, with its pose shaping.
+# group: moves
+
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 0.5
+
+[[rewards]]
+name = "flip_reset"
+weight = 5
+min_ball_height = 1000
+min_air_time = 1
+min_use_ball_height = 600
+use_reward = 0
+goal_reward = 0
+
+[[rewards]]
+name = "reset_musty"
+weight = 150
+wall_margin = 300
+reset_min_ball_height = 1000
+reset_min_air_time = 1
+reset_min_use_ball_height = 600
+
+[[rewards]]
+name = "reset_musty_pose_shaping"
+weight = 20
+gamma = 0.995
+reset_min_ball_height = 1000
+reset_min_air_time = 1
+reset_min_use_ball_height = 600

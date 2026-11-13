@@ -1,0 +1,1 @@
+Touched by `nitro rebuild` so the next build reads my-settings/rust-files.txt again (see build.rs).

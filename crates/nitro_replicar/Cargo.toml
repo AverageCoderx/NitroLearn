@@ -1,0 +1,26 @@
+# NitroLearn's own build of replicar for the replay copy. Not a workspace member: it
+# pulls in Parquet and Arrow, so the core and the checks do not build it; `nitro pretrain` builds it on first
+# use, like replicar's own tool.
+[package]
+name = "nitro_replicar"
+version = "1.0.0"
+edition = "2024"
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[[bin]]
+name = "nitro-replicar"
+path = "src/main.rs"
+
+[dependencies]
+# The versions replicar-cli 2.2.1 is built with (its Cargo.lock), so the states and controls are the same.
+replicar = "=2.2.1"
+replicar-format = "=2.2.1"
+serde_json = "1"
+mimalloc = { version = "0.1", default-features = false }
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[workspace]

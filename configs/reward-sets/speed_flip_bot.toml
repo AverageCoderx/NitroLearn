@@ -1,0 +1,12 @@
+# Speed flips: the speed flip reward (at most 3 credits an episode) and a little for driving at the ball,
+# the reason to want speed. For one car with no opponent.
+# group: moves
+
+[[rewards]]
+name = "speed_flip"
+weight = 10
+max_per_episode = 3
+
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 0.1

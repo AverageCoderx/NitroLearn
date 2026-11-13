@@ -1,0 +1,15 @@
+# Air dribbles: the air dribble reward, flip resets, and a little for driving at the ball. For one car
+# with no opponent and limited boost.
+# group: moves
+
+[[rewards]]
+name = "air_dribble"
+weight = 10
+
+[[rewards]]
+name = "flip_reset"
+weight = 5
+
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 0.5

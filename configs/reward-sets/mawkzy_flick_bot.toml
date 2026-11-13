@@ -1,0 +1,25 @@
+# Mawkzy flicks: the Mawkzy flick reward with a basic set for driving at the ball, hitting it hard and
+# sending it goalward. For one car with no opponent.
+# group: moves
+
+[[rewards]]
+name = "face_ball"
+weight = 0.25
+
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 4
+
+[[rewards]]
+name = "strong_touch"
+weight = 60
+min_speed_kph = 20
+max_speed_kph = 100
+
+[[rewards]]
+name = "velocity_ball_to_goal"
+weight = 2
+
+[[rewards]]
+name = "mawkzy_flick"
+weight = 100

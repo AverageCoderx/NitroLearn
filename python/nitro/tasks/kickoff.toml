@@ -1,0 +1,32 @@
+# Practice task: kickoffs. 1v1 from the real kickoff spots with both cars driven by the learning policy;
+# an episode lasts until a goal or 6 seconds. Measured against the untrained policy of the same seed
+# (nitro.tasks): time to first touch, how often the trained car touches first, and where the
+# ball is 2 seconds after the first touch.
+# Reward designs compared here (`nitro ab --task kickoff --with-rewards`): with `alignment` added as a
+# plain sum the bot barely learned in 10M steps (5.8 s); tied to moving toward the ball as an AND
+# (`all_of`) it reached the ball in 4.2 s and sent it 2,600 uu toward the goal. Tie alignment that way.
+
+[env]
+num_arenas = 256
+
+[terminals]
+no_touch_seconds = 0
+max_episode_seconds = 6
+
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 1
+
+# Touching pays, the opponent touching costs: getting there first is what counts.
+[[rewards]]
+name = "touch_ball"
+weight = 5
+zero_sum = { team_spirit = 0, opponent_scale = 1 }
+
+[[rewards]]
+name = "velocity_ball_to_goal"
+weight = 5
+zero_sum = { team_spirit = 1, opponent_scale = 1 }
+
+[[state_setters]]
+name = "kickoff"

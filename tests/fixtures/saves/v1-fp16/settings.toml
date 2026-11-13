@@ -1,0 +1,35 @@
+[paths]
+collision_meshes = "collision_meshes"
+[run]
+seed = 7
+precision = "fp16"
+checkpoint_minutes = 60
+[env]
+num_arenas = 8
+threads = 2
+observation = "native"
+tick_skip = 8
+obs_team_size = 0
+[terminals]
+no_touch_seconds = 2
+[model]
+policy = [32, 32]
+value = [32, 32]
+activation = "relu"
+[ppo]
+steps_per_iteration = 640
+minibatches = 2
+policy_lr = 1.5e-4
+[selfplay]
+enabled = false
+active_opponents = 1
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 1
+[[rewards]]
+name = "strong_touch"
+weight = 10
+[[state_setters]]
+name = "kickoff"
+[[state_setters]]
+name = "random"

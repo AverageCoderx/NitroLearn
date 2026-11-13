@@ -1,0 +1,172 @@
+version: 6
+cars: 2
+hitbox_min_bt: -0.927561 -0.866994 0.028509
+hitbox_max_bt: 1.482587 0.866994 0.80169
+tick 0 car 0 frame: 40
+tick 0 car 0 pos: 0.0 -0.0 17.0
+tick 0 car 0 rot columns: 0.9950042 0.0 -0.09983342 | 0.0 1.0 0.0 | 0.09983342 0.0 0.9950042
+tick 0 car 0 vel: 100.0 200.0 0.0
+tick 0 car 0 ang_vel: 0.1 -0.2 0.3
+tick 0 car 0 on_ground: false
+tick 0 car 0 is_jumping: true
+tick 0 car 0 is_flipping: false
+tick 0 car 0 jump_time: 0.025
+tick 0 car 0 flip_time: 0.0
+tick 0 car 0 has_jumped: true
+tick 0 car 0 double_jumped_or_flipped: false
+tick 0 car 0 has_flip: true
+tick 0 car 0 flip_rel_torque: 0.0 0.6 0.0
+tick 0 car 0 boost: 0.33
+tick 0 car 0 touching_ball: false
+tick 0 car 0 controls: 1.0 -0.5 0.0 0.25 0.0 true false true
+tick 0 car 0 touching_car: false
+tick 0 car 1 frame: 40
+tick 0 car 1 pos: 0.5 -1.0 17.5
+tick 0 car 1 rot columns: 0.98383135 0.14869158 -0.09983342 | -0.14943814 0.9887711 0.0 | 0.0987124 0.0149189215 0.9950042
+tick 0 car 1 vel: 100.0 200.0 0.5
+tick 0 car 1 ang_vel: 0.1 -0.2 0.3
+tick 0 car 1 on_ground: true
+tick 0 car 1 is_jumping: false
+tick 0 car 1 is_flipping: false
+tick 0 car 1 jump_time: 0.0
+tick 0 car 1 flip_time: 0.0
+tick 0 car 1 has_jumped: false
+tick 0 car 1 double_jumped_or_flipped: false
+tick 0 car 1 has_flip: true
+tick 0 car 1 flip_rel_torque: 0.0 0.6 0.0
+tick 0 car 1 boost: 0.33
+tick 0 car 1 touching_ball: false
+tick 0 car 1 controls: 1.0 -0.5 0.0 0.25 0.0 true false true
+tick 0 car 1 touching_car: false
+tick 0 ball frame: 40
+tick 0 ball pos: 0.0 20.0 93.15
+tick 0 ball rot columns: 1.0 0.0 0.0 | 0.0 1.0 0.0 | 0.0 0.0 1.0
+tick 0 ball vel: 0.0 -300.0 10.0
+tick 0 ball ang_vel: 0.5 0.0 0.0
+tick 0 ball world_contact: false
+tick 1 car 0 frame: 41
+tick 1 car 0 pos: 1.0 -2.0 18.0
+tick 1 car 0 rot columns: 0.95056385 0.29404384 -0.09983342 | -0.29552022 0.9553365 0.0 | 0.09537451 0.029502794 0.9950042
+tick 1 car 0 vel: 100.0 200.0 1.0
+tick 1 car 0 ang_vel: 0.1 -0.2 0.3
+tick 1 car 0 on_ground: true
+tick 1 car 0 is_jumping: false
+tick 1 car 0 is_flipping: false
+tick 1 car 0 jump_time: 0.0
+tick 1 car 0 flip_time: 0.0
+tick 1 car 0 has_jumped: false
+tick 1 car 0 double_jumped_or_flipped: false
+tick 1 car 0 has_flip: true
+tick 1 car 0 flip_rel_torque: 0.0 0.6 0.0
+tick 1 car 0 boost: 0.33
+tick 1 car 0 touching_ball: false
+tick 1 car 0 controls: 1.0 -0.5 0.0 0.25 0.0 true false true
+tick 1 car 0 touching_car: false
+tick 1 car 1 frame: 41
+tick 1 car 1 pos: 1.5 -3.0 18.5
+tick 1 car 1 rot columns: 0.8959486 0.43279254 -0.09983342 | -0.43496555 0.9004471 0.0 | 0.08989471 0.0434241 0.9950042
+tick 1 car 1 vel: 100.0 200.0 1.5
+tick 1 car 1 ang_vel: 0.1 -0.2 0.3
+tick 1 car 1 on_ground: true
+tick 1 car 1 is_jumping: false
+tick 1 car 1 is_flipping: false
+tick 1 car 1 jump_time: 0.0
+tick 1 car 1 flip_time: 0.0
+tick 1 car 1 has_jumped: false
+tick 1 car 1 double_jumped_or_flipped: false
+tick 1 car 1 has_flip: true
+tick 1 car 1 flip_rel_torque: 0.0 0.6 0.0
+tick 1 car 1 boost: 0.33
+tick 1 car 1 touching_ball: true
+tick 1 car 1 controls: 1.0 -0.5 0.0 0.25 0.0 true false true
+tick 1 car 1 touching_car: false
+tick 1 ball frame: 41
+tick 1 ball pos: 5.0 20.0 94.15
+tick 1 ball rot columns: 1.0 0.0 0.0 | 0.0 1.0 0.0 | 0.0 0.0 1.0
+tick 1 ball vel: 0.0 -300.0 10.0
+tick 1 ball ang_vel: 0.5 0.0 0.0
+tick 1 ball world_contact: false
+tick 2 car 0 frame: 42
+tick 2 car 0 pos: 2.0 -4.0 19.0
+tick 2 car 0 rot columns: 0.8212124 0.56182164 -0.09983342 | -0.5646425 0.8253356 0.0 | 0.08239608 0.05637019 0.9950042
+tick 2 car 0 vel: 100.0 200.0 2.0
+tick 2 car 0 ang_vel: 0.1 -0.2 0.3
+tick 2 car 0 on_ground: false
+tick 2 car 0 is_jumping: true
+tick 2 car 0 is_flipping: false
+tick 2 car 0 jump_time: 0.025
+tick 2 car 0 flip_time: 0.0
+tick 2 car 0 has_jumped: true
+tick 2 car 0 double_jumped_or_flipped: false
+tick 2 car 0 has_flip: true
+tick 2 car 0 flip_rel_torque: 0.0 0.6 0.0
+tick 2 car 0 boost: 0.33
+tick 2 car 0 touching_ball: true
+tick 2 car 0 controls: 1.0 -0.5 0.0 0.25 0.0 true false true
+tick 2 car 0 touching_car: false
+tick 2 car 1 frame: 42
+tick 2 car 1 pos: 2.5 -5.0 19.5
+tick 2 car 1 rot columns: 0.7280335 0.67823344 -0.09983342 | -0.6816388 0.73168886 0.0 | 0.073047005 0.06805033 0.9950042
+tick 2 car 1 vel: 100.0 200.0 2.5
+tick 2 car 1 ang_vel: 0.1 -0.2 0.3
+tick 2 car 1 on_ground: true
+tick 2 car 1 is_jumping: false
+tick 2 car 1 is_flipping: false
+tick 2 car 1 jump_time: 0.0
+tick 2 car 1 flip_time: 0.0
+tick 2 car 1 has_jumped: false
+tick 2 car 1 double_jumped_or_flipped: false
+tick 2 car 1 has_flip: true
+tick 2 car 1 flip_rel_torque: 0.0 0.6 0.0
+tick 2 car 1 boost: 0.33
+tick 2 car 1 touching_ball: true
+tick 2 car 1 controls: 1.0 -0.5 0.0 0.25 0.0 true false true
+tick 2 car 1 touching_car: false
+tick 2 ball frame: 42
+tick 2 ball pos: 10.0 20.0 95.15
+tick 2 ball rot columns: 1.0 0.0 0.0 | 0.0 1.0 0.0 | 0.0 0.0 1.0
+tick 2 ball vel: 0.0 -300.0 10.0
+tick 2 ball ang_vel: 0.5 0.0 0.0
+tick 2 ball world_contact: true
+tick 3 car 0 frame: 43
+tick 3 car 0 pos: 3.0 -6.0 20.0
+tick 3 car 0 rot columns: 0.61850446 0.7794136 -0.09983342 | -0.7833269 0.6216099 0.0 | 0.062057447 0.07820221 0.9950042
+tick 3 car 0 vel: 100.0 200.0 3.0
+tick 3 car 0 ang_vel: 0.1 -0.2 0.3
+tick 3 car 0 on_ground: true
+tick 3 car 0 is_jumping: false
+tick 3 car 0 is_flipping: false
+tick 3 car 0 jump_time: 0.0
+tick 3 car 0 flip_time: 0.0
+tick 3 car 0 has_jumped: false
+tick 3 car 0 double_jumped_or_flipped: false
+tick 3 car 0 has_flip: true
+tick 3 car 0 flip_rel_torque: 0.0 0.6 0.0
+tick 3 car 0 boost: 0.33
+tick 3 car 0 touching_ball: true
+tick 3 car 0 controls: 1.0 -0.5 0.0 0.25 0.0 true false true
+tick 3 car 0 touching_car: false
+tick 3 car 1 frame: 43
+tick 3 car 1 pos: 3.5 -7.0 20.5
+tick 3 car 1 rot columns: 0.4950852 0.86308974 -0.09983342 | -0.86742324 0.497571 0.0 | 0.049674213 0.08659783 0.9950042
+tick 3 car 1 vel: 100.0 200.0 3.5
+tick 3 car 1 ang_vel: 0.1 -0.2 0.3
+tick 3 car 1 on_ground: true
+tick 3 car 1 is_jumping: false
+tick 3 car 1 is_flipping: false
+tick 3 car 1 jump_time: 0.0
+tick 3 car 1 flip_time: 0.0
+tick 3 car 1 has_jumped: false
+tick 3 car 1 double_jumped_or_flipped: false
+tick 3 car 1 has_flip: true
+tick 3 car 1 flip_rel_torque: 0.0 0.6 0.0
+tick 3 car 1 boost: 0.33
+tick 3 car 1 touching_ball: true
+tick 3 car 1 controls: 1.0 -0.5 0.0 0.25 0.0 true false true
+tick 3 car 1 touching_car: false
+tick 3 ball frame: 43
+tick 3 ball pos: 15.0 20.0 96.15
+tick 3 ball rot columns: 1.0 0.0 0.0 | 0.0 1.0 0.0 | 0.0 0.0 1.0
+tick 3 ball vel: 0.0 -300.0 10.0
+tick 3 ball ang_vel: 0.5 0.0 0.0
+tick 3 ball world_contact: false

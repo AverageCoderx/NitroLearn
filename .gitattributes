@@ -1,0 +1,10 @@
+* text=auto
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.nsys-rep binary
+# Reference data compared by the tests: keep LF on every platform.
+crates/nitro_core/testdata/*.txt text eol=lf
+# Shell scripts run on Linux: LF even in a Windows checkout or `git archive` there.
+*.sh text eol=lf
+# Golden recordings the tests compare byte for byte.
+crates/nitro_core/testdata/*.bin binary

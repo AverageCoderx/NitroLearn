@@ -1,0 +1,47 @@
+/* A bot's tools: the ruled list (each an icon, a name and one line), and the pieces of a tool's dialog: what
+   it does, its options, the terminal command, how its run goes and its result. */
+.tools { display: flex; flex-direction: column; }
+.tool { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 2px; border: 0; border-bottom: 1px solid var(--rule); background: none; color: var(--text); text-align: left; }
+.tool:hover { background: var(--panel); }
+.tool > svg { flex: none; }
+.tool > svg.chev { color: var(--dim); }
+.tool .grow { min-width: 0; }
+.tool b { display: block; font-size: 14px; font-weight: 700; }
+.tool small { display: block; color: var(--dim); font-size: 12px; }
+.tools-page .tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); column-gap: 26px; }
+
+.tool-about { display: flex; flex-direction: column; gap: 8px; }
+.tool-about p, .tool-result p { margin: 0; line-height: 1.5; }
+#tool-body { display: flex; flex-direction: column; gap: 14px; }
+.opts { display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
+.opt { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 4px 16px; align-items: start; padding: 10px 0; border-bottom: 1px solid var(--rule); }
+.opt .k { padding-top: 8px; font-weight: 700; }
+.opt .v { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.opt .h { color: var(--dim); font-size: 12.5px; }
+.opt .check { padding-top: 7px; }
+@media (max-width: 620px) { .opt { grid-template-columns: minmax(0, 1fr); } .opt .k { padding-top: 0; } }
+.cmdline { display: flex; flex-direction: column; gap: 4px; }
+.cmdline .cap { color: var(--dim); }
+.cmdline pre, .toolout { margin: 0; padding: 9px 12px; background: var(--code); color: var(--text); font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.toolout { max-height: 190px; overflow: auto; }
+.toolout.tall { max-height: 300px; white-space: pre; word-break: normal; }
+.path { overflow-wrap: anywhere; font-size: 12.5px; }
+ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+
+/* A result: its one-line verdict, a few figures, and for a match the share of the goals on a strip from 0
+   to 100% with the range luck allows and a tick at half. */
+.tool-result { display: flex; flex-direction: column; gap: 10px; }
+.verdict { font-stretch: 112%; font-size: 19px; line-height: 1.25; }
+.figs { display: flex; flex-wrap: wrap; gap: 8px 30px; margin: 0; }
+.figs.sizes { padding: 10px 14px; background: var(--raised); }
+.figs.sizes dd { font-stretch: 100%; font-weight: 400; }
+.share { position: relative; height: 22px; margin-top: 4px; border-bottom: 3px solid var(--rule2); }
+.share .range { position: absolute; top: 5px; bottom: 0; background: var(--block); }
+.share .half { position: absolute; left: 50%; top: 0; bottom: -3px; width: 1px; background: var(--dim); }
+.share .at { position: absolute; top: 2px; bottom: 0; width: 9px; margin-left: -4px; background: var(--text); }
+.share-ends { display: flex; justify-content: space-between; color: var(--dim); font-size: 12px; }
+table.skills { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+table.skills th { padding: 6px 10px 5px 0; border-bottom: 3px solid var(--text); color: var(--dim); text-align: left; font-stretch: 75%; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; font-size: 12px; }
+table.skills td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+table.skills td.num { font-size: 15px; white-space: nowrap; }
+table.skills td.num.muted { font-weight: 400; font-size: 13.5px; }

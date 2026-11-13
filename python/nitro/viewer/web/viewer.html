@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html, body { background: #141413; color: #F3F1EC; }</style>
+<!--NOTICES-->
+<title></title>
+<script>
+/*GUARD*/
+</script>
+<style>
+/*STYLE*/
+</style>
+</head>
+<body class="nv-page">
+<div class="nv-root" id="nv-root">
+<noscript><p class="nv-notice">This page needs JavaScript to show its game, and JavaScript is turned off for it.</p></noscript>
+/*MARKUP*/
+</div>
+<script>/*THREE*/</script>
+<script>/*ARENA*/</script>
+<script>
+"use strict";
+/*VIEWER*/
+(async () => {
+  const guard = window.NV_GUARD;
+  const data = /*DATA*/null;
+  const host = document.getElementById("nv-root");
+  const options = { host, arena: window.NV_ARENA || null };
+  // A plain message in place of a game the page cannot show.
+  const notice = (text) => {
+    guard.settle();
+    const note = document.createElement("p");
+    note.className = "nv-notice";
+    note.textContent = text;
+    host.append(note);
+  };
+  const refusal = NV.data.refusal(data);
+  if (refusal) return notice(refusal);
+  if (data.live) {
+    // A live game is handed over by the window this page was opened in (pywebview's bridge), which is
+    // ready some time after the page has loaded.
+    const poll = () => window.pywebview && window.pywebview.api && window.pywebview.api.viewer_poll;
+    for (let waited = 0; !poll() && waited < 10000; waited += 100) await new Promise((done) => setTimeout(done, 100));
+    if (!poll()) return notice("This page shows a live game only in the window that “nitro watch NAME --live” opens. Run that command to watch live.");
+    options.live = (cursor) => window.pywebview.api.viewer_poll(cursor);
+    // A live game's scene is built once its first frames are here: the first picture is due from then.
+    NV.on("building", () => guard.arm());
+  } else {
+    guard.arm();
+  }
+  NV.on("drawn", () => guard.started());
+  // The page is shown once before the work of starting the view begins.
+  await new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0)));
+  await NV.start(data, options);
+})().catch((error) => window.NV_GUARD.fail(error));
+</script>
+</body>
+</html>

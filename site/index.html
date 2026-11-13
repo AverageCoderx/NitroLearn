@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NitroLearn: train your own Rocket League bot</title>
+<meta name="description" content="The fastest and easiest-to-use public framework for training Rocket League bots. Train on your PC, watch every game in 3D, play your bot in RLBot.">
+<meta name="theme-color" content="#141413">
+<meta property="og:title" content="NitroLearn by Raze">
+<meta property="og:description" content="The fastest and easiest-to-use public framework for training Rocket League bots.">
+<meta property="og:type" content="website">
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="stylesheet" href="fonts/fonts.css">
+<style>
+/* The site is dark on purpose (it sits around a night-time 3D replay); both schemes use the same tokens. */
+:root{--bg:#141413;--fg:#F3F1EC;--mu:#A9A69E;--line:#34322E;--card:#1C1B19;--y:#FFD60A;--ink:#141413;color-scheme:dark;
+--f:"Archivo",system-ui,sans-serif;--m:"JetBrains Mono",ui-monospace,monospace;--gut:max(16px,env(safe-area-inset-left,0px))}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141413;--fg:#F3F1EC}}
+:root[data-theme="dark"]{--bg:#141413;--fg:#F3F1EC}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--f);font-size:17px;line-height:1.55}
+a{color:inherit}
+.wrap{max-width:1180px;margin:0 auto;padding-left:max(24px,var(--gut));padding-right:max(24px,env(safe-area-inset-right,0px))}
+
+/* header: logo left, two plain links right */
+header{display:flex;align-items:center;gap:18px;padding-top:18px;padding-bottom:18px}
+.lock{display:flex;align-items:center;gap:9px;text-decoration:none}
+.lock b{font-stretch:125%;font-weight:900;font-style:italic;font-size:19px;letter-spacing:-.01em}
+.lock b span{font-weight:300}
+.raze{background:var(--y);color:var(--ink);font-stretch:80%;font-weight:800;font-size:11px;letter-spacing:.1em;text-transform:uppercase;padding:3px 7px;transform:skewX(-10deg)}
+header nav{margin-left:auto;display:flex;gap:22px;font-size:15px}
+header nav a{text-decoration:none;color:var(--mu)}header nav a:hover{color:var(--fg)}
+
+/* hero: the real viewer, playing a real replay */
+.stage{position:relative;height:min(60vh,640px);min-height:380px;margin:0 auto;overflow:hidden;background:#05070c;
+  clip-path:inset(0 var(--inset,0px) 0 var(--inset,0px));transition:clip-path .1s linear}
+.stage iframe,.stage .poster img{position:absolute;inset:0;width:100%;height:100%;border:0;display:block;pointer-events:none}
+.stage .poster img{object-fit:cover}
+.stage iframe{opacity:0;transition:opacity .6s ease}
+.stage.live iframe{opacity:1}
+.label{position:absolute;right:16px;top:16px;max-width:300px;background:rgba(20,20,19,.88);border-left:3px solid var(--y);
+  font-family:var(--m);font-size:12px;line-height:1.5;padding:9px 12px;color:#D9D6CE}
+.label b{color:var(--fg)}
+.intro{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:40px;align-items:end;padding-top:28px;padding-bottom:70px;border-bottom:1px solid var(--line)}
+h1{margin:0;font-size:clamp(42px,5.4vw,76px);line-height:.95;font-stretch:108%;font-weight:900;font-style:italic;letter-spacing:-.03em}
+h1 mark{background:none;color:var(--y)}
+.intro p{margin:0 0 22px;color:#D9D6CE;font-size:18px;max-width:46ch}
+.dl{display:inline-flex;flex-direction:column;gap:2px;background:var(--y);color:var(--ink);text-decoration:none;padding:15px 22px 13px;border:0}
+.dl strong{font-stretch:85%;font-weight:900;font-size:19px;letter-spacing:.01em}
+.dl small{font-family:var(--m);font-size:12px;opacity:.75}
+.dl:hover{background:#FFE04D}.dl:focus-visible{outline:3px solid var(--fg);outline-offset:3px}
+.fine{margin-top:12px;font-size:14px;color:var(--mu)}
+.fine.linux{color:#D9D6CE}
+
+/* sections: text and a real picture, not a card grid */
+section{padding-top:80px;padding-bottom:80px;border-bottom:1px solid var(--line)}
+h2{margin:0 0 14px;font-size:clamp(30px,4vw,46px);line-height:1;font-stretch:118%;font-weight:900;font-style:italic;letter-spacing:-.02em}
+.split{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:56px;align-items:center}
+.split p{color:#D9D6CE;max-width:48ch;margin:0 0 14px}
+.think{justify-self:center;width:min(100%,400px);border:1px solid var(--line)}
+.think img{display:block;width:100%;height:auto}
+.shot{position:relative;margin-top:30px;border:1px solid var(--line)}
+.shot img{display:block;width:100%;height:auto}
+.pin{position:absolute;width:30px;height:30px;display:grid;place-items:center;background:var(--y);color:var(--ink);font-weight:900;font-size:15px;
+  border-radius:50%;box-shadow:0 0 0 4px rgba(20,20,19,.7);transform:translate(-50%,-50%)}
+.pins{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px 34px;margin:22px 0 0;padding:0;list-style:none;counter-reset:p}
+.pins li{display:flex;gap:12px;color:#D9D6CE;font-size:16px}
+.pins li::before{counter-increment:p;content:counter(p);flex:none;width:24px;height:24px;border-radius:50%;background:var(--y);color:var(--ink);font-weight:900;font-size:13px;display:grid;place-items:center;margin-top:2px}
+
+/* why: two columns, other frameworks (dim, crosses) against NitroLearn (bright, ticks) */
+.lead{color:#D9D6CE;max-width:62ch;margin:0;font-size:18px}
+.vs{margin-top:32px;display:flex;flex-direction:column;gap:10px}
+.vs-head,.vs-row{display:grid;grid-template-columns:150px minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:stretch}
+.vs-head>div{display:flex;align-items:center;gap:10px;padding:12px 16px;font-stretch:115%;font-weight:900;font-style:italic;font-size:20px}
+.h-other{color:#8C8981;background:#1A1918;border:1px dashed #3E3C37}
+.h-other .ic{color:#C4553F}
+.h-us{background:var(--y);color:var(--ink)}
+.vs-row h3{margin:0;padding:18px 0;font-size:17px;font-weight:800;font-stretch:110%}
+.vs-other,.vs-us{padding:16px 18px;display:flex;flex-direction:column;gap:6px}
+.vs-other{background:#181716;border:1px dashed #34322E;color:#8C8981}
+.vs-us{background:#22211E;border:1.5px solid var(--y);color:var(--fg)}
+.vs-row p{margin:0;font-size:16px;line-height:1.5}
+.vs .ic{width:18px;height:18px;flex:none}
+.vs-other .ic{color:#C4553F}.vs-us .ic{color:var(--y)}
+.tag-s{display:none;align-items:center;gap:7px;font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+.vs-row p::before{content:"";display:inline-block;width:20px;height:16px;vertical-align:-2px;margin-right:8px;background:no-repeat center/16px}
+.vs-other p::before{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 6l12 12M18 6L6 18' fill='none' stroke='%23C4553F' stroke-width='3.2'/%3E%3C/svg%3E")}
+.vs-us p::before{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4.5 12.5l5 5 10-11' fill='none' stroke='%23FFD60A' stroke-width='3.4'/%3E%3C/svg%3E")}
+
+.note{margin:18px 0 0;max-width:880px;color:var(--mu);font-size:13.5px;line-height:1.55}
+.fn{color:var(--y);text-decoration:none;font-weight:800;margin-left:2px}
+.needs{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:5px}
+/* before you download: a plain list */
+dl.facts{display:grid;grid-template-columns:minmax(0,220px) minmax(0,1fr);margin:24px 0 0;border-top:1px solid var(--line)}
+dl.facts dt,dl.facts dd{padding:16px 0;border-bottom:1px solid var(--line);margin:0}
+dl.facts dt{font-weight:800;font-stretch:110%;padding-right:20px}
+dl.facts dd{color:#D9D6CE}
+code{font-family:var(--m);font-size:.88em;background:var(--card);padding:1px 5px}
+footer{padding-top:34px;padding-bottom:60px;display:flex;gap:18px;flex-wrap:wrap;align-items:center;color:var(--mu);font-size:14px}
+footer .lock{color:var(--fg)}
+
+/* acknowledgements: closed by default */
+.claim{color:var(--fg);font-weight:800}
+.ack{border-bottom:1px solid var(--line);padding:26px 0}
+.ack summary{cursor:pointer;list-style:none;display:flex;flex-direction:column;gap:4px;padding-left:34px;position:relative}
+.ack summary::-webkit-details-marker{display:none}
+.ack summary::before{content:"+";position:absolute;left:0;top:-2px;width:24px;height:24px;display:grid;place-items:center;background:var(--y);color:var(--ink);font-weight:900;font-size:18px}
+.ack[open] summary::before{content:"−"}
+.ack .flist{display:block;margin:22px 0 0;padding:0;list-style:none;counter-reset:f;max-width:880px}
+.ack .flist li{counter-increment:f;display:grid;grid-template-columns:64px 1fr;gap:2px 14px;padding:14px 0;border-top:1px solid var(--line);align-items:baseline}
+.ack .flist li::before{content:counter(f, decimal-leading-zero);grid-row:span 2;font-family:var(--m);font-size:15px;color:var(--mu)}
+.flist b{font-size:17px}
+.flist span{color:#D9D6CE;font-size:15.5px;line-height:1.45}
+.ack .flist li:nth-child(-n+5){padding:20px 0}
+.ack .flist li:nth-child(-n+5)::before{font-family:var(--f);font-size:40px;font-weight:900;font-style:italic;line-height:.9;color:var(--y)}
+.ack .flist li:nth-child(-n+5) b{font-size:23px;font-weight:900;font-style:italic;font-stretch:108%}
+.ack .flist li:nth-child(-n+5) span{font-size:16.5px}
+.soon{margin-top:34px;max-width:880px}
+.soon h3{margin:0 0 4px;font-size:20px;font-weight:900;font-style:italic;font-stretch:110%}
+.soon>p{margin:0 0 14px;color:var(--mu);font-size:15px}
+.soon ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+.ack .soon li{border:1px dashed #4D4A44;padding:14px 16px;display:flex;flex-direction:column;gap:4px;counter-increment:none}
+.ack .soon li::before{content:none}
+.soon li b{font-size:17px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.soon li b i{font-style:normal;font-family:var(--m);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink);background:var(--y);padding:2px 7px}
+.soon li span{color:#D9D6CE;font-size:15.5px;line-height:1.45}
+.ack summary span{font-size:24px;font-weight:900;font-style:italic;font-stretch:115%}
+.ack summary small{color:var(--mu);font-size:15px}
+.ack summary:focus-visible{outline:2px solid var(--y);outline-offset:4px}
+.ack ol{margin:24px 0 0;padding:0;list-style:none;counter-reset:a;display:flex;flex-direction:column}
+.ack li{counter-increment:a;display:grid;grid-template-columns:44px minmax(0,260px) 120px minmax(0,1fr);gap:4px 16px;padding:14px 0;border-top:1px solid var(--line);align-items:baseline}
+.ack li::before{content:counter(a);font-family:var(--m);color:var(--mu);font-size:14px}
+.ak-name b{display:block;font-size:17px}.ak-name span{color:var(--mu);font-size:14px}
+.ak-kind{font-family:var(--m);font-size:12px;color:var(--y);text-transform:uppercase;letter-spacing:.04em}
+.ack li p{margin:0;color:#D9D6CE;font-size:15.5px}
+.ak-more{color:var(--mu);font-size:14px;margin:16px 0 0}
+@media (max-width:820px){.ack li{grid-template-columns:34px minmax(0,1fr)}.ak-kind,.ack li p{grid-column:2}}
+
+@media (max-width:820px){
+  .intro,.split{grid-template-columns:1fr;gap:26px}
+  .intro{padding-bottom:50px}
+  .stage{height:52vh;min-height:320px}
+  .label{left:12px;right:12px;top:auto;bottom:12px;max-width:none}
+  header nav a.hide-s{display:none}
+  .vs-head{display:none}
+  .vs-row{grid-template-columns:1fr;gap:6px;margin-bottom:14px}
+  .vs-row h3{padding:6px 0 2px;font-size:19px}
+  .tag-s{display:flex}
+  .vs-row p::before{display:none}
+  dl.facts{grid-template-columns:1fr}dl.facts dt{border-bottom:0;padding-bottom:2px}dl.facts dd{padding-top:0}
+  section{padding-top:56px;padding-bottom:56px}
+  .pin{width:24px;height:24px;font-size:12px}
+}
+@media (prefers-reduced-motion:reduce){.stage{clip-path:none!important}}
+@media (max-width:480px){header{gap:10px}.lock{gap:6px}.lock svg{width:24px;height:24px}.lock b{font-size:15px}.raze{font-size:9.5px;padding:2px 5px;white-space:nowrap}header nav{gap:12px;font-size:14px}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <a class="lock" href="#top" aria-label="NitroLearn by Raze">
+      <svg width="30" height="30" viewBox="0 0 48 48" aria-hidden="true"><path d="M0 0h36l12 12v36H0z" fill="#0c0c0b"/><path d="M13.4 37.6A15 15 0 1 1 34.6 37.6" fill="none" stroke="#4D4A44" stroke-width="6"/><path d="M13.4 37.6A15 15 0 1 1 35.5 17.4" fill="none" stroke="#FFD60A" stroke-width="6"/><path d="M22 24.7 37 16.1 25.9 29.3z" fill="#F3F1EC"/><circle cx="24" cy="27" r="3.2" fill="#F3F1EC"/><rect x="19" y="39.5" width="10" height="3.5" fill="#FFD60A"/></svg>
+      <b>NITRO<span>LEARN</span></b><span class="raze">by Raze</span>
+    </a>
+    <nav><a class="hide-s" href="#why">Why NitroLearn</a><a href="https://discord.gg/bYP3kYtryg" title="Support on the Vanta Discord server">Support</a><a href="https://github.com/AverageCoderx/NitroLearn">GitHub</a></nav>
+  </header>
+</div>
+
+<div class="stage" id="stage">
+  <picture class="poster"><source media="(max-width:820px)" srcset="hero-tall.webp"><img src="hero-wide.webp" alt="" width="1920" height="640" fetchpriority="high"></picture>
+  <iframe data-src="hero.html" title="Recall XM playing a 1v1 game in the NitroLearn viewer" tabindex="-1"></iframe>
+  <div class="label"><b>This is not a video.</b> It's the NitroLearn viewer running in your browser, replaying a game by Recall XM (blue), a bot that has trained with NitroLearn for about 29 years of simulated play.</div>
+</div>
+
+<div class="wrap">
+  <div class="intro">
+    <h1>Train your own Rocket League bot<mark>.</mark></h1>
+    <div>
+      <p><b class="claim">The fastest and easiest-to-use public framework for training Rocket League bots.</b> NitroLearn trains a bot on your PC and lets you watch every game it plays in 3D. When it's good, one button turns it into an RLBot bot you can play against.</p>
+      <!-- At release: href="https://github.com/AverageCoderx/NitroLearn/releases/latest/download/NitroLearn-Setup.exe",
+           <strong>Download for Windows</strong><small>NitroLearn-Setup.exe · Windows 10 or 11</small> -->
+      <a class="dl" href="https://discord.gg/bYP3kYtryg">
+        <strong>Coming soon</strong><small>Join the Vanta Discord to hear when it's out</small>
+      </a>
+      <div class="fine linux">On Linux: coming with the release. Then you download the source code (.tar.gz) from the latest release, unpack it, and run <code>bash install.sh</code> in its folder.</div>
+      <!-- At publish, with the Windows button: replace the Linux line above with
+      <div class="fine linux">On Linux: download the source code (.tar.gz) from the <a href="https://github.com/AverageCoderx/NitroLearn/releases/latest">latest release</a>, unpack it, and run <code>bash install.sh</code> in its folder.</div> -->
+      <div class="fine">Free for non-commercial use. Bots are for offline training and RLBot matches only.</div>
+    </div>
+  </div>
+
+  <section id="why">
+    <h2>Why NitroLearn</h2>
+    <p class="lead">Other Rocket League bot frameworks just give you the source code and leave everything else up to you. NitroLearn is the fastest and easiest to use: a complete app. Here is the difference at each step.</p>
+    <div class="vs">
+      <div class="vs-head" aria-hidden="true"><span></span><div class="h-other"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"/></svg>Other frameworks</div><div class="h-us"><svg width="22" height="22" viewBox="0 0 48 48" aria-hidden="true"><path d="M0 0h36l12 12v36H0z" fill="#141413"/><path d="M13.4 37.6A15 15 0 1 1 34.6 37.6" fill="none" stroke="#4D4A44" stroke-width="6"/><path d="M13.4 37.6A15 15 0 1 1 35.5 17.4" fill="none" stroke="#FFD60A" stroke-width="6"/><path d="M22 24.7 37 16.1 25.9 29.3z" fill="#F3F1EC"/><circle cx="24" cy="27" r="3.2" fill="#F3F1EC"/></svg>NitroLearn</div></div>
+      <div class="vs-row"><h3>Speed</h3>
+        <div class="vs-other"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"/></svg>Other frameworks</span><p>Slower. GigaLearn, the fastest we know of, trains at about a quarter of NitroLearn's speed on the same network and PC.</p></div>
+        <div class="vs-us"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="square"/></svg>NitroLearn</span><p>The fastest public framework: about 3.8 times GigaLearn's training speed on the same network, measured on our test PC.<a class="fn" href="#speed-note">*</a></p></div></div>
+      <div class="vs-row"><h3>Setting up</h3>
+        <div class="vs-other"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"/></svg>Other frameworks</span><p>Install Python, PyTorch and build tools yourself, then dig the arena files out of your game.</p></div>
+        <div class="vs-us"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="square"/></svg>NitroLearn</span><p>One installer brings its own Python, PyTorch and the arena files, then checks your PC and says what to fix.</p></div></div>
+      <div class="vs-row"><h3>Training</h3>
+        <div class="vs-other"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"/></svg>Other frameworks</span><p>Edit code and config files, then start it from a terminal.</p></div>
+        <div class="vs-us"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="square"/></svg>NitroLearn</span><p>An app: make a bot in four steps, start and stop it, and change settings that are each explained in plain words.</p></div></div>
+      <div class="vs-row"><h3>Rewards</h3>
+        <div class="vs-other"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"/></svg>Other frameworks</span><p>Write reward code and wire it in yourself.</p></div>
+        <div class="vs-us"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="square"/></svg>NitroLearn</span><p>Pick rewards from a list, set their weights and group them in folders. Changes wait until you press Apply.</p></div></div>
+      <div class="vs-row"><h3>Watching</h3>
+        <div class="vs-other"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"/></svg>Other frameworks</span><p>Stare at a reward graph, or load replays into another program.</p></div>
+        <div class="vs-us"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="square"/></svg>NitroLearn</span><p>A 3D viewer built in: watch the newest save play live while it trains, with ball cam and car cam set like the game, and see what the bot was thinking.</p></div></div>
+      <div class="vs-row"><h3>Is it better?</h3>
+        <div class="vs-other"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"/></svg>Other frameworks</span><p>Guess from the graphs.</p></div>
+        <div class="vs-us"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="square"/></svg>NitroLearn</span><p>Play the new save against an old one and get a plain answer ("clearly better" or "no clear difference"), and test single skills: aerials, saves, shots, landing.</p></div></div>
+      <div class="vs-row"><h3>Growing it</h3>
+        <div class="vs-other"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"/></svg>Other frameworks</span><p>Start over for a bigger network or a new mode.</p></div>
+        <div class="vs-us"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="square"/></svg>NitroLearn</span><p>Make a bigger network from your bot without starting over, or start a new bot from one you trained.</p></div></div>
+      <div class="vs-row"><h3>Playing it</h3>
+        <div class="vs-other"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"/></svg>Other frameworks</span><p>Write your own RLBot bot around it.</p></div>
+        <div class="vs-us"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="square"/></svg>NitroLearn</span><p>A couple of clicks make an RLBot v5 bot. It needs no Python and no graphics card to play.</p></div></div>
+      <div class="vs-row vs-last"><h3>Updates</h3>
+        <div class="vs-other"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"/></svg>Other frameworks</span><p>Hope your old runs still load.</p></div>
+        <div class="vs-us"><span class="tag-s"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="square"/></svg>NitroLearn</span><p>From version 1.0 on, a bot you train keeps resuming, exporting and playing the same in every later version.</p></div></div>
+    </div>
+    <p class="note" id="speed-note">* How the speed was measured (13 November 2026): one PC with an RTX 2060 SUPER and 18 processor threads, 1v1 games, the same networks on both (policy and critic 3&times;512, no shared layers), GigaLearn's observation and its 90 actions on both, each framework at its fastest settings. Training steps a second, collecting and learning together, best of 3 runs: GigaLearn 150,375 (FP32, 1,024 games); NitroLearn 569,957 (half precision, 8,192 games). NitroLearn was measured with its development version, which can use GigaLearn's observation so both saw exactly the same game.</p>
+  </section>
+
+  <section>
+    <div class="split">
+      <div>
+        <h2>See what it's thinking.</h2>
+        <p>Pick any car in a replay and the viewer shows what the bot thought at that moment: how good it thinks things look, how sure it is of its move, and the exact buttons it pressed.</p>
+        <p>That's how you find out why it keeps missing the ball, before you spend another night training it.</p>
+      </div>
+      <figure class="think" style="margin:0"><img src="thinking.png" alt="The viewer's panel for Blue 1: speed, boost, how good the moment looks (+0.14), how sure the bot is of its move (2%), randomness (74%), and its stick and buttons." width="464" height="568"></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>No terminal needed.</h2>
+    <p style="color:#D9D6CE;max-width:60ch;margin:0">Everything happens in the NitroLearn app. This is its first screen.</p>
+    <div class="shot">
+      <img src="garage.png" alt="The NitroLearn app: a getting-set-up checklist, two bots with their steps and saves, and Carry on buttons." width="1440" height="470">
+      <span class="pin" style="left:1.4%;top:31.9%">1</span>
+      <span class="pin" style="left:1.4%;top:56.8%">2</span>
+      <span class="pin" style="left:98.6%;top:56.8%">3</span>
+    </div>
+    <ol class="pins">
+      <li>A checklist walks you through setup: it checks your PC, finds the arena files and asks where RLBot is.</li>
+      <li>Each bot gets a row with its race number, steps and saves.</li>
+      <li>Training stops and carries on where it left off. Every change waits until you press Apply.</li>
+    </ol>
+  </section>
+
+  <section id="before">
+    <h2>Before you download</h2>
+    <dl class="facts">
+      <dt>What you need</dt><dd><ul class="needs"><li>Windows 10 or 11, 64-bit (Linux works too).</li><li>An NVIDIA graphics card, 6 GB or more, is recommended. AMD and Intel cards aren't used: without an NVIDIA card it trains on the processor, many times slower.</li><li>About 10 GB of disk space, and about 3.5 GB to download while installing.</li><li>Rocket League (Epic or Steam) and RLBot v5, to play your bot.</li></ul></dd>
+      <dt>Help</dt><dd>Stuck, or found a bug? Ask in the <a href="https://discord.gg/bYP3kYtryg">Vanta Discord server</a>, where NitroLearn gets its support.</dd>
+      <dt>Windows warning</dt><dd>Windows may say it "protected your PC", because the installer isn't signed yet. Click <b>More info</b>, then <b>Run anyway</b>.</dd>
+      <dt>Fair play</dt><dd>Use your bots offline and in RLBot matches only. Never use one online against real players.</dd>
+      <dt>Psyonix and Epic</dt><dd>NitroLearn isn't made or endorsed by Psyonix or Epic Games. If you work there and want something changed, join <a href="https://discord.gg/heFPmxNzz8">this Discord server</a> and mention <b>@gamingshorts</b> there, and we'll sort it out. (Please don't send a friend request: Raze gets a ton of friend and message requests and won't see yours.)</dd>
+      <dt>Licence</dt><dd>Free for non-commercial use under the PolyForm Noncommercial licence 1.0.0. The code is on <a href="https://github.com/AverageCoderx/NitroLearn">GitHub</a>.</dd>
+      <dt>Updates</dt><dd>The app can update itself, or you can run <code>nitro update</code>.</dd>
+    </dl>
+  </section>
+
+  <details class="ack feats">
+    <summary><span>All features</span><small>Everything you can use to train bots, biggest first, and what's coming next. Open to see it.</small></summary>
+    <ol class="flist">
+        <li><b>The fastest public trainer</b><span>A Rust core on the RocketSim simulator, learning on your graphics card.</span></li>
+        <li><b>A complete app</b><span>Make, train, change, watch and export bots without a terminal or a line of code.</span></li>
+        <li><b>One installer</b><span>Brings its own Python, PyTorch for your graphics card and the arena files, then checks your PC and says how to fix anything wrong.</span></li>
+        <li><b>A 3D match viewer, built in</b><span>Broadcast, Ball cam, Car cam, Top and Free cameras. Watch the newest save play live while it trains.</span></li>
+        <li><b>See what the bot is thinking</b><span>How good each moment looks to it, how sure it is of its move, how random it is, and its controls, with a timeline of goals, touches and spotted mechanics.</span></li>
+        <li><b>Over 80 rewards, picked from a list</b><span>Each says what it pays for. Weights, settings, folders and search; switch one off without losing it.</span></li>
+        <li><b>One click to RLBot v5</b><span>Makes a bot RLBot can play in real matches. It needs no Python and no graphics card.</span></li>
+        <li><b>Learn from your own replays first</b><span>The bot copies how the players in your replays play before training starts, even from thousands of replays.</span></li>
+        <li><b>Play against its past versions</b><span>Self-play against saved earlier versions, with a rating that shows progress.</span></li>
+        <li><b>Is it better?</b><span>Play the new save against an old one and get a plain answer, with luck accounted for.</span></li>
+        <li><b>What each reward really pays</b><span>Live shares of all the reward paid, with a warning when one reward is being farmed.</span></li>
+        <li><b>Try rewards before training</b><span>Run a bot with a set of rewards, learning nothing, and see what each would pay.</span></li>
+        <li><b>Settings in plain words</b><span>Every setting explained, basics first. Changes wait for Apply, and applying mid-training loses nothing.</span></li>
+        <li><b>Start from a bot you trained</b><span>Make a new bot that starts with everything another one learned.</span></li>
+        <li><b>Bigger networks without starting over</b><span>Widen a bot's network and it plays as before, then keeps learning.</span></li>
+        <li><b>Skill check</b><span>Six drills (touches, landing, boost, shots, saves, aerials), each scored against a bar.</span></li>
+        <li><b>Compare two settings</b><span>Train both on a practice task and find out which learns better, allowing for luck.</span></li>
+        <li><b>1v1, 2v2 and 3v3</b><span>Train any size, or one bot that plays all three.</span></li>
+        <li><b>A richer view of the game</b><span>In the presets: on the shooting drill, bots scored 88% of shots instead of 53%.</span></li>
+        <li><b>Attention networks (new)</b><span>For 2v2 and 3v3: every other car is looked at the same way, whatever its place.</span></li>
+        <li><b>Charts of what the bots do</b><span>Touches, time in the air, speed, boost and more, beside the rewards. Weights & Biases if you want it.</span></li>
+        <li><b>Your own rewards</b><span>Write them in Rust and build them into NitroLearn with one button. Save and load reward sets.</span></li>
+        <li><b>Train on a rented computer</b><span>Pack a bot into one file, train it on a bigger machine, bring it back.</span></li>
+        <li><b>Updates that don't break bots</b><span>From version 1.0, a bot keeps resuming, exporting and playing the same in every later version.</span></li>
+        <li><b>Cameras set like the game</b><span>Ball cam and car cam with field of view, distance, height, angle and stiffness.</span></li>
+        <li><b>Share a game</b><span>Record 30 seconds to 5 minutes and pass it on as one page that works offline.</span></li>
+        <li><b>Search everything</b><span>Ctrl+K finds bots, pages, settings and actions.</span></li>
+        <li><b>Runs where you are</b><span>Windows 10 and 11, and Linux. Works without an NVIDIA card, but many times slower.</span></li>
+        <li><b>Commands too</b><span>Every action has a command, and the everyday jobs have double-click shortcuts, if you prefer them to the app.</span></li>
+        <li><b>Nothing listening</b><span>NitroLearn itself never opens a network port (only the optional Weights &amp; Biases helper uses one, on your PC only).</span></li>
+    </ol>
+    <div class="soon">
+      <h3>In development</h3>
+      <p>Coming in updates after the first release.</p>
+      <ul>
+        <li><b>Search <i>In development</i></b><span>While it plays, the bot tries its most likely moves in simulated games about a second ahead, a next-goal predictor trained on real replays scores how each one turns out, and the bot picks the best.</span></li>
+        <li><b>Multi-model bots <i>In development</i></b><span>Pick several of your bots and let a selector choose which one drives at each moment, with all of them trained together.</span></li>
+        <li><b>Your own observations and action sets <i>Planned</i></b><span>Write what the bot sees and which moves it can make, the way you can write your own rewards today.</span></li>
+      </ul>
+    </div>
+  </details>
+
+  <details class="ack">
+    <summary><span>Acknowledgements</span><small>NitroLearn is written from scratch, standing on a lot of other people's work. Open to see who, most used first.</small></summary>
+    <ol>
+        <li><div class="ak-name"><b>RocketSim</b><span>ZealanL, VirxEC and contributors</span></div><span class="ak-kind">library</span><p>The simulator every training game runs in, its real-game recordings for starting games from real situations, and the physics constants. Their viewers, RocketSimVis and RLViser, showed what a match viewer should show. (RocketSim builds on Bullet Physics by Erwin Coumans.)</p></li>
+        <li><div class="ak-name"><b>Rolv Arild Braaten (Rolv)</b><span>Rocket Learn with Daniel Downs, Necto, replicar, rlgym-tools</span></div><span class="ak-kind">code and ideas</span><p>replicar, the library that turns real replays into training games. From Rocket Learn: the rated pool of past versions to play against, how opponents are matched, stat tracking. From Necto: three rewards, observation ideas, and starting most games from real-game situations. One reward from rlgym-tools.</p></li>
+        <li><div class="ak-name"><b>Kue (Kuenec)</b><span>GGL Guide</span></div><span class="ak-kind">ideas</span><p>Setting how far ahead the bot looks as a half-life in seconds (the guide's formula), scaling rewards when the decision rate changes, and the warning when one reward is being farmed.</p></li>
+        <li><div class="ak-name"><b>RLGym and rlgym-sim</b><span>Lucas Emery, Aech (AechPro) and contributors; rlgym-sim by Aech</span></div><span class="ak-kind">code</span><p>The 90-action table, seven built-in rewards and two from rlgym-sim (adapted, Apache-2.0), shared game constants, and ideas for what the bot sees.</p></li>
+        <li><div class="ak-name"><b>GigaLearn and the RLGym-PPO guide</b><span>ZealanL</span></div><span class="ak-kind">code and ideas</span><p>Masking moves that can't be used, measuring randomness against the number of moves, scaling rewards by how much returns vary. Four rewards from the guide: staying on the ground, speed toward the ball, high touches and long air touches.</p></li>
+        <li><div class="ak-name"><b>Pulsar</b><span>its authors</span></div><span class="ak-kind">ideas</span><p>The design of the goal-and-concede setup: a shared trunk, a bigger value side with several value heads, and its learning signals. Also the warning that training every game size at once can stall.</p></li>
+        <li><div class="ak-name"><b>RLBot</b><span>RLBot contributors</span></div><span class="ak-kind">library</span><p>The connection between your bot and the game (rust-interface), and RLBot v5 itself, which plays your bot in Rocket League.</p></li>
+        <li><div class="ak-name"><b>Opti</b><span>Kaiyotech</span></div><span class="ak-kind">code and ideas</span><p>Two rewards (aerial distance, simple flip reset) and what the bot sees about the ball and the other cars.</p></li>
+        <li><div class="ak-name"><b>RLMind</b><span>corresation</span></div><span class="ak-kind">ideas</span><p>Counting what bots do in play (flips, aerials, resets), the viewer's ball height marker, and its choice of cameras.</p></li>
+        <li><div class="ak-name"><b>rishieissocool's rewards</b><span>rishieissocool</span></div><span class="ak-kind">code</span><p>Three rewards: cradling the ball, landing recovery and forward speed.</p></li>
+        <li><div class="ak-name"><b>three.js</b><span>the three.js authors</span></div><span class="ak-kind">library</span><p>Draws the 3D match viewer.</p></li>
+        <li><div class="ak-name"><b>Lucy-SKG</b><span>Moschopoulos et al. (paper)</span></div><span class="ak-kind">ideas</span><p>Rewards that only pay when all their parts are met, and the car-ball-goal alignment term.</p></li>
+        <li><div class="ak-name"><b>Muon</b><span>Keller Jordan</span></div><span class="ak-kind">ideas</span><p>An optional optimizer for the networks' hidden layers (the GCO starter uses it), written from its public description.</p></li>
+        <li><div class="ak-name"><b>apollo-bot</b><span>redd-rl</span></div><span class="ak-kind">code</span><p>Nine rewards: aerials, boost pad pickup, matching dribble speed, goal speed, kickoffs, wall play, possession, speed and hit force.</p></li>
+        <li><div class="ak-name"><b>walldashcoach</b><span>samuelkassi</span></div><span class="ak-kind">code (MIT)</span><p>The wall dash reward's rules: what counts as a made dash, its timing and flip angle, the speed it gains, wall types and chains.</p></li>
+        <li><div class="ak-name"><b>Smaller ideas</b></div><span class="ak-kind">ideas</span><p>fredrik and aether6837 (one reward each), buta-ppo (shuffling car order), EnvPool (pinning threads), Seer (real-game starts), OpenAI Five (team spirit), Gymnasium (CartPole, for the learning check).</p></li>
+        <li><div class="ak-name"><b>Tools and libraries</b></div><span class="ak-kind">library</span><p>PyTorch, NumPy, pywebview, Weights &amp; Biases, pyarrow, tomlkit, uv and python-build-standalone (Astral), Inno Setup, and the Archivo and JetBrains Mono fonts.</p></li>
+    </ol>
+    <p class="ak-more">Full details, with licences and file names, come with NitroLearn in its CREDITS.md file.</p>
+  </details>
+
+  <footer>
+    <span class="lock"><b>NITRO<span>LEARN</span></b><span class="raze">by Raze</span></span>
+    <span>Rocket League is a trademark of Psyonix. This site uses no cookies and no trackers.</span>
+  </footer>
+</div>
+
+<script>
+// The replay: a still of its first moment shows at once; the viewer loads once the page is ready and the
+// replay is in view, and takes over from the still when its first picture is drawn. It pauses out of view.
+(() => {
+  const stage = document.getElementById("stage"), frame = stage.querySelector("iframe");
+  const label = stage.querySelector(".label");
+  let started = false, shown = true;
+  const send = (message) => {
+    try {
+      if (frame.contentWindow) frame.contentWindow.postMessage(message, location.origin);
+    } catch {
+      // A page opened from a file: nothing to tell.
+    }
+  };
+  // The caption covers a strip of the replay on narrow screens: the camera keeps the play clear of it.
+  const covered = () => {
+    const box = stage.getBoundingClientRect(), tag = label.getBoundingClientRect();
+    if (tag.width < box.width * 0.6) return send({ nitro: "safe", top: 0, bottom: 0 });
+    const low = tag.top - box.top > box.height / 2;
+    send({ nitro: "safe", top: low ? 0 : tag.bottom - box.top, bottom: low ? box.bottom - tag.top : 0 });
+  };
+  const start = () => {
+    if (started || !shown) return;
+    started = true;
+    frame.src = frame.dataset.src;
+  };
+  addEventListener("message", (event) => {
+    if (event.source !== frame.contentWindow || event.origin !== location.origin) return;
+    if (!event.data || event.data.nitro !== "hero-drawn") return;
+    covered();
+    if (!shown) send({ nitro: "pause" });
+    stage.classList.add("live");
+  });
+  frame.addEventListener("load", () => started && covered());
+  addEventListener("resize", () => started && covered(), { passive: true });
+  new IntersectionObserver(([entry]) => {
+    shown = entry.isIntersecting;
+    if (started) send({ nitro: shown ? "play" : "pause" });
+    else if (shown && document.readyState === "complete") start();
+  }).observe(stage);
+  const later = window.requestIdleCallback || ((fn) => setTimeout(fn, 200));
+  const ready = () => later(start, { timeout: 1500 });
+  if (document.readyState === "complete") ready();
+  else addEventListener("load", ready, { once: true });
+})();
+
+// The one scroll effect: the replay narrows into a framed window as the page moves past it.
+(() => {
+  const stage = document.getElementById("stage");
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  let queued = false;
+  const set = () => {
+    queued = false;
+    const k = Math.min(1, Math.max(0, window.scrollY / (stage.offsetHeight * 0.8)));
+    stage.style.setProperty("--inset", (k * Math.min(64, innerWidth * 0.05)).toFixed(1) + "px");
+  };
+  addEventListener("scroll", () => { if (!queued) { queued = true; requestAnimationFrame(set); } }, { passive: true });
+  set();
+})();
+</script>
+</body>
+</html>

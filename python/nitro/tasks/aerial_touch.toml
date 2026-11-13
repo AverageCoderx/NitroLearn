@@ -1,0 +1,32 @@
+# Practice task: touch a ball in the air. A lone car with a full tank waits on its wheels 800-2500 units from
+# a ball hanging 400-1000 units up; the episode ends when the car touches the ball, is cut off when the ball
+# comes down to the floor, and lasts at most 6 seconds. Measured by touch rate and time to touch
+# (nitro.tasks), never by the reward. Provisional until its pilot sizes it.
+
+[env]
+opponents = false
+num_arenas = 512
+
+[terminals]
+no_touch_seconds = 0
+max_episode_seconds = 6
+end_on_touch = true
+truncate_on_ball_landing = 1
+
+[[rewards]]
+name = "touch_ball"
+weight = 10
+
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 1
+
+[[rewards]]
+name = "face_ball"
+weight = 0.1
+
+[[state_setters]]
+name = "aerial_ball"
+min_height_uu = 400
+max_height_uu = 1000
+max_ball_speed = 500

@@ -1,0 +1,18 @@
+#:schema https://rlbot.org/schemas/agent.json
+# RLBot v5 bot settings, written by `nitro export`. RLBot reads this file to list and start the bot.
+
+[settings]
+name = "v1-attention"
+agent_id = "nitrolearn/v1-attention"
+loadout_file = "loadout.toml"
+# The bot program and the policy file next to this file; RLBot runs the command from this folder.
+run_command = "nitro_bot.exe policy.nwt"
+run_command_linux = "./nitro_bot policy.nwt"
+# One bot process drives every car RLBot gives it (needed for 2v2 and 3v3 bots).
+hivemind = true
+
+[details]
+description = "Trained with NitroLearn: run v1-attention, 1,280 agent steps"
+developer = "NitroLearn"
+language = "rust"
+tags = ["1v1"]

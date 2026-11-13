@@ -1,0 +1,28 @@
+/* The pending-changes bar: black in both themes, a hazard stripe along its top (changes wait for the user);
+   the changed settings by name, Discard, and Apply. The Apply dialog lists the same changes. */
+#pending { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; flex-direction: column; background: var(--band); color: var(--band-text); }
+#pending::before { content: ""; flex: none; height: 6px; background: var(--hazard); }
+#pending > .row { padding: 10px 28px; gap: 8px 14px; }
+#pending .count { font-size: 19px; white-space: nowrap; }
+#pending .what { flex: 1 1 200px; min-width: 0; color: var(--band-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pending .btn { color: var(--band-text); }
+#pending .btn::before { background: var(--band-raised); }
+#pending .btn:hover::before { background: var(--band-rule); }
+#pending .btn.primary { color: var(--on-yellow); }
+#pending .btn.primary::before { background: var(--yellow); }
+#pending .btn.ghost { color: var(--band-dim); }
+#pending .btn.ghost::before { background: transparent; }
+#pending .btn.link { color: var(--yellow); background: none; }
+#pending .iconbtn { color: var(--band-dim); }
+#pending .iconbtn:hover { background: var(--band-raised); color: var(--band-text); }
+#pending .list { display: flex; flex-direction: column; max-height: 30vh; overflow: auto; padding: 0 28px 10px; }
+#pending .change { display: flex; gap: 10px 14px; align-items: center; min-height: 38px; padding: 2px 0; border-top: 1px solid var(--band-raised); font-size: 13px; }
+#pending .change .p, .apply-list .p { flex: 1 1 auto; min-width: 0; display: flex; gap: 2px 10px; align-items: baseline; flex-wrap: wrap; }
+#pending .change .words, .apply-list .words { flex: 1 1 auto; min-width: 0; }
+#pending .change .k { font-size: 11.5px; color: var(--band-dim); }
+.apply-list .k { font-size: 11.5px; color: var(--dim); }
+#pending .change .v, .apply-list .v { overflow-wrap: anywhere; text-align: right; }
+.apply-list { display: flex; flex-direction: column; max-height: 40vh; overflow: auto; border-top: 3px solid var(--text); }
+.apply-list > div { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 13.5px; }
+.apply-list > div:last-child { border-bottom: 0; }
+@media (max-width: 1000px) { #pending > .row, #pending .list { padding-left: 16px; padding-right: 16px; } }

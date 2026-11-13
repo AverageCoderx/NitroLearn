@@ -1,0 +1,36 @@
+/* The Garage look's colours and type, dark (the default) and light. One loud colour, workshop yellow, the
+   same in both themes; blue and orange are for the two teams and chart series only. Text pairs keep a
+   contrast of 4.5 to 1 or better (tests/test_dashboard_look.py checks them). */
+:root, :root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #171614; --panel: #1F1E1B; --raised: #292724; --block: #33312D; --rule: #35332F; --rule2: #4D4A44;
+  --text: #F3F1EC; --dim: #ACA9A1;
+  --yellow: #FFD60A; --on-yellow: #141413;
+  --link: #FFD60A; --link-mark: transparent;
+  --strong: #F3F1EC; --on-strong: #171614;
+  --blue: #5B97FF; --orange: #FF8A2B;
+  --good: #3CCB72; --good-text: #3CCB72; --on-good: #06200F;
+  --bad: #FF6557; --bad-text: #FF6557; --on-bad: #2A0906;
+  --field-rule: #77746B; --code: #0F0F0E; --shade: rgba(0, 0, 0, 0.66);
+  --band: #0C0C0B;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #E9E8E4; --panel: #FFFFFF; --raised: #F2F1ED; --block: #DEDCD6; --rule: #D0CEC7; --rule2: #A9A69E;
+  --text: #161513; --dim: #5C5A54;
+  --link: #161513; --link-mark: #FFD60A;
+  --strong: #161513; --on-strong: #FFFFFF;
+  --blue: #1B58D6; --orange: #C24E00;
+  --good: #0B7F43; --good-text: #09713B; --on-good: #FFFFFF;
+  --bad: #C22B1D; --bad-text: #C22B1D; --on-bad: #FFFFFF;
+  --field-rule: #77746B; --code: #F2F1ED; --shade: rgba(22, 21, 19, 0.5);
+  --band: #141413;
+}
+/* The top band, the pending-changes bar, dialog titles and toasts are black in both themes. */
+:root {
+  --band-text: #F3F1EC; --band-dim: #ACA9A1; --band-raised: #292724; --band-rule: #4D4A44;
+  --lean: skewX(-10deg);
+  --hazard: repeating-linear-gradient(-45deg, #FFD60A 0 10px, #141413 10px 20px);
+  --sans: "Archivo", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", Consolas, ui-monospace, monospace;
+}

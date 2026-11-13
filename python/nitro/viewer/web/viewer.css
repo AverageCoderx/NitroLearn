@@ -1,0 +1,383 @@
+/* The viewer fills its host element; the host page gives that element a size. The look is NitroLearn's:
+   asphalt panels with square corners, one loud yellow for what is on, blocks that lean forward, number
+   plates with a cut corner; wide heavy italics for names, narrow capitals for labels, mono for figures. */
+.nv-page { margin: 0; height: 100vh; background: #141413; overflow: hidden; }
+.nv-root { position: relative; width: 100%; height: 100%; overflow: hidden; background: #141413; color: #F3F1EC;
+  font: 14px/1.4 "Archivo", system-ui, sans-serif; outline: none; user-select: none; -webkit-user-select: none;
+  --nv-asphalt: #141413; --nv-chalk: #F3F1EC; --nv-dim: #ACA9A1; --nv-rule: #35332F; --nv-yellow: #FFD60A;
+  --nv-blue: #5B97FF; --nv-orange: #FF8A2B; --nv-good: #3CCB72; --nv-bad: #FF6557;
+  --nv-panel: rgba(20, 20, 19, 0.86); --nv-raised: #2A2926; --nv-lean: skewX(-10deg); --nv-bar: 0px; }
+.nv-root *, .nv-root *::before, .nv-root *::after { box-sizing: border-box; }
+.nv-root [hidden] { display: none !important; }
+.nv-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* A plain message over everything, when the page cannot show its game. */
+.nv-notice { position: absolute; inset: 0; z-index: 50; margin: 0; padding: 0 12%; display: grid; place-items: center;
+  background: var(--nv-asphalt); color: var(--nv-chalk); font-size: 18px; text-align: center; }
+.nv-root.nv-idle, .nv-root.nv-idle .nv-canvas { cursor: none; }
+
+/* Type. */
+.nv-score-team b, .nv-card-name, .nv-plate, .nv-wordmark, .nv-help-title, .nv-end-text { font-stretch: 125%;
+  font-weight: 900; font-style: italic; }
+.nv-score-name, .nv-tool, .nv-cameras button, .nv-qualities button, .nv-think-title, .nv-menu-title, .nv-help-group,
+.nv-state, .nv-mark, .nv-lamp, .nv-boost-label, .nv-live-badge, .nv-credit, .nv-golive, .nv-hint button, .nv-show,
+.nv-big, .nv-menu-action, .nv-tag-name { font-stretch: 75%; font-weight: 700; font-style: normal; font-size: 11.5px;
+  text-transform: uppercase; letter-spacing: 0.09em; }
+.nv-clock, .nv-time, .nv-card-speed, .nv-boost-number, .nv-meter b, .nv-share b, .nv-speeds button, .nv-timeline-peek,
+.nv-tag-boost, .nv-tag-speed, .nv-quality-info, .nv-root kbd { font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums; font-stretch: 100%; letter-spacing: 0; }
+
+/* Buttons and shared pieces. A leaning block is drawn behind its content, so the content stays upright. */
+:where(.nv-root) button { font: inherit; color: inherit; background: none; border: 0; margin: 0; padding: 0;
+  cursor: pointer; }
+.nv-tool, .nv-round, .nv-seg button, .nv-golive, .nv-hint button, .nv-show, .nv-big, .nv-state, .nv-mark, .nv-lamp,
+.nv-live-badge, .nv-credit, .nv-tag, .nv-score-team b { position: relative; isolation: isolate; }
+.nv-tool::before, .nv-round::before, .nv-seg button::before, .nv-golive::before, .nv-hint button::before,
+.nv-show::before, .nv-big::before, .nv-state::before, .nv-mark::before, .nv-lamp::before, .nv-live-badge::before,
+.nv-credit::before, .nv-tag::before, .nv-score-team b::before { content: ""; position: absolute; inset: 0; z-index: -1;
+  background: var(--nv-block, var(--nv-panel)); transform: var(--nv-lean); }
+.nv-root button:focus-visible, .nv-timeline:focus-visible { outline: 2px solid var(--nv-yellow); outline-offset: 2px; }
+.nv-root .nv-tool:focus-visible, .nv-root .nv-round:focus-visible, .nv-root .nv-seg button:focus-visible,
+.nv-root .nv-golive:focus-visible, .nv-root .nv-hint button:focus-visible, .nv-root .nv-show:focus-visible,
+.nv-root .nv-big:focus-visible { outline: none; }
+.nv-tool:focus-visible::before, .nv-round:focus-visible::before, .nv-seg button:focus-visible::before,
+.nv-golive:focus-visible::before, .nv-hint button:focus-visible::before, .nv-show:focus-visible::before,
+.nv-big:focus-visible::before { outline: 2px solid var(--nv-yellow); outline-offset: 2px; }
+.nv-root svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: square; stroke-linejoin: miter; }
+.nv-root svg .nv-solid { fill: currentColor; }
+.nv-root svg text { fill: currentColor; stroke: none; font: 700 8.5px "JetBrains Mono", ui-monospace, monospace;
+  text-anchor: middle; }
+.nv-root kbd { display: inline-block; min-width: 22px; padding: 1px 6px; background: var(--nv-raised);
+  border: 1px solid var(--nv-rule); font-size: 11.5px; line-height: 1.5; font-weight: 500; text-align: center; }
+
+.nv-ui { position: absolute; inset: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "top top top" "blue middle orange" "bar bar bar";
+  pointer-events: none; }
+.nv-ui button, .nv-bar, .nv-menu, .nv-camset, .nv-help, .nv-hint, .nv-card, .nv-think, .nv-clock, .nv-minimap { pointer-events: auto; }
+.nv-fades, .nv-hides { transition: opacity 0.35s ease; }
+.nv-idle .nv-fades { opacity: 0; pointer-events: none; }
+.nv-idle .nv-fades * { pointer-events: none; }
+.nv-hidden .nv-hides, .nv-hidden .nv-tools, .nv-hidden .nv-logo { display: none; }
+
+/* The top: logo, score and clock, title, tools. */
+.nv-top { grid-area: top; position: relative; display: flex; justify-content: center; padding: 10px 12px 8px;
+  min-height: 60px; }
+.nv-logo { position: absolute; top: 10px; left: 12px; display: flex; align-items: center; gap: 9px; height: 44px;
+  padding: 0 13px 0 9px; background: var(--nv-panel); }
+.nv-root .nv-logo svg { width: 26px; height: 26px; stroke: none; stroke-linecap: butt; }
+.nv-wordmark { font-size: 17px; font-weight: 300; letter-spacing: 0.01em; text-transform: uppercase; line-height: 1; }
+.nv-wordmark b { font-weight: 900; }
+.nv-credit { padding: 2px 8px 1px; color: var(--nv-asphalt); font-size: 10px; --nv-block: var(--nv-yellow); }
+.nv-nologo .nv-logo { display: none; }
+.nv-scoreboard { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.nv-score { display: flex; align-items: stretch; height: 44px; padding: 0 6px; background: var(--nv-panel); }
+.nv-score-team { display: flex; align-items: center; gap: 12px; padding: 0 8px; }
+.nv-score-name { font-size: 12px; }
+.nv-score-team b { display: flex; align-items: center; justify-content: center; align-self: stretch; min-width: 50px;
+  padding: 0 10px; color: var(--nv-asphalt); font-size: 27px; line-height: 1; }
+.nv-score-blue b { --nv-block: var(--nv-blue); }
+.nv-score-orange b { --nv-block: var(--nv-orange); }
+.nv-clock { display: flex; align-items: center; justify-content: center; min-width: 78px; padding: 0 10px; font-size: 18px;
+  font-weight: 500; }
+.nv-pulse { animation: nv-pulse 0.9s ease-out; }
+@keyframes nv-pulse { 0% { transform: scale(1.7); } 100% { transform: scale(1); } }
+/* On a panel of its own, so the title and the line under it read on the bright parts of the arena too. */
+.nv-title { display: flex; align-items: center; gap: 9px; max-width: 100%; padding: 3px 10px; font-size: 12px;
+  color: var(--nv-dim); background: var(--nv-panel); white-space: nowrap; }
+.nv-title-text { color: var(--nv-chalk); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.nv-subtitle { overflow: hidden; text-overflow: ellipsis; }
+.nv-live-badge { padding: 1px 8px 0; color: var(--nv-dim); font-size: 10.5px; text-shadow: none; --nv-block: var(--nv-raised); }
+.nv-live-badge.nv-live-now { color: var(--nv-asphalt); --nv-block: var(--nv-yellow); }
+.nv-root .nv-golive { padding: 2px 10px 1px; color: var(--nv-asphalt); text-shadow: none; --nv-block: var(--nv-chalk); }
+.nv-tools { position: absolute; top: 10px; right: 14px; display: flex; gap: 5px; }
+.nv-root .nv-tool { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 36px;
+  min-width: 40px; padding: 0 11px; }
+.nv-root .nv-tool:hover, .nv-root .nv-tool[aria-expanded="true"] { --nv-block: var(--nv-raised); }
+.nv-root .nv-close { color: var(--nv-asphalt); --nv-block: var(--nv-chalk); }
+.nv-root .nv-close:hover { --nv-block: #fff; }
+
+/* The cars' cards, a column per team: flat blocks with a rule between them. */
+.nv-team { display: flex; flex-direction: column; width: 250px; min-height: 0; padding: 2px 10px 10px; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--nv-rule) transparent; }
+.nv-team-blue { grid-area: blue; }
+.nv-team-orange { grid-area: orange; }
+.nv-card { flex: none; background: var(--nv-panel); border-left: 3px solid transparent; --nv-team: var(--nv-blue); }
+.nv-team-orange .nv-card { border-left: 0; border-right: 3px solid transparent; --nv-team: var(--nv-orange); }
+.nv-card + .nv-card { border-top: 1px solid var(--nv-rule); }
+.nv-card.nv-followed { border-left-color: var(--nv-yellow); border-right-color: var(--nv-yellow); }
+.nv-root .nv-card-head { display: flex; flex-direction: column; gap: 5px; width: 100%; padding: 8px 10px 9px;
+  text-align: left; }
+.nv-root .nv-card-head:hover { background: rgba(243, 241, 236, 0.06); }
+.nv-card-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.nv-plate { flex: none; display: flex; align-items: center; justify-content: center; width: 24px; height: 22px;
+  padding-right: 2px; background: var(--nv-team); color: var(--nv-asphalt); font-size: 13px; line-height: 1;
+  clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 0 100%); }
+.nv-card-name { flex: 1; min-width: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nv-card-speed { color: var(--nv-dim); font-size: 11.5px; white-space: nowrap; }
+.nv-boost-label { color: var(--nv-dim); font-size: 11px; }
+.nv-boost { flex: 1; height: 6px; background: var(--nv-rule); overflow: hidden; }
+.nv-boost i { display: block; height: 100%; background: var(--nv-team); }
+.nv-boost-number { min-width: 24px; text-align: right; font-size: 12.5px; font-weight: 500; }
+.nv-card-state { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 7px; min-height: 17px; padding-left: 2px; }
+.nv-card-marks { display: flex; gap: 6px; }
+.nv-state, .nv-mark { padding: 1px 7px 0; font-size: 11px; line-height: 16px; white-space: nowrap; }
+.nv-state { color: var(--nv-dim); --nv-block: var(--nv-raised); }
+.nv-state-air { color: var(--nv-chalk); --nv-block: var(--nv-rule); }
+.nv-state-fast { color: var(--nv-asphalt); --nv-block: var(--nv-yellow); }
+.nv-state-out { color: var(--nv-asphalt); --nv-block: var(--nv-bad); }
+.nv-mark { color: var(--nv-asphalt); --nv-block: var(--nv-team); }
+.nv-demolished .nv-card-row { opacity: 0.5; }
+
+/* What the bot is thinking. */
+.nv-think { display: flex; flex-direction: column; gap: 7px; padding: 9px 10px 11px; border-top: 1px solid var(--nv-rule);
+  font-size: 12px; }
+.nv-think-title { color: var(--nv-dim); font-size: 11px; }
+.nv-meter { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 3px 8px; }
+.nv-meter span { grid-area: 1 / 1; }
+.nv-meter b { grid-area: 1 / 2; }
+.nv-meter .nv-meter-bar { grid-area: 2 / 1 / 3 / 3; }
+.nv-meter b, .nv-share b { text-align: right; font-size: 11.5px; font-weight: 500; }
+.nv-meter-bar, .nv-share-bar { position: relative; height: 6px; background: var(--nv-rule); overflow: hidden; }
+.nv-meter-bar i, .nv-share-bar i { position: absolute; top: 0; bottom: 0; left: 0; background: var(--nv-chalk); }
+.nv-meter-centred::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px;
+  background: var(--nv-chalk); }
+.nv-meter-centred i { background: var(--nv-good); }
+.nv-meter-centred i.nv-bad { background: var(--nv-bad); }
+.nv-meters { display: flex; flex-direction: column; gap: 6px; }
+.nv-think-empty .nv-meters { display: none; }
+.nv-think-none { color: var(--nv-dim); }
+.nv-pad { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 2px; }
+.nv-root .nv-pad svg { width: 76px; height: 56px; }
+.nv-root .nv-pad-ring { fill: rgba(243, 241, 236, 0.05); stroke: var(--nv-dim); stroke-width: 1; }
+.nv-root .nv-pad-cross { stroke: var(--nv-rule); stroke-width: 1; }
+.nv-root .nv-pad-stick, .nv-root .nv-pad-throttle { fill: var(--nv-yellow); stroke: none; }
+.nv-lamps { display: grid; grid-template-columns: auto auto; gap: 5px 6px; flex: 1; }
+.nv-lamp { padding: 2px 4px 1px; color: var(--nv-dim); font-size: 10px; letter-spacing: 0.05em; text-align: center;
+  white-space: nowrap; --nv-block: var(--nv-raised); }
+.nv-lamp.nv-on { color: var(--nv-asphalt); --nv-block: var(--nv-yellow); }
+.nv-looks { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; padding-top: 7px;
+  border-top: 1px solid var(--nv-rule); }
+.nv-shares { display: grid; gap: 3px 14px; }
+.nv-share { display: grid; grid-template-columns: 78px minmax(0, 1fr) 34px; align-items: center; gap: 6px; }
+.nv-share-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nv-shares-wide .nv-share { grid-template-columns: minmax(0, 1fr) 34px; }
+.nv-shares-wide .nv-share-bar { display: none; }
+.nv-dock { display: none; }
+
+/* The minimap. */
+.nv-minimap { flex: none; margin-top: auto; background: var(--nv-panel); padding: 4px; }
+.nv-minimap canvas { display: block; width: 100%; aspect-ratio: 3 / 2; }
+
+/* The middle: the end of a recording and the way back from hidden controls; the first-time hint. */
+.nv-middle { grid-area: middle; display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+  gap: 10px; min-height: 0; padding: 10px; }
+.nv-end { display: flex; flex-direction: column; align-items: center; gap: 14px; margin: auto; }
+.nv-end-text { font-size: 19px; line-height: 1.15; text-align: center; text-shadow: 0 1px 3px #000, 0 0 14px rgba(0, 0, 0, 0.9); }
+.nv-root .nv-big { display: inline-flex; align-items: center; gap: 10px; height: 52px; padding: 0 26px;
+  color: var(--nv-asphalt); font-size: 15px; --nv-block: var(--nv-yellow); }
+.nv-root .nv-big:hover { --nv-block: #ffe14d; }
+.nv-root .nv-big svg { width: 22px; height: 22px; stroke-width: 2.2; }
+.nv-hint { position: absolute; left: 14px; bottom: calc(var(--nv-bar) - 14px); z-index: 8; display: flex;
+  flex-direction: column; gap: 8px; width: 300px; max-width: calc(100% - 28px); padding: 9px 12px 10px;
+  background: var(--nv-asphalt); border-left: 3px solid var(--nv-yellow); font-size: 12.5px; line-height: 1.4; }
+.nv-hint-buttons { display: flex; gap: 8px; }
+.nv-root .nv-hint button, .nv-root .nv-show { height: 28px; padding: 1px 12px 0; white-space: nowrap;
+  --nv-block: var(--nv-raised); }
+.nv-root .nv-hint button:hover { --nv-block: var(--nv-rule); }
+.nv-root .nv-hint .nv-primary { color: var(--nv-asphalt); --nv-block: var(--nv-yellow); }
+.nv-root .nv-hint .nv-primary:hover { --nv-block: #ffe14d; }
+.nv-root .nv-show { height: 34px; padding: 1px 16px 0; --nv-block: var(--nv-panel); }
+
+/* The bottom bar: timeline, play, speed, cameras. */
+.nv-bar { grid-area: bar; display: flex; flex-direction: column; gap: 9px; padding: 26px 16px 12px;
+  background: linear-gradient(to bottom, rgba(20, 20, 19, 0), rgba(20, 20, 19, 0.8) 34%, rgba(20, 20, 19, 0.94)); }
+.nv-timeline-row { display: flex; align-items: flex-end; gap: 8px; }
+.nv-time { min-width: 40px; font-size: 12.5px; font-weight: 500; text-align: right; line-height: 14px; }
+.nv-time-total { text-align: left; color: var(--nv-dim); }
+.nv-timeline { position: relative; flex: 1; min-width: 0; height: 50px; cursor: pointer; touch-action: none; }
+.nv-timeline canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.nv-timeline-played { position: absolute; left: 8px; bottom: 5px; height: 4px; background: var(--nv-chalk);
+  pointer-events: none; }
+.nv-timeline-head { position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: var(--nv-chalk);
+  pointer-events: none; }
+.nv-timeline-head::after { content: ""; position: absolute; left: -4px; bottom: -1px; width: 10px; height: 16px;
+  background: var(--nv-chalk); transform: var(--nv-lean); }
+.nv-timeline-peek { position: absolute; bottom: calc(100% + 6px); transform: translateX(-50%); padding: 3px 9px;
+  background: var(--nv-chalk); color: var(--nv-asphalt); font-size: 12px; font-weight: 700; white-space: nowrap;
+  pointer-events: none; }
+.nv-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; }
+.nv-transport { display: flex; align-items: center; gap: 6px; padding-left: 4px; }
+.nv-root .nv-round { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 38px; }
+.nv-root .nv-round:hover { --nv-block: var(--nv-raised); }
+.nv-root .nv-round svg { width: 22px; height: 22px; }
+.nv-root .nv-play { width: 58px; height: 46px; color: var(--nv-asphalt); --nv-block: var(--nv-yellow); }
+.nv-root .nv-play:hover { --nv-block: #ffe14d; }
+.nv-root .nv-play svg { width: 26px; height: 26px; fill: currentColor; stroke: none; }
+.nv-play .nv-icon-pause, .nv-play.nv-playing .nv-icon-play { display: none; }
+.nv-play.nv-playing .nv-icon-pause { display: inline; }
+.nv-seg { display: inline-flex; gap: 3px; }
+.nv-root .nv-seg button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px;
+  padding: 1px 12px 0; color: var(--nv-dim); white-space: nowrap; }
+.nv-root .nv-speeds button { padding: 0 10px; font-size: 12.5px; font-weight: 500; }
+.nv-root .nv-seg button:hover { color: var(--nv-chalk); --nv-block: var(--nv-raised); }
+.nv-root .nv-seg button[aria-pressed="true"] { color: var(--nv-asphalt); --nv-block: var(--nv-yellow); }
+.nv-root .nv-speeds button[aria-pressed="true"] { font-weight: 700; }
+.nv-root .nv-seg svg { width: 16px; height: 16px; }
+.nv-cameras { margin-left: auto; padding-right: 4px; }
+
+/* View options. */
+.nv-menu { position: absolute; top: 54px; right: 12px; z-index: 12; display: flex; flex-direction: column; width: 290px;
+  max-width: calc(100% - 24px); max-height: calc(100% - 64px); overflow-y: auto; padding: 12px 14px 8px;
+  background: var(--nv-asphalt); border: 1px solid var(--nv-rule); scrollbar-width: thin;
+  scrollbar-color: var(--nv-rule) transparent; }
+.nv-menu-title { padding: 0 0 6px; color: var(--nv-chalk); border-bottom: 3px solid var(--nv-chalk); }
+.nv-menu-title ~ .nv-menu-title { margin-top: 16px; }
+.nv-root .nv-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 38px;
+  text-align: left; font-size: 13.5px; border-bottom: 1px solid var(--nv-rule); }
+.nv-root .nv-switch:hover, .nv-root .nv-menu-action:hover { color: #fff; }
+.nv-switch i { position: relative; flex: none; width: 36px; height: 18px; margin-right: 3px; background: var(--nv-rule);
+  transform: var(--nv-lean); transition: background 0.12s; }
+.nv-switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 12px;
+  background: var(--nv-dim); transition: transform 0.12s, background 0.12s; }
+.nv-switch[aria-checked="true"] i { background: var(--nv-yellow); }
+.nv-switch[aria-checked="true"] i::after { background: var(--nv-asphalt); transform: translateX(16px); }
+.nv-qualities { display: flex; margin: 10px 3px 0; }
+.nv-root .nv-qualities button { flex: 1; height: 30px; padding: 1px 2px 0; font-size: 11px; --nv-block: var(--nv-raised); }
+.nv-root .nv-qualities button:not([aria-pressed="true"]):hover { --nv-block: var(--nv-rule); }
+.nv-quality-info { min-height: 18px; padding: 8px 0 10px; color: var(--nv-dim); font-size: 11px; }
+.nv-root .nv-menu-action { display: flex; align-items: center; gap: 10px; min-height: 40px; font-size: 12px;
+  border-top: 1px solid var(--nv-rule); }
+
+/* Camera settings: a panel over the right of the picture, above the bar, so the view it changes stays in sight. */
+.nv-root .nv-cameras .nv-gear { flex: none; width: 38px; padding: 1px 0 0; }
+.nv-root .nv-cameras .nv-gear[aria-expanded="true"] { color: var(--nv-chalk); --nv-block: var(--nv-raised); }
+.nv-root .nv-cameras .nv-gear svg { display: block; width: 18px; height: 18px; }
+.nv-camset { position: absolute; right: 12px; bottom: calc(var(--nv-bar) + 6px); z-index: 12; display: flex;
+  flex-direction: column; width: 360px; max-width: calc(100% - 24px); max-height: calc(100% - var(--nv-bar) - 64px);
+  overflow-y: auto; padding: 10px 14px 4px; background: var(--nv-asphalt); border: 1px solid var(--nv-rule);
+  scrollbar-width: thin; scrollbar-color: var(--nv-rule) transparent; }
+.nv-camset-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px;
+  border-bottom: 3px solid var(--nv-chalk); }
+.nv-camset-head .nv-menu-title { border-bottom: 0; }
+.nv-root .nv-camset-head .nv-tool { height: 30px; min-width: 30px; padding: 0 6px; margin-bottom: 4px;
+  --nv-block: var(--nv-raised); }
+.nv-camset-note { padding: 7px 0 3px; color: var(--nv-dim); font-size: 11.5px; line-height: 1.35; }
+.nv-slider { display: grid; grid-template-columns: 116px minmax(0, 1fr) 44px; align-items: center; gap: 10px;
+  min-height: 34px; font-size: 13px; border-bottom: 1px solid var(--nv-rule); cursor: pointer; }
+.nv-slider output { font-family: "JetBrains Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums;
+  font-size: 12.5px; font-weight: 500; text-align: right; }
+.nv-slider input { width: 100%; height: 22px; margin: 0; background: transparent; cursor: pointer;
+  -webkit-appearance: none; appearance: none; --nv-fill: 50%; }
+.nv-slider input:focus-visible { outline: 2px solid var(--nv-yellow); outline-offset: 2px; }
+.nv-slider input::-webkit-slider-runnable-track { height: 4px;
+  background: linear-gradient(to right, var(--nv-chalk) var(--nv-fill), var(--nv-rule) var(--nv-fill)); }
+.nv-slider input::-moz-range-track { height: 4px;
+  background: linear-gradient(to right, var(--nv-chalk) var(--nv-fill), var(--nv-rule) var(--nv-fill)); }
+.nv-slider input::-webkit-slider-thumb { width: 11px; height: 16px; margin-top: -6px; border: 0; border-radius: 0;
+  background: var(--nv-yellow); transform: var(--nv-lean); -webkit-appearance: none; appearance: none; }
+.nv-slider input::-moz-range-thumb { width: 11px; height: 16px; border: 0; border-radius: 0; background: var(--nv-yellow);
+  transform: var(--nv-lean); }
+.nv-camset .nv-menu-action { border-top: 0; }
+.nv-compact .nv-camset { right: 8px; max-width: calc(100% - 16px); }
+.nv-compact .nv-slider { grid-template-columns: 96px minmax(0, 1fr) 40px; gap: 8px; }
+
+/* Help. */
+.nv-help { position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+  padding: 14px; background: rgba(10, 10, 9, 0.7); }
+.nv-help-card { display: flex; flex-direction: column; gap: 10px; width: 820px; max-width: 100%; max-height: 100%;
+  overflow-y: auto; padding: 16px 22px 18px; background: var(--nv-asphalt); border: 1px solid var(--nv-rule);
+  user-select: text; -webkit-user-select: text; scrollbar-width: thin; scrollbar-color: var(--nv-rule) transparent; }
+.nv-help-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 8px;
+  border-bottom: 3px solid var(--nv-chalk); }
+.nv-help-title { font-size: 21px; line-height: 1.1; }
+.nv-help-head .nv-tool { --nv-block: var(--nv-raised); }
+.nv-help-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 30px; }
+.nv-help-group { margin: 8px 0 7px; color: var(--nv-dim); }
+.nv-help dl { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 6px 12px; margin: 0; align-items: baseline; }
+.nv-help-columns > div:last-child dl { grid-template-columns: 176px minmax(0, 1fr); }
+.nv-help dt { font-weight: 600; white-space: nowrap; }
+.nv-help dd { margin: 0; color: var(--nv-chalk); }
+.nv-help-foot { padding-top: 10px; border-top: 1px solid var(--nv-rule); color: var(--nv-dim); font-size: 13px; }
+.nv-help-foot b { color: var(--nv-chalk); }
+
+/* Tooltips and name tags. */
+.nv-tip { position: absolute; z-index: 30; display: flex; align-items: center; gap: 8px; max-width: 270px; padding: 6px 10px;
+  background: var(--nv-chalk); color: var(--nv-asphalt); font-size: 12.5px; font-weight: 500; line-height: 1.35;
+  pointer-events: none; }
+.nv-root .nv-tip kbd { flex: none; background: none; border-color: var(--nv-asphalt); white-space: nowrap; }
+.nv-tags { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.nv-tag { position: absolute; left: 0; top: 0; display: flex; align-items: baseline; gap: 7px; padding: 2px 9px 5px;
+  white-space: nowrap; visibility: hidden; will-change: transform; --nv-team: var(--nv-blue); }
+.nv-tag-name { font-size: 11px; }
+.nv-tag.nv-followed { color: var(--nv-asphalt); --nv-block: var(--nv-team); }
+.nv-tag-boost, .nv-tag-speed { font-size: 11px; font-weight: 500; }
+.nv-tag-speed:empty { display: none; }
+.nv-tag-bar { position: absolute; left: 8px; right: 8px; bottom: 2px; height: 2px; background: var(--nv-rule); }
+.nv-tag-bar i { display: block; height: 100%; background: var(--nv-team); }
+.nv-tag.nv-followed .nv-tag-bar { background: rgba(20, 20, 19, 0.3); }
+.nv-tag.nv-followed .nv-tag-bar i { background: var(--nv-asphalt); }
+
+/* Narrower viewers: the camera buttons lose their pictures, then take a row of their own. */
+.nv-mid .nv-cameras svg { display: none; }
+.nv-mid .nv-tool-label { display: none; }
+.nv-narrow .nv-controls { justify-content: space-between; }
+.nv-narrow .nv-cameras { width: 100%; margin-left: 0; padding: 0 4px; }
+.nv-narrow .nv-cameras button { flex: 1; padding: 1px 4px 0; }
+.nv-narrow .nv-team { width: 212px; padding-left: 8px; padding-right: 8px; }
+.nv-narrow .nv-help-columns { grid-template-columns: 1fr; }
+
+/* A phone-wide viewer: the cards become one strip of small chips under the score. */
+.nv-compact .nv-ui { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-areas: "top top" "blue orange" "dock dock" "middle middle" "bar bar"; }
+.nv-compact .nv-top { justify-content: flex-start; padding: 8px 8px 6px; }
+.nv-compact .nv-scoreboard { align-items: flex-start; }
+.nv-compact .nv-score-name, .nv-compact .nv-subtitle, .nv-compact .nv-close span { display: none; }
+.nv-compact .nv-score { height: 38px; padding: 0 4px; }
+.nv-compact .nv-score-team { padding: 0 4px; }
+.nv-compact .nv-score-team b { min-width: 40px; font-size: 22px; }
+.nv-compact .nv-clock { min-width: 58px; padding: 0 6px; font-size: 15px; }
+.nv-compact .nv-tools { top: 8px; right: 10px; gap: 4px; }
+.nv-compact .nv-tool { height: 38px; min-width: 38px; padding: 0 8px; }
+.nv-compact .nv-team { flex-direction: row; width: auto; gap: 3px; padding: 0 8px 6px; overflow: visible; }
+.nv-compact .nv-team-blue { padding-right: 2px; }
+.nv-compact .nv-team-orange { padding-left: 2px; }
+.nv-compact .nv-card { flex: 1; min-width: 0; border-left: 0; border-right: 0; border-top: 3px solid transparent; }
+.nv-compact .nv-card + .nv-card { border-top: 3px solid transparent; }
+.nv-compact .nv-card.nv-followed { border-top-color: var(--nv-yellow); }
+.nv-compact .nv-card-head { flex-direction: row; align-items: center; gap: 6px; padding: 5px 6px 6px; }
+.nv-compact .nv-card-row { flex: 1; gap: 5px; }
+.nv-compact .nv-card-row:first-child { flex: none; }
+.nv-compact .nv-card-name, .nv-compact .nv-card-state, .nv-compact .nv-card-speed, .nv-compact .nv-boost-label { display: none; }
+.nv-compact .nv-boost-number { min-width: 0; font-size: 11.5px; }
+.nv-compact .nv-dock { grid-area: dock; display: block; padding: 0 8px; }
+.nv-compact .nv-meters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.nv-compact .nv-meter { align-items: center; }
+.nv-compact .nv-meter span { grid-area: 1 / 1 / 2 / 3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nv-compact .nv-meter .nv-meter-bar { grid-area: 2 / 1; }
+.nv-compact .nv-meter b { grid-area: 2 / 2; }
+.nv-compact .nv-shares { grid-template-columns: 1fr 1fr; }
+.nv-compact .nv-shares-wide { grid-template-columns: 1fr; }
+.nv-compact .nv-dock .nv-think { max-height: 236px; overflow-y: auto; border-top: 0; background: var(--nv-panel);
+  scrollbar-width: thin; scrollbar-color: var(--nv-rule) transparent; }
+.nv-compact .nv-minimap { position: absolute; right: 8px; bottom: calc(var(--nv-bar) + 4px); width: 132px; margin: 0; }
+.nv-compact .nv-hint { left: 8px; max-width: calc(100% - 16px); }
+.nv-compact .nv-bar { padding: 22px 8px 8px; gap: 7px; }
+.nv-compact .nv-controls { gap: 7px 8px; }
+.nv-compact .nv-transport { gap: 4px; }
+.nv-compact .nv-round { width: 36px; }
+.nv-compact .nv-play { width: 50px; height: 42px; }
+.nv-compact .nv-seg { gap: 2px; }
+.nv-compact .nv-seg button { height: 32px; }
+.nv-compact .nv-speeds button { padding: 0 6px; font-size: 11.5px; }
+.nv-compact .nv-cameras button { font-size: 10.5px; letter-spacing: 0.05em; }
+.nv-compact .nv-help-card { padding: 12px 14px 14px; }
+
+/* A low viewer: less air. */
+.nv-low .nv-top { padding-top: 6px; padding-bottom: 4px; }
+.nv-low .nv-title { display: none; }
+.nv-low .nv-tools, .nv-low .nv-logo { top: 6px; }
+.nv-low .nv-bar { padding-top: 14px; padding-bottom: 8px; gap: 6px; }
+.nv-low .nv-timeline { height: 38px; }
+.nv-low .nv-menu { top: 48px; max-height: calc(100% - 54px); }
+.nv-low .nv-camset { max-height: calc(100% - var(--nv-bar) - 52px); }

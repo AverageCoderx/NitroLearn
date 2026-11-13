@@ -1,0 +1,20 @@
+[package]
+name = "nitro_bot"
+description = "The RLBot v5 bot that plays a NitroLearn policy (no Python, no GPU)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "nitro_bot"
+path = "src/main.rs"
+
+[dependencies]
+nitro_core.workspace = true
+# The official RLBot v5 Rust interface (MIT): connection, handshake, FlatBuffers types.
+rlbot = "0.6.0"
+fastrand = "2.3.0"
+
+[lints]
+workspace = true

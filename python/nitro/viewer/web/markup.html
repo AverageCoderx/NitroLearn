@@ -1,0 +1,365 @@
+<canvas class="nv-canvas"></canvas>
+<div class="nv-tags" data-nv="tags" aria-hidden="true"></div>
+<div class="nv-ui" data-nv="ui">
+  <div class="nv-top" data-nv="top">
+    <div class="nv-logo nv-fades" data-nv="logo">
+      <!--LOGO-->
+      <span class="nv-wordmark"><b>Nitro</b>Learn</span>
+      <span class="nv-credit">by Raze</span>
+    </div>
+    <div class="nv-scoreboard">
+      <div class="nv-score" role="group" aria-label="Score">
+        <span class="nv-score-team nv-score-blue">
+          <span class="nv-score-name">Blue</span><b data-nv="scoreBlue">0</b>
+        </span>
+        <span class="nv-clock" data-nv="clock" data-tip="Time since the recording began">0:00</span>
+        <span class="nv-score-team nv-score-orange">
+          <b data-nv="scoreOrange">0</b><span class="nv-score-name">Orange</span>
+        </span>
+      </div>
+      <div class="nv-title" data-nv="titleRow">
+        <span class="nv-live-badge" data-nv="liveBadge" hidden>LIVE</span>
+        <span class="nv-title-text" data-nv="title"></span>
+        <span class="nv-subtitle" data-nv="subtitle"></span>
+        <button type="button" class="nv-golive" data-nv="goLive" data-key="L" hidden
+          data-tip="Jump to what is happening right now">Go live</button>
+      </div>
+    </div>
+    <div class="nv-tools nv-fades">
+      <button type="button" class="nv-tool" data-nv="menuButton" aria-label="View options" aria-expanded="false"
+        data-tip="Choose what is shown on the picture">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/>
+        </svg>
+        <span class="nv-tool-label">View</span>
+      </button>
+      <button type="button" class="nv-tool" data-nv="helpButton" aria-label="Help: keys and mouse" data-key="?"
+        data-tip="Every key and mouse action">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="9"/><path d="M9.4 9.3a2.7 2.7 0 1 1 3.9 2.4c-.8.5-1.3 1-1.3 2"/>
+          <circle cx="12" cy="17" r=".6" class="nv-solid"/>
+        </svg>
+        <span class="nv-tool-label">Help</span>
+      </button>
+      <button type="button" class="nv-tool" data-nv="fullButton" aria-label="Full screen" data-key="F"
+        data-tip="Fill the whole screen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
+      </button>
+      <button type="button" class="nv-tool nv-close" data-nv="close" aria-label="Close the viewer" data-key="Esc"
+        data-tip="Close the viewer" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        <span>Close</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="nv-team nv-team-blue nv-hides" data-nv="teamBlue" role="group" aria-label="Blue cars"></div>
+  <div class="nv-team nv-team-orange nv-hides" data-nv="teamOrange" role="group" aria-label="Orange cars">
+    <div class="nv-minimap" data-nv="minimap" hidden>
+      <canvas data-nv="minimapCanvas" role="img" aria-label="Small map of the field seen from above"></canvas>
+    </div>
+  </div>
+  <div class="nv-dock nv-hides" data-nv="dock"></div>
+
+  <div class="nv-middle">
+    <div class="nv-end" data-nv="end" hidden>
+      <div class="nv-end-text" data-nv="endText">End of the recording</div>
+      <button type="button" class="nv-big" data-nv="again">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12a7 7 0 1 0 2.2-5.1"/><path d="M4 4.5v4h4"/></svg>
+        Watch again
+      </button>
+    </div>
+    <button type="button" class="nv-show" data-nv="show" data-key="H" hidden>Show controls</button>
+  </div>
+
+  <div class="nv-hint nv-hides" data-nv="hint" role="status" hidden>
+    <div><b>New here?</b> Space plays and pauses. Click a car's card to follow it. Drag the picture to look around.</div>
+    <div class="nv-hint-buttons">
+      <button type="button" data-nv="hintHelp">All keys</button>
+      <button type="button" class="nv-primary" data-nv="hintOk">Got it</button>
+    </div>
+  </div>
+
+  <div class="nv-bar nv-fades nv-hides" data-nv="bar">
+    <div class="nv-timeline-row">
+      <span class="nv-time" data-nv="timeNow">0:00</span>
+      <div class="nv-timeline" data-nv="timeline" role="slider" tabindex="0" aria-label="Timeline"
+        aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+        <canvas data-nv="timelineCanvas"></canvas>
+        <div class="nv-timeline-played" data-nv="played"></div>
+        <div class="nv-timeline-head" data-nv="head"></div>
+        <div class="nv-timeline-peek" data-nv="peek" hidden></div>
+      </div>
+      <span class="nv-time nv-time-total" data-nv="timeTotal">0:00</span>
+    </div>
+    <div class="nv-controls">
+      <div class="nv-transport">
+        <button type="button" class="nv-round" data-nv="back" aria-label="Back 5 seconds" data-tip="Back 5 seconds"
+          data-key="Left arrow">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6.5 8.5A7 7 0 1 1 5 12.5"/><path d="M6.6 4.2v4.4H11"/><text x="12.2" y="15.6">5</text>
+          </svg>
+        </button>
+        <button type="button" class="nv-round nv-play" data-nv="play" aria-label="Play" data-tip="Play or pause"
+          data-key="Space">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path class="nv-icon-play" d="M8 5.2v13.6L19 12z"/>
+            <path class="nv-icon-pause" d="M7 5h3.6v14H7zM13.4 5H17v14h-3.6z"/>
+          </svg>
+        </button>
+        <button type="button" class="nv-round" data-nv="forward" aria-label="Forward 5 seconds"
+          data-tip="Forward 5 seconds" data-key="Right arrow">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M17.5 8.5A7 7 0 1 0 19 12.5"/><path d="M17.4 4.2v4.4H13"/><text x="11.8" y="15.6">5</text>
+          </svg>
+        </button>
+      </div>
+      <div class="nv-seg nv-speeds" data-nv="speeds" role="group" aria-label="Playback speed"></div>
+      <div class="nv-seg nv-cameras" data-nv="cameras" role="group" aria-label="Camera">
+        <button type="button" data-camera="broadcast" data-key="1" data-tip="From the side, like a match on TV">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="7" width="12" height="10" rx="2"/><path d="M15 11l6-3v8l-6-3"/>
+          </svg>
+          <span>Broadcast</span>
+        </button>
+        <button type="button" data-camera="ball" data-key="2"
+          data-tip="Behind the followed car, always turned to the ball">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8"/><path d="M12 8.2l3.6 2.6-1.4 4.2H9.8l-1.4-4.2z"/>
+          </svg>
+          <span>Ball cam</span>
+        </button>
+        <button type="button" data-camera="car" data-key="3"
+          data-tip="Behind the followed car, looking where it drives">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 15v-2.5l2.6-.8 2-3.7h7l3 3.6 3.4 1V15z"/>
+            <circle cx="7.5" cy="15.5" r="1.9"/><circle cx="16.5" cy="15.5" r="1.9"/>
+          </svg>
+          <span>Car cam</span>
+        </button>
+        <button type="button" data-camera="top" data-key="4" data-tip="Straight down on the whole field">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="6" width="18" height="12" rx="1.5"/><path d="M12 6v12"/><circle cx="12" cy="12" r="2.4"/>
+          </svg>
+          <span>Top</span>
+        </button>
+        <button type="button" data-camera="free" data-key="5"
+          data-tip="Move the camera yourself: drag to turn, wheel to zoom">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5"/>
+            <path d="M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/>
+          </svg>
+          <span>Free</span>
+        </button>
+        <button type="button" class="nv-gear" data-nv="camGear" aria-label="Camera settings" aria-expanded="false"
+          data-tip="Camera settings: field of view, distance, height and more">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="2.6"/><circle cx="12" cy="12" r="6.2"/>
+            <path d="M12 2.5v3.3M12 18.2v3.3M2.5 12h3.3M18.2 12h3.3M5.3 5.3l2.3 2.3M16.4 16.4l2.3 2.3M5.3 18.7l2.3-2.3M16.4 7.6l2.3-2.3"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="nv-think" data-nv="think" hidden>
+    <div class="nv-think-title">What the bot is thinking</div>
+    <div class="nv-meters">
+      <div class="nv-meter" data-tip="Value estimate: how good the bot thinks this moment is for its team.
+        To the right it expects things to go well, to the left badly.">
+        <span>This moment looks</span>
+        <div class="nv-meter-bar nv-meter-centred"><i data-nv="valueBar"></i></div>
+        <b data-nv="valueText"></b>
+      </div>
+      <div class="nv-meter" data-tip="How sure the bot was of the move it just made.
+        100% means it saw only one good choice.">
+        <span>Sure of its move</span>
+        <div class="nv-meter-bar"><i data-nv="sureBar"></i></div>
+        <b data-nv="sureText"></b>
+      </div>
+      <div class="nv-meter" data-tip="How random the bot's choices are right now. 0% means it would always do
+        the same thing here, 100% means it picks at random.">
+        <span>Randomness</span>
+        <div class="nv-meter-bar"><i data-nv="randomBar"></i></div>
+        <b data-nv="randomText"></b>
+      </div>
+    </div>
+    <div class="nv-pad" data-tip="The controls the bot is using: the stick steers (and tilts the car in the air),
+      the bar is the throttle (up forward, down reverse), the lamps are its buttons.">
+      <svg viewBox="0 0 76 56" aria-hidden="true">
+        <circle class="nv-pad-ring" cx="28" cy="28" r="24"/>
+        <path class="nv-pad-cross" d="M28 8v40M8 28h40"/>
+        <circle class="nv-pad-stick" data-nv="stick" cx="28" cy="28" r="7"/>
+        <rect class="nv-pad-ring" x="62" y="4" width="10" height="48" rx="3"/>
+        <path class="nv-pad-cross" d="M60 28h14"/>
+        <rect class="nv-pad-throttle" data-nv="throttle" x="64" y="28" width="6" height="0" rx="1.5"/>
+      </svg>
+      <div class="nv-lamps">
+        <span class="nv-lamp" data-nv="lampJump">Jump</span>
+        <span class="nv-lamp" data-nv="lampBoost">Boost</span>
+        <span class="nv-lamp" data-nv="lampBrake">Handbrake</span>
+        <span class="nv-lamp" data-nv="lampRoll">Air roll</span>
+      </div>
+    </div>
+    <div class="nv-looks" data-nv="looksBlock" hidden>
+      <div class="nv-think-title" data-tip="How the bot shares its attention at this moment.
+        The yellow lines on the field show the same thing.">Looking at</div>
+      <div class="nv-shares" data-nv="looks"></div>
+    </div>
+    <div class="nv-looks" data-nv="heardBlock" hidden>
+      <div class="nv-think-title" data-tip="Inside this bot's head, the things it watches pass notes to each other.
+        This is who each one listened to most. The pale lines on the field show the same thing.">Listening to</div>
+      <div class="nv-shares nv-shares-wide" data-nv="heard"></div>
+    </div>
+    <div class="nv-think-none" data-nv="thinkNone" hidden>This recording holds no thoughts for this moment.</div>
+  </div>
+
+  <div class="nv-menu" data-nv="menu" role="dialog" aria-label="View options" hidden>
+    <div class="nv-menu-title">View options</div>
+    <button type="button" class="nv-switch" role="switch" data-option="tags"
+      data-tip="A label above every car with its name and how much boost it has">
+      <span>Name tags</span><i></i>
+    </button>
+    <button type="button" class="nv-switch" role="switch" data-option="tagSpeed"
+      data-tip="Also show each car's speed on its name tag">
+      <span>Speed on name tags</span><i></i>
+    </button>
+    <button type="button" class="nv-switch" role="switch" data-option="thinking"
+      data-tip="The panel on the followed car's card: what the bot expects, how sure it is, and its controls">
+      <span>What the bot is thinking</span><i></i>
+    </button>
+    <button type="button" class="nv-switch" role="switch" data-option="attention" data-tip="Lines from the followed
+      car to what its bot is paying attention to: thicker and brighter means more attention">
+      <span>Attention lines</span><i></i>
+    </button>
+    <button type="button" class="nv-switch" role="switch" data-option="hitboxes"
+      data-tip="The invisible boxes the game uses to decide what touches what">
+      <span>Hitboxes</span><i></i>
+    </button>
+    <button type="button" class="nv-switch" role="switch" data-option="minimap"
+      data-tip="A small map of the field from above, with every car and the ball">
+      <span>Minimap</span><i></i>
+    </button>
+    <div class="nv-menu-title" data-tip="Higher quality looks better but needs a faster computer.
+      Auto picks what runs smoothly.">Image quality</div>
+    <div class="nv-seg nv-qualities" data-nv="qualities" role="group" aria-label="Image quality"></div>
+    <div class="nv-quality-info" data-nv="qualityInfo"></div>
+    <button type="button" class="nv-menu-action" data-nv="camMenu"
+      data-tip="Field of view, distance, height and more for Ball cam and Car cam">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="2.6"/><circle cx="12" cy="12" r="6.2"/>
+            <path d="M12 2.5v3.3M12 18.2v3.3M2.5 12h3.3M18.2 12h3.3M5.3 5.3l2.3 2.3M16.4 16.4l2.3 2.3M5.3 18.7l2.3-2.3M16.4 7.6l2.3-2.3"/>
+          </svg>
+      Camera settings
+    </button>
+    <button type="button" class="nv-menu-action" data-nv="hide" data-key="H"
+      data-tip="Hide everything but the score. Press H or move the mouse to get the controls back.">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/>
+      </svg>
+      Hide controls
+    </button>
+  </div>
+
+  <div class="nv-camset nv-hides" data-nv="camPanel" role="dialog" aria-label="Camera settings" hidden>
+    <div class="nv-camset-head">
+      <div class="nv-menu-title">Camera settings</div>
+      <button type="button" class="nv-tool" data-nv="camClose" aria-label="Close camera settings" data-key="Esc"
+        data-tip="Close camera settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="nv-camset-note">For Ball cam and Car cam. Distance and height are in game units.</div>
+    <label class="nv-slider" data-tip="How wide the chase cameras see, in degrees across the picture">
+      <span>Field of View</span><input type="range" data-cam="fov"><output data-cam-value="fov"></output>
+    </label>
+    <label class="nv-slider" data-tip="How far behind the car the camera sits">
+      <span>Distance</span><input type="range" data-cam="distance"><output data-cam-value="distance"></output>
+    </label>
+    <label class="nv-slider" data-tip="How high above the car the camera sits">
+      <span>Height</span><input type="range" data-cam="height"><output data-cam-value="height"></output>
+    </label>
+    <label class="nv-slider" data-tip="How far the camera tilts down; 0 looks straight ahead">
+      <span>Angle</span><input type="range" data-cam="angle"><output data-cam-value="angle"></output>
+    </label>
+    <label class="nv-slider" data-tip="How tightly the camera follows the car: low trails and swings, 1 is locked to it">
+      <span>Stiffness</span><input type="range" data-cam="stiffness"><output data-cam-value="stiffness"></output>
+    </label>
+    <label class="nv-slider" data-tip="How fast the Free camera turns with the mouse and the arrow keys">
+      <span>Swivel Speed</span><input type="range" data-cam="swivel"><output data-cam-value="swivel"></output>
+    </label>
+    <label class="nv-slider" data-tip="How quickly the picture blends when you switch cameras">
+      <span>Transition Speed</span><input type="range" data-cam="transition"><output data-cam-value="transition"></output>
+    </label>
+    <button type="button" class="nv-switch" role="switch" data-cam-switch="ballLock" data-tip="On: Ball cam always
+      faces the ball. Off: it faces where the car drives while the ball is behind the car or right on it.">
+      <span>Ball cam stays on the ball</span><i></i>
+    </button>
+    <button type="button" class="nv-menu-action" data-nv="camReset"
+      data-tip="Put every camera setting back to its starting value">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12a7 7 0 1 0 2.2-5.1"/><path d="M4 4.5v4h4"/></svg>
+      Reset to the starting values
+    </button>
+  </div>
+
+  <div class="nv-help" data-nv="help" role="dialog" aria-label="Help" hidden>
+    <div class="nv-help-card">
+      <div class="nv-help-head">
+        <div class="nv-help-title">How to use the viewer</div>
+        <button type="button" class="nv-tool" data-nv="helpClose" aria-label="Close help">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="nv-help-columns">
+        <div>
+          <div class="nv-help-group">Playing</div>
+          <dl>
+            <dt><kbd>Space</kbd></dt><dd>Play or pause</dd>
+            <dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd></dt><dd>Back or forward 5 seconds (in Free: turn)</dd>
+            <dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>One frame back or forward</dd>
+            <dt><kbd>-</kbd> <kbd>+</kbd></dt><dd>Slower or faster</dd>
+            <dt><kbd>L</kbd></dt><dd>Go to the live moment (live games only)</dd>
+          </dl>
+          <div class="nv-help-group">Cameras</div>
+          <dl>
+            <dt><kbd>1</kbd></dt><dd>Broadcast: from the side, like TV</dd>
+            <dt><kbd>2</kbd></dt><dd>Ball cam: behind the car, facing the ball</dd>
+            <dt><kbd>3</kbd></dt><dd>Car cam: behind the car, facing ahead</dd>
+            <dt><kbd>4</kbd></dt><dd>Top: the whole field from above</dd>
+            <dt><kbd>5</kbd></dt><dd>Free: move the camera yourself</dd>
+            <dt><kbd>Tab</kbd> or <kbd>]</kbd></dt><dd>Follow the next car</dd>
+            <dt><kbd>[</kbd></dt><dd>Follow the car before</dd>
+            <dt>The gear</dt><dd>Camera settings: field of view, distance, height, stiffness</dd>
+          </dl>
+        </div>
+        <div>
+          <div class="nv-help-group">Mouse</div>
+          <dl>
+            <dt>Click a car's card</dt><dd>Follow that car and see what its bot is thinking</dd>
+            <dt>Click the timeline</dt><dd>Jump to that moment; drag to scrub</dd>
+            <dt>Drag the picture</dt><dd>Turn the camera (switches to Free)</dd>
+            <dt>Wheel</dt><dd>Zoom in or out (Free camera)</dd>
+            <dt>Right-drag or <kbd>Shift</kbd>+drag</dt><dd>Slide the camera sideways</dd>
+            <dt>Double-click</dt><dd>A car to follow it; in Free, a car or the ball to centre on it</dd>
+          </dl>
+          <div class="nv-help-group">Free camera and the rest</div>
+          <dl>
+            <dt><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></dt><dd>Fly forward, left, back, right</dd>
+            <dt><kbd>Q</kbd> <kbd>E</kbd></dt><dd>Fly down or up</dd>
+            <dt>Arrow keys</dt><dd>Turn the camera (as fast as Swivel Speed)</dd>
+            <dt><kbd>H</kbd></dt><dd>Hide or show the controls</dd>
+            <dt><kbd>F</kbd></dt><dd>Full screen</dd>
+            <dt><kbd>?</kbd> or <kbd>F1</kbd></dt><dd>This help; <kbd>Esc</kbd> closes it</dd>
+          </dl>
+        </div>
+      </div>
+      <div class="nv-help-foot">
+        <b>The timeline:</b> tall coloured marks are goals, small ticks are ball touches, dashed lines are kick-offs
+        after a restart. The faint curves show how good each bot thought the moment was (the followed car's is
+        bright). <b>Letters on a car's card:</b> <span data-nv="helpLetters"></span>.
+      </div>
+    </div>
+  </div>
+
+  <div class="nv-tip" data-nv="tip" role="tooltip" hidden></div>
+</div>

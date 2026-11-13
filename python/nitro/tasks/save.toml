@@ -1,0 +1,34 @@
+# Practice task: a save. A lone car waits in its goal while the ball rolls at it from its own half, aimed
+# inside the goal mouth at 2000-3200 units per second; the episode ends when the ball goes in or after
+# 6 seconds. Measured by the share of episodes without a goal conceded (nitro.tasks), never by the reward.
+# The first pilot (1200-2200 uu/s) was saved 99% of the time after 12.5M steps, too easy to tell policies
+# apart, so the balls were made faster; the second pilot sizes the bar and budget.
+
+[env]
+opponents = false
+num_arenas = 512
+
+[terminals]
+no_touch_seconds = 0
+max_episode_seconds = 6
+
+[[rewards]]
+name = "goal"
+weight = 50
+
+[[rewards]]
+name = "velocity_ball_to_goal"
+weight = 5
+
+[[rewards]]
+name = "touch_ball"
+weight = 2
+
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 1
+
+[[state_setters]]
+name = "save"
+min_speed = 2000
+max_speed = 3200

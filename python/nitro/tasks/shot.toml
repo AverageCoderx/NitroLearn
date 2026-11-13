@@ -1,0 +1,33 @@
+# Practice task: an empty-net shot. A lone car starts 1000 units behind a resting ball that sits 1500-3500
+# units in front of the goal it attacks; the episode ends with a goal or after 8 seconds. Measured by the
+# goal rate and the time to score (nitro.tasks), never by the reward.
+
+[env]
+opponents = false
+num_arenas = 512
+
+[terminals]
+no_touch_seconds = 0
+max_episode_seconds = 8
+
+[[rewards]]
+name = "goal"
+weight = 50
+
+[[rewards]]
+name = "velocity_ball_to_goal"
+weight = 5
+
+[[rewards]]
+name = "touch_ball"
+weight = 2
+
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 1
+
+[[state_setters]]
+name = "shot"
+min_distance_uu = 1500
+max_distance_uu = 3500
+car_distance_uu = 1000

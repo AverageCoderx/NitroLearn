@@ -1,0 +1,235 @@
+# NitroLearn starter preset: 3v3, ready to train as it is. The learner and rewards are the 1v1
+# preset's; the arena count is not measured for 3v3, so try
+# `nitro ab --speed` with other values if speed matters to you.
+#
+#   .\nitro train configs\presets\3v3_starter.toml --name my-first-3v3-bot
+#
+# The run keeps its own copy of this file (runs\my-first-3v3-bot\settings.toml). To change a setting during a
+# run: stop it with Ctrl+C, edit that copy, then `.\nitro resume my-first-3v3-bot`.
+# Every setting and its meaning: `.\nitro check-settings <file>` explains mistakes; the full list is in
+# python\nitro\config\schema.py, rewards.py and state_setters.py.
+#
+# Optional features are here too, commented out (lines starting with #). To turn one on, remove the # at
+# the start of its lines: the section line in [brackets] and the settings under it. Most are fixed for a run
+# (chosen before it starts); the comments say which. All of them are off unless you uncomment them.
+
+# Not written here because they are the built-in defaults: the nitro_v2 observation, tick skip 4 (30
+# decisions a second), leaky_relu between layers and a policy learning rate of 4.5e-4. Write any of them to
+# choose another value.
+
+[paths]
+# The Rocket League arena meshes: NitroLearn's own collision_meshes folder unless a path is written here, so
+# this file works wherever you copy it. For meshes kept elsewhere: collision_meshes = "D:/my meshes"
+
+[run]
+seed = 0                    # Starting point for all randomness; another seed plays different games.
+precision = "fp32"          # "fp16" makes big networks about 2x faster; with these it changes little.
+checkpoint_minutes = 15     # Save this often. A stopped run resumes from its last save.
+keep_checkpoints = 5        # The newest saves kept...
+milestone_steps = 1_000_000_000  # ...plus one save per billion steps, to keep older versions of the bot.
+console = "report"          # The console prints a full report every 10 s while training;
+                            # "line" = one line.
+
+[env]
+team_size = 3               # 3v3: 6 cars per game; an exported bot drives every car on its team (hivemind).
+num_arenas = 342            # Games played at once: 2052 cars, about the 1v1 preset's 2048 (not measured for 3v3).
+# obs_team_size = 3         # One bot for 1v1, 2v2 and 3v3: room for 3 players a side, so the run can
+                            # change team_size later. Fixed for a run.
+action_delay = 1            # Ticks before the car uses a decision: 1, as soon as the bot program can keep up
+                            # (many bots use tick_skip - 1).
+
+[terminals]
+no_touch_seconds = 10       # Restart a game after 10 seconds without a touch.
+# truncate_on_ball_landing = 0.1  # Now and then end a game when the ball comes down, so more games start from
+                            # the start states. Not proven yet.
+
+[model]
+policy = [256, 256, 256]    # Layer sizes of the policy network (which action to take).
+value = [256, 256, 256]     # Layer sizes of the value network (how good the situation is).
+# fused_norm = true         # LayerNorm and ReLU as one graphics-card routine: the same bot. Measured: no
+                            # faster with these networks; 11% faster with large ones in FP16.
+# For 2v2 and 3v3 there are two choices of network: the plain one above (with obs_team_size set, if
+# one bot should play several game sizes), or an attention network, where each car looks at every other
+# car through one shared set of weights, so it plays any game size, more players than it trained with too
+# (how well is not measured). Attention is never for 1v1. To use it, set these four (obs_team_size
+# is not needed); the sizes are the recommended ones. Slower to train (41% of a
+# plain network of its size). Its learning was compared only with no other car (slower) and in 1v1 (the
+# same), never in 2v2 or 3v3, where it is meant to help. Fixed for a run: choose before
+# starting.
+# encoder = "attention"
+# attention_blocks = 2      # Attention steps the bot's own car takes over the other cars.
+# attention_heads = 4       # Heads per step.
+# attention_width = 128     # Size of each car's embedding.
+# attention_skip = true     # Also give the layers after the encoder the ball and own car directly, as a plain
+                            # network sees them. Not proven yet.
+# attention_fast = true     # The same maths in fewer, bigger graphics-card steps: the same bot, trained 10%
+                            # faster (measured). Use it with attention; the new-bot form turns it on.
+# shared = [256]           # With attention: one encoder and these layers shared by the policy and the value
+                            # network (a shared head). Not proven yet.
+# Or the attention network whose cars, ball and own car first "talk" to each other, so it can work
+# out how the others relate (who is nearer the ball, who covers whom). It is one bot's thinking: nothing
+# is sent between bots. Trains at 31% of attention's speed, checked for working only. Instead of
+# the encoder line above (the sizes above apply to it too; attention_fast does not):
+# encoder = "attention_communication"
+# lean_attention = true     # With attention_communication or the transformer: the same maths in fewer steps,
+                            # measured faster (transformer 27-40%, attention_communication 1-9%).
+# Or a transformer: the own car, the ball and every other car are tokens, and in each layer every
+# token looks at every other one. Checked for working only: its speed and learning are not measured.
+# Instead of the encoder line above, with its own sizes (attention_skip, shared and encoder_lr_scale apply):
+# encoder = "transformer"
+# transformer_layers = 2    # Layers of the transformer.
+# transformer_width = 128   # Size of each token.
+# transformer_heads = 4     # Heads per layer; transformer_width must divide by it.
+# transformer_ff = 512      # The size each token's thinking step widens to (usually 4 x transformer_width).
+# transformer_pads = true   # Every boost pad a token too (much slower, not measured).
+# transformer_readout = "summary"  # Read a learned summary token instead of the own car's. Not proven yet.
+
+[ppo]
+steps_per_iteration = 50_000  # Agent steps collected before each learning update.
+epochs = 2                  # Passes over each update's data.
+minibatches = 4             # Learning steps per pass.
+value_lr = 1.5e-4           # The value network's learning rate (the policy's, ppo.policy_lr, is 4.5e-4 by
+                            # default). If warnings say updates are too big, lower them.
+discount_half_life = 4.6    # Seconds after which a future reward counts half (gamma 0.995 at the
+                            # default tick skip of 4; 0.99 at tick skip 8).
+entropy = 0.035             # Bonus for exploring. If warnings say the bot stopped exploring, raise it a little.
+# encoder_lr_scale = 3.0      # With attention: the encoder learns at this multiple of the learning rate.
+                              # Not proven yet.
+
+# Rewards: a proven starting mix. Change weights to change
+# what the bot cares about; see python\nitro\config\rewards.py for every reward and option.
+# A reward's block can hold `enabled = false` to switch it off but keep it (the dashboard's switch).
+# To reward being lined up with the goal (`alignment`), tie it to moving toward the ball as an AND rather
+# than adding it on its own: on the kickoff practice task the AND reached the ball in 4.2 s and sent it
+# 2,600 uu toward the goal; the plain sum barely learned (5.8 s, 490 uu). For example:
+# [[rewards]]
+# name = "all_of"
+# weight = 4                  # in place of velocity_player_to_ball below (both top out at 1)
+# parts = [{ name = "velocity_player_to_ball" }, { name = "alignment" }]
+[[rewards]]
+name = "air"
+weight = 0.25
+
+[[rewards]]
+name = "face_ball"
+weight = 0.25
+
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 4
+
+[[rewards]]
+name = "strong_touch"
+weight = 60
+min_speed_kph = 20
+max_speed_kph = 100
+
+[[rewards]]
+name = "velocity_ball_to_goal"
+weight = 2
+zero_sum = { team_spirit = 1 }
+
+[[rewards]]
+name = "pickup_boost"
+weight = 10
+
+[[rewards]]
+name = "save_boost"
+weight = 0.2
+
+[[rewards]]
+name = "bump"
+weight = 20
+zero_sum = { team_spirit = 0.5 }
+
+[[rewards]]
+name = "demo"
+weight = 80
+zero_sum = { team_spirit = 0.5 }
+
+[[rewards]]
+name = "goal"
+weight = 150
+
+# How games start: real kickoffs.
+[[state_setters]]
+name = "kickoff"
+
+# To start some games from real moments of recorded matches instead, add a second block:
+# the recordings RocketSim ships (bundled = true; those with too few cars for this game size are left out)
+# (119 MB, downloaded the first time) and any recordings of your own in RocketSim's format.
+# Weights are relative, so kickoff 1 and replay 2 means two games in three start from a recording. Top
+# community bots used about 70%; whether it helps here is for your own training to show.
+# [[state_setters]]
+# name = "replay"
+# weight = 2
+# bundled = true
+# files = ["recordings/*.rlpr"]
+# air_bias = 1.0
+
+# Playing against saved past versions of the bot. Off here: only full games could show whether it helps.
+# It is standard practice in self-play training and guards against the bot forgetting how to beat earlier
+# play styles. To try it, set enabled = true.
+[selfplay]
+enabled = false
+past_share = 0.2            # One game in five is against a past version; the rest is the bot against itself.
+active_opponents = 4        # Past versions playing at the same time; re-drawn at every save by rating.
+snapshot_steps = 20_000_000 # A copy of the bot joins the pool every 20M agent steps.
+pool_size = 64              # Past versions kept (and at most pool_disk_mb of disk).
+matchmaking = "variance"    # "variance" = even matches, "uniform" = any, "hardest" = the ones it loses to;
+                            # "squared" and "linear_capped" lean harder on them.
+
+# Copy the players in your own Rocket League replays before training: uncomment these lines
+# and start a new run as usual. The run converts the replays of its team size (the first time only; converting
+# takes a while, kept in the project's replays folder), learns to choose as the players did, saves that copy
+# and stops; try rewards on it (nitro reward-check), then start it again to train. The replays come
+# from the game's own folder (Documents\My Games\Rocket League\TAGame\DemosEpic, or Demos for Steam); for
+# another folder, add a line under [pretrain] such as `replays = "D:/My replays"` (or a list of folders, taken
+# in turn). Shown to learn the players' choices; whether that makes a better bot than training from
+# scratch is not proven yet. Only a new run reads it; not together with [start_from].
+# For one bot of every game size, copied from a folder of each: replays as a list and team_sizes.
+# [pretrain]
+# enabled = true
+# limit = 30                  # The newest this many replays of this team size.
+# passes = 10                 # Passes over them while copying.
+# value_warmup_steps = 10_000_000  # First train only the new value network for this many steps, holding the
+                              # copied play as it is (not proven yet; about 200 updates at these settings).
+# batch_replays = 0           # 0 = every replay at once (up to a few hundred). For thousands, such as your
+                              # archive, 200: the large replay mode converts and learns batch by batch,
+                              # resuming after a stop; then set limit to how many (e.g. 10_000),
+                              # passes to 2 and replays to the folder.
+# keep_batches = 2            # With batch_replays: batches learned from together (each replay twice).
+# workers = 0                 # With batch_replays: replays converted at once; 0 = half the threads.
+# converter = "nitro"         # With batch_replays: the same conversions as "replicar", 14% faster.
+# continue_from = ""          # With batch_replays: a run's name, to carry on its copy.
+# new_only = false            # With batch_replays: leave out replays a copy on this PC used before.
+# prev_action_dropout = 0.0    # Share of copy decisions shown no previous move, so the copy chooses
+                              # from the game, not only from its last move (0.3-0.5 to try).
+
+# Keep copying the players in your converted replays while the bot trains: a share of the
+# learning steps copy replays from the project's replays\store (convert them first: nitro convert-replays, or
+# the Converted replays card), with an optimizer and a learning rate of their own, below the training's. It
+# can be switched on at any time, also for a bot that has trained for billions of steps: Apply (or Start)
+# carries on from its newest save and nothing else is reset. The replays are the store's 3v3 ones; for
+# others add `replays = "D:/My converted replays"` (folders of .nrpl.zst files). Not proven yet.
+# [replay_mix]
+# enabled = true
+# share = 0.2                 # One policy learning step in five copies replays (2 after an update of 8).
+# lr = 3e-5                   # The copy steps' own learning rate, kept below ppo.policy_lr.
+# minibatch = 4096            # Decisions per copy step, drawn from 16 replays at a time.
+# kickoff_only_seconds = 0   # Above 0: copy only the kickoffs, to this many seconds after the first touch.
+
+# Start a new run from another run's trained bot instead of from scratch (transfer learning),
+# for example after changing the rewards. `.\nitro train <settings> --from my-first-bot` does the same.
+# [start_from]
+# enabled = true              # false = from scratch, keeping run for later. Only the first start reads this.
+# run = "my-first-bot"        # The other run's name (its folder in runs).
+# at = 0                      # Which of its saves, by agent steps; 0 = its newest.
+# parts = "policy"            # "all" = its value network too (same rewards); "policy" = only how it plays.
+
+# Charts on wandb.ai as well: training, a copy of replays round by round, timings;
+# log in once with `.venv\Scripts\wandb login`. Without internet the run goes on and `nitro wandb <run>`
+# sends the charts later.
+# [wandb]
+# enabled = true
+# project = "my-bots"

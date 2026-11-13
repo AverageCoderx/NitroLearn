@@ -1,0 +1,84 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "nitrolearn"
+description = "NitroLearn: a fast Rocket League bot training framework"
+requires-python = ">=3.11"
+license = "PolyForm-Noncommercial-1.0.0"
+dynamic = ["version"]
+# torch is installed first by the installer (tools/install_steps.py), from PyTorch's index for the card.
+# numpy: torch warns on import without it.
+dependencies = ["torch>=2.8", "numpy>=2"]
+
+[project.optional-dependencies]
+# gymnasium: tests check our CartPole copy against it. stable-baselines3 and sb3-contrib (MaskablePPO):
+# the reference PPO in the CartPole proofs (benchmarks/proof). None of them is used for training.
+dev = [
+    "maturin>=1.15,<2",
+    "pytest>=9.1",
+    "ruff>=0.16",
+    "mypy>=2.4",
+    "gymnasium>=1.0",
+    "stable-baselines3>=2.4",
+    "sb3-contrib>=2.4",
+    "wandb>=0.19",
+    "pyarrow>=15",
+    "pywebview>=5.3",
+    "tomlkit>=0.13",
+]
+# The dashboard (`nitro dashboard`): pywebview (BSD-3-Clause) draws its window with the
+# system's own web engine (Edge WebView2 on Windows); tomlkit (MIT) edits settings files keeping their
+# comments.
+dashboard = ["pywebview>=5.3", "tomlkit>=0.13"]
+# Weights & Biases tracking ([wandb] in the settings). MIT licence.
+wandb = ["wandb>=0.19"]
+# Reading replicar's Parquet files of converted replays and compressing the recordings (nitro.replays:
+# [pretrain] and tools/replays.py). Apache-2.0.
+replays = ["pyarrow>=15"]
+
+[project.scripts]
+nitro = "nitro.cli:main"
+
+[tool.maturin]
+manifest-path = "crates/nitro_py/Cargo.toml"
+python-source = "python"
+module-name = "nitro._core"
+profile = "release"
+features = ["pyo3/extension-module"]
+include = [{ path = "python/nitro/THIRD_PARTY_NOTICES.md", format = "wheel" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["python", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.ruff.lint.flake8-bugbear]
+# These return dataclasses.field(...) specifiers, not shared default values.
+extend-immutable-calls = ["nitro.config.loader.setting", "nitro.config.loader.section"]
+
+[tool.mypy]
+strict = true
+files = ["python/nitro", "tools"]
+
+[[tool.mypy.overrides]]
+# pyarrow ships no type information (tools/replays.py only).
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Pillow is installed only where the setup wizard's pictures are made (tools/make_wizard_images.py).
+module = ["PIL", "PIL.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Playwright is installed only where the viewer's pictures are taken (tools/viewer_shots.py).
+module = ["playwright", "playwright.*"]
+ignore_missing_imports = true

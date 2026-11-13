@@ -1,0 +1,100 @@
+/* The Rewards tab (the Starts and Replays in training tabs share its layout): the list on the left as ruled
+   rows, what each reward pays on the right; the Add reward and reward-set lists. */
+.rw-layout { display: grid; grid-template-columns: minmax(0, 1fr) 370px; gap: 26px; align-items: start; }
+.rw-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.rw-aside { position: sticky; top: 80px; display: flex; flex-direction: column; gap: 14px; }
+.rw-panel { display: flex; flex-direction: column; gap: 12px; }
+.rw-panel > .heading h3 { font-size: 17px; }
+.rw-hidden { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+
+/* One reward (or one start): a ruled row. The yellow mark of a change waiting for Apply sits in the gutter. */
+.rw-list { display: flex; flex-direction: column; border-top: 3px solid var(--text); }
+.reward { position: relative; padding: 15px 0 16px; display: flex; flex-direction: column; gap: 9px; border-bottom: 1px solid var(--rule); }
+.reward.changed::before { content: ""; position: absolute; left: -14px; top: 15px; bottom: 16px; width: 6px; background: var(--yellow); }
+.reward.off .title, .reward.off .about { opacity: 0.55; }
+.reward .head { display: flex; align-items: center; gap: 12px; }
+.reward .who { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 5px 8px; flex-wrap: wrap; }
+.reward .title { font-weight: 800; font-size: 17px; line-height: 1.25; }
+.reward .kind { font-size: 11.5px; color: var(--dim); }
+/* The reward's share of all reward paid, as a figure. */
+.reward .sharechip { padding: 0 2px; color: var(--text); font-family: var(--sans); font-stretch: 112%; font-weight: 800; font-size: 21px; letter-spacing: 0; line-height: 1; }
+.reward .sharechip::before { display: none; }
+.reward .sharechip.warn { padding: 5px 9px 4px; color: var(--on-yellow); }
+.reward .sharechip.warn::before { display: block; }
+.reward .about { font-size: 13.5px; color: var(--dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 84ch; }
+.reward .about.full { -webkit-line-clamp: unset; display: block; }
+.reward .links, .catalog-item .links { display: flex; gap: 2px 18px; flex-wrap: wrap; }
+.reward > .guide, .reward > .nerd { margin-top: 0; }
+.rw-grid { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: flex-end; }
+.rw-field { display: flex; flex-direction: column; gap: 4px; color: var(--dim); font-stretch: 75%; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; font-size: 11.5px; }
+.rw-field .field { width: 128px; padding: 7px 9px 4px; }
+.rw-field select.field { width: auto; padding-right: 32px; }
+.rw-opt { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--text); padding: 6px 0; }
+/* What a switched-on option adds (zero-sum, a group's parts): set in from a rule, not boxed. */
+.rw-sub { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; padding: 2px 0 2px 14px; border-left: 3px solid var(--rule2); }
+.rw-sub .lead { flex-basis: 100%; font-size: 12.5px; color: var(--dim); max-width: 84ch; }
+.rw-sub .chip .more { padding: 0 2px; }
+.rw-problems { font-size: 12.5px; color: var(--bad-text); display: flex; flex-direction: column; gap: 2px; }
+
+/* Folders and order: a view of the list only. A folder is a head row (open or closed) over its rewards, set
+   in from a rule; the rewards in no folder follow. A reward moves by its handle (drag, or the arrow keys) or
+   its Move to… menu; the line where it would land is drawn in the text colour. */
+.rw-folder { display: flex; flex-direction: column; }
+.rw-folder-head, .rw-loose-head { display: flex; align-items: center; gap: 6px 10px; padding: 8px 0 7px; border-bottom: 1px solid var(--rule); }
+.rw-fold { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 4px 0; border: 0; background: transparent; color: var(--text); text-align: left; font-stretch: 85%; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; font-size: 15px; }
+.rw-fold .chev { flex: none; transform: rotate(90deg); transition: transform 0.12s; }
+.rw-folder.closed .rw-fold .chev { transform: none; }
+.rw-fold .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rw-folder-body { display: flex; flex-direction: column; min-height: 46px; margin: 0 0 4px 7px; padding-left: 18px; border-left: 3px solid var(--rule2); }
+.rw-loose-head { margin-top: 10px; color: var(--dim); }
+.rw-loose-head .name { flex: 1 1 auto; font-stretch: 85%; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; font-size: 13px; }
+.rw-loose { display: flex; flex-direction: column; min-height: 46px; }
+.rw-drop-hint { padding: 13px 0; font-size: 12.5px; color: var(--dim); }
+.reward .grip { width: 22px; height: 30px; margin-left: -4px; cursor: grab; }
+.reward:focus { outline: none; }
+.reward.dragging { opacity: 0.4; }
+.reward.drop-before::after, .reward.drop-after::after { content: ""; position: absolute; left: 0; right: 0; height: 3px; background: var(--text); }
+.reward.drop-before::after { top: -2px; }
+.reward.drop-after::after { bottom: -2px; }
+.drop-into { outline: 2px dashed var(--text); outline-offset: -2px; background: var(--raised); }
+.reward.flash { animation: rw-flash 1.8s ease-out; }
+@keyframes rw-flash { 0%, 45% { background: var(--block); } 100% { background: transparent; } }
+.rw-move { position: relative; }
+.rw-menu { position: absolute; z-index: 5; top: calc(100% + 6px); left: 0; min-width: 220px; display: flex; flex-direction: column; padding: 6px 0; background: var(--raised); border: 1px solid var(--rule2); border-top: 3px solid var(--text); }
+.rw-menu [role=menuitem] { padding: 7px 14px; border: 0; background: transparent; color: var(--text); text-align: left; font-size: 13px; }
+.rw-menu [role=menuitem]:hover:not(:disabled), .rw-menu [role=menuitem]:focus-visible { background: var(--block); }
+.rw-menu [role=menuitem]:disabled { color: var(--dim); cursor: default; }
+.rw-menu .cap { padding: 8px 14px 3px; font-size: 11px; }
+mark.hit { padding: 0 1px; background: var(--yellow); color: var(--on-yellow); }
+.share .line .rw-in { padding: 0 7px; margin-right: 2px; font-size: 10.5px; }
+.rw-dups-in { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.rw-dups-in .row { gap: 8px 14px; }
+
+.shares { display: flex; flex-direction: column; }
+.share { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; align-items: baseline; padding: 9px 0; border-bottom: 1px solid var(--rule); }
+.share:last-child { border-bottom: 0; }
+/* 37_tools.css (joined after this file) has a .share of its own: its height and rule kept out of here. */
+.shares > .share { height: auto; margin-top: 0; border-bottom: 1px solid var(--rule); }
+.shares > .share:last-child { border-bottom: 0; }
+.share .n { font-weight: 700; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share .pct { font-size: 17px; line-height: 1.15; }
+.share .line { grid-column: 1 / -1; font-size: 12px; color: var(--dim); }
+.share.hideable { grid-template-columns: 1fr auto auto; }
+.share .hide { width: 24px; height: 24px; align-self: center; }
+.rw-view { display: flex; gap: 6px 14px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.rw-view select { width: auto; }
+
+/* The Add reward and reward-set lists: a group's head stays in view while its rewards scroll under it. */
+.catalog { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 150px; max-height: 52vh; overflow: auto; padding-right: 2px; }
+.catalog-item { text-align: left; padding: 10px 4px; border: 0; border-bottom: 1px solid var(--rule); background: transparent; display: flex; flex-direction: column; gap: 4px; }
+.catalog-item:hover { background: var(--raised); }
+.catalog-pick { text-align: left; border: 0; padding: 0; background: transparent; color: inherit; display: flex; flex-direction: column; gap: 4px; cursor: pointer; }
+.catalog-head { position: sticky; top: 0; z-index: 1; padding: 10px 2px 5px; background: var(--panel); border-bottom: 3px solid var(--text); font-weight: 800; font-size: 14px; }
+.catalog-item .about { font-size: 12.5px; color: var(--dim); }
+.catalog-item:hover .nerd, .catalog-item:hover .guide { background: var(--panel); }
+.catalog-item:hover .nerd .codeblock { background: var(--raised); }
+.seg .n { margin-left: 4px; font-variant-numeric: tabular-nums; opacity: 0.75; }
+@media (max-width: 1150px) { .rw-layout { grid-template-columns: 1fr; } .rw-aside { position: static; } }
+/* Each reward in the Add a reward list says what a click does. */
+.catalog-pick .pick-word { align-self: flex-start; margin-top: 4px; color: var(--text); font-stretch: 80%; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; font-size: 11.5px; }
+.catalog-pick:hover .pick-word, .catalog-pick:focus-visible .pick-word { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }

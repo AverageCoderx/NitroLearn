@@ -1,0 +1,27 @@
+/* Watching a bot play: the dialog's parts, and the box in which the match viewer fills the window. The
+   viewer's own style comes with its files, the first time a game is watched. */
+.watch-part { display: flex; flex-direction: column; gap: 9px; padding-top: 14px; border-top: 1px solid var(--rule); }
+.watch-part p, .watch-note { margin: 0; font-size: 13px; }
+.watch-head { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
+.watch-fields { display: flex; align-items: flex-end; gap: 12px 22px; flex-wrap: wrap; }
+.watch-fields > div, .watch-fields > label { display: flex; flex-direction: column; gap: 6px; }
+.watch-fields > label { flex: 1 1 240px; }
+.watch-fields > .watch-note { flex: 1 1 200px; padding-bottom: 8px; }
+.watch-earlier { display: flex; flex-direction: column; margin-top: 4px; }
+.watch-rec { display: flex; align-items: center; justify-content: space-between; gap: 6px 14px; flex-wrap: wrap; padding: 7px 0; border-top: 1px solid var(--rule); font-size: 13px; }
+.watch-earlier .cap { padding-bottom: 6px; color: var(--dim); }
+/* A recording under way: how long it will take is not known, so the bar only shows that it runs. */
+.watch-run { display: flex; flex-direction: column; gap: 10px; }
+.watch-run .bar > span { width: 30%; animation: watch-run 1.5s linear infinite; }
+@keyframes watch-run { from { transform: translateX(-100%); } to { transform: translateX(334%); } }
+@media (prefers-reduced-motion: reduce) { .watch-run .bar > span { width: 100%; animation: none; opacity: 0.5; } }
+
+/* The viewer's box is dark in both themes, as the viewer is (its asphalt: #141413). */
+html[data-watching] { overflow: hidden; }
+#watching { position: fixed; inset: 0; z-index: 55; background: #141413; color: #F3F1EC; color-scheme: dark;
+  --text: #F3F1EC; --dim: #ACA9A1; --block: #33312D; --rule2: #4D4A44; }
+/* The page's focus mark has a dark line inside it; the viewer draws its own. */
+#watching .nv-root :focus-visible { box-shadow: 0 0 0 0px #141413; }
+.watch-wait { position: absolute; inset: 0; z-index: 60; display: grid; place-content: center; justify-items: center; gap: 14px; padding: 24px; background: #141413; text-align: center; }
+.watch-wait .display { font-size: 26px; }
+.watch-wait .watch-note { color: var(--dim); max-width: 46ch; }

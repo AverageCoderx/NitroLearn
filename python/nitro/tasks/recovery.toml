@@ -1,0 +1,23 @@
+# Practice task: land on the wheels. A lone car starts 300-1200 units up, turned and spinning at random;
+# the episode ends once it is on its wheels or after 6 seconds. Exercises action masks (in the air only
+# the air actions are allowed). Measured by time to land on wheels (nitro.tasks).
+
+[env]
+opponents = false
+num_arenas = 512
+
+[terminals]
+no_touch_seconds = 0
+max_episode_seconds = 6
+end_on_landing = true
+
+# A penalty for every moment off the wheels (on the roof counts as off), so landing quickly on the
+# wheels is what pays.
+[[rewards]]
+name = "air"
+weight = -1
+
+[[state_setters]]
+name = "airborne"
+min_height_uu = 300
+max_height_uu = 1200

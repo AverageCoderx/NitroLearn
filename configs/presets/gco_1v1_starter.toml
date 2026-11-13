@@ -1,0 +1,123 @@
+# NitroLearn GCO starter: a 1v1 bot that learns from goals alone. An untested design to try.
+#
+#   .\nitro train configs\presets\gco_1v1_starter.toml --name my-gco-bot
+#
+# "GCO" means goal / concede only: the only reward is +1 for scoring and -1 for conceding, so the bot is
+# never told that touching the ball, picking up boost or shooting is good. It has to find all of that out
+# for itself. That is much harder than learning from the usual mix of small rewards, and it needs a lot of
+# training before anything shows: expect a bot that drives around aimlessly for a long time. In return it
+# is never taught a habit that only earns reward and does not win games.
+#
+# The design follows a published goal-only bot (credited in CREDITS.md; none of its code):
+#   - a residual shared trunk: layers both the policy and the value side read, each adding to what the
+#     layer before it found instead of replacing it, so a deep network stays easy to train;
+#   - a much bigger value side than usual, with four value heads (four estimates of how good a moment is,
+#     each learnt a different way), because with goals as the only reward, judging moments well is most of
+#     the work;
+#   - extra learning signals (in [ppo] below) that make a goal-only reward learnable;
+#   - Muon, a different way of taking learning steps for big networks.
+# None of these was measured to train a better bot here: this is a starting point to experiment with, not
+# a proven recipe. The 1v1 starter (1v1_starter.toml) is the proven way to a first bot.
+#
+# About 5 million numbers (parameters) in all; the bot that plays uses about 1.1 million of them, the rest
+# only help it learn (`.\nitro check-settings <file>` prints both counts). Learning with it takes about 3 GB
+# of graphics-card memory, so it fits a card with 8 GB. The design's full size (about 23 million numbers,
+# about 7.5 GB while learning) is under [model] below, for cards with 12 GB or more.
+#
+# The run keeps its own copy of this file (runs\my-gco-bot\settings.toml). To change a setting during a
+# run: stop it with Ctrl+C, edit that copy, then `.\nitro resume my-gco-bot`. Settings marked "fixed"
+# cannot change once the bot has its first save.
+
+# Left at their defaults: 1024 games at once, the nitro_v2 observation, tick skip 4 (30 decisions a second)
+# and leaky_relu between layers.
+
+[paths]
+# The Rocket League arena meshes: NitroLearn's own collision_meshes folder unless a path is written here.
+
+[run]
+precision = "fp16"          # Half precision on the graphics card: networks this big train about twice as
+                            # fast and learned as well.
+console = "report"          # A full report in the console every 10 seconds; "line" = one line.
+# Two graphics cards (Linux only) can train this bot together: add `cards = 2` here. Each card plays half the
+# games and learns on its half; the learning signals below are worked out over both cards' samples.
+
+[env]
+team_size = 1               # 1v1. A goal-only reward is hardest with teammates (whose goal was it?), so this
+                            # design is for 1v1 only. Fixed.
+
+[terminals]
+# A goal ends the game. 20 seconds without a touch also ends it, but as a pause rather than an end: the
+# value of where the game stood still counts, so a stalled game teaches nothing wrong.
+no_touch_seconds = 20
+
+[model]
+shared = [520, 520, 520]     # The trunk the policy and the value side both read. Fixed.
+policy = [352, 352, 352]     # The policy on top of it (which of the 90 actions to take). Fixed.
+value = [600, 600, 600]      # The value side's own trunk, which every value head reads. Fixed.
+value_head_layers = [600, 600]  # Each value head's own layers on top of the value trunk. Fixed.
+# The design's full size, for cards with 12 GB or more: use these four lines instead of the four above.
+# shared = [1152, 1152, 1152]
+# policy = [768, 768, 768]
+# value = [1280, 1280, 1280]
+# value_head_layers = [1280, 1280]
+value_heads = ["main", "goal", "vdag1", "vdag2"]  # "main": the value training learns as usual; "goal": the
+                             # goal critic; "vdag1" and "vdag2": the twin critics (see [ppo]). Only for
+                             # learning: none of them is in the exported bot. Fixed.
+residual = true              # Layers as wide as the one before them add their output to their input
+                             # (x + layer(x)); each network's first layer, which changes the width, is plain.
+                             # Fixed.
+
+[ppo]
+optimizer = "muon"          # Muon for the hidden layers' weight grids, Adam for everything else. Untested here.
+graphed_steps = false       # Recording learning steps as graphics-card graphs is faster, but with Muon and
+                            # these signals it is not yet checked on a graphics card: off to be safe.
+steps_per_iteration = 200_000  # Agent steps collected before each learning update.
+minibatches = 8             # 200,000 / 8 = 25,000 samples a learning step.
+policy_lr = 1.5e-4          # The policy's (and the shared trunk's) learning rate. Lower than the 1v1
+                            # starter's 4.5e-4: Muon's steps are bigger for the same rate.
+discount_half_life = 14.88  # Seconds after which a future reward counts half: goals are rare, so the bot
+                            # must look far ahead (gamma 0.99845 at 30 decisions a second).
+# The learning signals that make a goal-only reward learnable. The values are the design's where it gave
+# one; the entropy target and the twins' restart interval are guesses.
+vdag_beta = 0.30            # Twin optimistic critics: two extra value heads that rate moments hopefully,
+                            # pushing the bot toward moments it could do well from (30% of the advantages'
+                            # spread). Needs "vdag1" and "vdag2" in value_heads.
+vdag_reinit_steps = 500_000_000  # The twin critics start afresh this often, so they stay hopeful (a guess).
+goal_critic_weight = 0.25   # The goal critic: a value head that looks about 77 seconds ahead, adding a
+                            # quarter of the advantages' spread. Needs "goal" in value_heads.
+advantage_keep = 0.5        # The policy learns from the half of each step's samples that say the most
+                            # (the largest advantages): with goals only, most samples carry almost nothing.
+entropy_target = 0.5        # Keep the bot's randomness near 0.5 (0 = always sure, 1 = picks at random) by
+                            # moving the exploring bonus up and down (a guess: the design gave no number).
+entropy_target_rate = 0.05  # How fast the bonus moves: slowly, so it does not hit its floor early.
+entropy_target_min = 1.0    # The bonus never goes below ppo.entropy (0.035): it only rises when the
+                            # randomness falls under the target, so exploring never stops.
+
+# The only reward: a goal. The goal reward pays 1 to the team that scores; with concede_scale = 0 the other
+# team gets nothing from it, and zero_sum then takes the opponents' share away, so scoring is +1 and
+# conceding -1, always adding up to 0.
+[[rewards]]
+name = "goal"
+weight = 1
+concede_scale = 0
+zero_sum = { team_spirit = 1, opponent_scale = 1 }
+
+# How games start: real kickoffs, random positions and speeds, and the ball near the cars.
+[[state_setters]]
+name = "kickoff"
+weight = 1
+
+[[state_setters]]
+name = "random"
+weight = 1
+
+[[state_setters]]
+name = "ball_touch"         # The ball at rest, each car at rest 250 to 1,500 units from it.
+weight = 0.5
+min_distance_uu = 250
+max_distance_uu = 1500
+
+# Playing against saved past versions of the bot, so it keeps beating earlier play styles: one game in
+# five against a past version, the rest against itself.
+[selfplay]
+enabled = true

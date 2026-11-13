@@ -1,0 +1,62 @@
+# Breezi flicks: the musty set plus the Breezi bonus and the tornado shaping. For 1v1 at tick skip 4.
+# group: moves
+
+[[rewards]]
+name = "face_ball"
+weight = 0.25
+
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 4
+
+[[rewards]]
+name = "velocity_ball_to_goal"
+weight = 2
+zero_sum = { team_spirit = 1 }
+
+[[rewards]]
+name = "goal_in_mouth"
+weight = 25
+
+[[rewards]]
+name = "mawkzy_flick"
+weight = 60
+flick_weight = 0
+backward_penalty = 0
+min_possession_time = 0.05
+# The older hood dribble pay, without the pose shaping
+dribble_rate = 0.1
+setup_rate = 0.1
+pose_shaping_weight = 0
+
+[[rewards]]
+name = "musty_pose_shaping"
+weight = 30
+
+[[rewards]]
+name = "musty_flick"
+weight = 200
+on_net_bonus = 0.4
+on_net_power_mix = 0.5
+stretch_shot_weight = 0.25
+stretch_shot_from = 1600
+stretch_shot_full = 3000
+stretch_gain_weight = 0.15
+stretch_gain_from = 500
+stretch_gain_full = 1500
+
+[[rewards]]
+name = "breezi_flick"
+weight = 400
+on_net_bonus = 0.4
+on_net_power_mix = 0.5
+stretch_shot_weight = 0.25
+stretch_shot_from = 1600
+stretch_shot_full = 3000
+stretch_gain_weight = 0.15
+stretch_gain_from = 500
+stretch_gain_full = 1500
+
+[[rewards]]
+name = "tornado_shaping"
+weight = 30

@@ -1,0 +1,55 @@
+<!doctype html>
+<!-- The dashboard's page. nitro/dashboard/app.py puts it together: the style parts (NN_*.css) and the script
+     parts (NN_*.js) beside this file, joined in name order, the fonts, the brand's logo and credit where they
+     are marked, and what the page shows first. Every action goes to Python through pywebview's bridge
+     (nitro/dashboard/api.py). -->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title><!--NAME--> <!--CREDIT--></title>
+<style>
+/*FONTS*/
+/*STYLE*/
+</style>
+</head>
+<body>
+<header id="band">
+  <button type="button" class="lockup" data-go="home" title="To the Garage">
+    <!--LOGO-->
+    <span class="wordmark"><b>Nitro</b>Learn</span>
+    <span class="by"><!--CREDIT--></span>
+  </button>
+  <nav class="nav" aria-label="Main">
+    <button type="button" data-go="home">Garage</button>
+    <button type="button" data-go="resources">Resources</button>
+    <button type="button" data-go="doctor">Check this PC</button>
+    <button type="button" data-go="prefs">App settings</button>
+    <button type="button" data-go="help" title="Support, bug reports and ideas: the Vanta Discord server">Help</button>
+  </nav>
+  <div class="finder" id="finder" role="search">
+    <div class="finder-box">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg>
+      <input id="finder-q" type="text" role="combobox" aria-label="Search or run anything" aria-expanded="false" aria-controls="finder-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" placeholder="Search or run anything">
+      <kbd aria-hidden="true">Ctrl K</kbd>
+    </div>
+    <div id="finder-list" role="listbox" aria-label="What was found" hidden></div>
+  </div>
+  <div class="band-tools">
+    <button type="button" class="band-btn" data-act="theme" id="theme-switch" aria-label="Switch between the dark and the light look"></button>
+    <button type="button" class="band-btn" data-go="rlbot">Open RLBot</button>
+  </div>
+</header>
+<main id="main" aria-live="polite"></main>
+<footer id="foot">
+  <span>For offline training and RLBot matches only. Never use a bot online against real players.</span>
+  <span><!--NAME--> <!--CREDIT--> · free for non-commercial use</span>
+</footer>
+<div id="pending" hidden></div>
+<div id="modal" hidden></div>
+<div id="toasts" aria-live="assertive"></div>
+<script>
+/*SCRIPT*/
+</script>
+</body>
+</html>

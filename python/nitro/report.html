@@ -1,0 +1,85 @@
+<!doctype html>
+<!-- Template for runs/<name>/report.html, filled in by nitro/metrics.py (string.Template placeholders). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="120">
+<title>$title</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --page: #f9f9f7; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --series: #2a78d6; --warning: #fab219; --border: rgba(11,11,11,0.10);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface: #1a1a19; --page: #0d0d0d; --ink: #f0efec; --ink-2: #c3c2b7;
+    --grid: #2c2c2a; --series: #3987e5; --border: rgba(255,255,255,0.10);
+  }
+}
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.5 "Segoe UI", system-ui, sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.notes { color: var(--ink-2); margin: 0 0 16px; padding-left: 18px; }
+.warnings { list-style: none; padding: 0; margin: 0 0 16px; display: grid; gap: 6px; }
+.badge { font-weight: 600; border-left: 4px solid var(--warning); padding-left: 6px; }
+.grid-charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.chart {
+  margin: 0; padding: 10px 12px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+}
+figcaption { display: grid; gap: 2px; margin-bottom: 4px; }
+figcaption span { color: var(--ink-2); font-size: 12px; }
+svg { width: 100%; height: auto; display: block; overflow: visible; }
+.grid { stroke: var(--grid); stroke-width: 1; }
+.tick { fill: var(--muted); font-size: 10px; }
+.end-x { text-anchor: end; }
+.wash { fill: var(--series); opacity: 0.1; }
+.series { fill: none; stroke: var(--series); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.end { fill: var(--series); stroke: var(--surface); stroke-width: 2; }
+.cross { stroke: var(--muted); stroke-width: 1; }
+.now { color: var(--ink-2); font-size: 12px; }
+.tip {
+  position: fixed; pointer-events: none; display: none; padding: 4px 8px; font-size: 12px;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 6px;
+}
+</style>
+</head>
+<body>
+<main>
+<h1>$title</h1>
+<ul class="notes">$notes</ul>
+<ul class="warnings">$warnings</ul>
+<div class="grid-charts">$charts</div>
+<p class="notes">Every value is also in <code>metrics.csv</code> next to this file. The page reloads every 2 minutes.</p>
+</main>
+<div class="tip" id="tip"></div>
+<script>
+const tip = document.getElementById("tip");
+const fmt = v => Math.abs(v) >= 1e6 ? (v / 1e6).toPrecision(3) + "M"
+  : Math.abs(v) >= 1e3 ? (v / 1e3).toPrecision(3) + "K"
+  : (v !== 0 && Math.abs(v) < 1e-3) ? v.toExponential(2) : v.toPrecision(3);
+for (const svg of document.querySelectorAll("svg[data-points]")) {
+  const pts = JSON.parse(svg.dataset.points), x0 = +svg.dataset.x0, x1 = +svg.dataset.x1;
+  const left = +svg.dataset.left, plot = +svg.dataset.plot, cross = svg.querySelector(".cross");
+  const hide = () => { tip.style.display = "none"; cross.setAttribute("x1", -10); cross.setAttribute("x2", -10); };
+  svg.addEventListener("pointermove", e => {
+    const box = svg.getBoundingClientRect(), scale = svg.viewBox.baseVal.width / box.width;
+    const x = x0 + ((e.clientX - box.left) * scale - left) / plot * (x1 - x0);
+    let best = pts[0];
+    for (const p of pts) if (Math.abs(p[0] - x) < Math.abs(best[0] - x)) best = p;
+    const cx = left + (best[0] - x0) / (x1 - x0) * plot;
+    cross.setAttribute("x1", cx);
+    cross.setAttribute("x2", cx);
+    tip.textContent = fmt(best[1]) + "  at " + fmt(best[0]) + " steps";
+    tip.style.display = "block";
+    tip.style.left = (e.clientX + 12) + "px";
+    tip.style.top = (e.clientY + 12) + "px";
+  });
+  svg.addEventListener("pointerleave", hide);
+}
+</script>
+</body>
+</html>

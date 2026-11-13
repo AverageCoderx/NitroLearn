@@ -1,0 +1,53 @@
+# Build outputs, environments and tool folders (installer/build: the setup wizard's inputs and output)
+build/
+build-*/
+target/
+.venv/
+.tmp/
+.tools/
+.cache/
+.scratch/
+*.pyc
+__pycache__/
+*.pyd
+*.pyd.old-*
+*.so
+*.pdb
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Game assets (fetched by `nitro fetch-meshes` or dumped from Rocket League; never commit)
+collision_meshes/
+*.cmf
+
+# Training runs and their saves, exported bots (nitro export), A/B comparisons (nitro ab)
+runs/
+/saves/
+bots/
+ab/
+wandb/
+
+# Replays and recordings (other players' names and ids; never committed), and the replay store
+/replays/
+*.replay
+*.rlpr
+*.rlpr.zst
+# RocketSim's recordings (nitro fetch-recordings)
+/rocketsim_recordings/
+
+# Your own settings files (the Shortcuts' "New settings file"; updates never touch them)
+/my-settings/
+
+# Bots packed to move to another computer (nitro pack): they hold trained saves
+*.nitropack.zip
+/packs/
+
+# Large regenerable profiler exports
+*.sqlite
+*.nsys-rep
+python/nitro/THIRD_PARTY_NOTICES.md
+
+# A folder of the release's files for an offline install (the installers read it), and the setup's log
+/release-files/
+/install-log.txt

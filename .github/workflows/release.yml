@@ -1,0 +1,275 @@
+# The release's ready-made files, built when a version tag (v<version>, matching Cargo.toml) is pushed, and
+# attached to that tag's GitHub release. The installers download them (tools/install_steps.py):
+#   nitrolearn-<version>-cp311-abi3-win_amd64.whl            the core (abi3: any Python 3.11+), Windows
+#   nitrolearn-<version>-cp311-abi3-manylinux_2_28_x86_64.whl the core, Linux (glibc 2.28 or newer)
+#   nitrolearn-programs-<version>-windows-x64.zip             nitro_bot, nitro-replicar, replicar (.exe)
+#   nitrolearn-programs-<version>-linux-x64.tar.gz            the same for Linux
+#   NitroLearn-Setup.exe                                      the Windows setup wizard (installer/NitroLearn.iss);
+#                                                             .../releases/latest/download/NitroLearn-Setup.exe
+#   the release's own copies of what an install downloads (tools/bundles.py): uv and Python for each platform,
+#   rocketsim-recordings.zip, nitrolearn-crates-<version>.tar.gz, nitrolearn-wheels-<version>-<platform>.zip,
+#   and BUNDLED-NOTICES.md (where each comes from, its licence)
+#   SHA256SUMS.txt                                            every file's SHA-256, checked by the installers
+# Each programs archive holds prebuilt.json, the fingerprint of the code each program was built from
+# (python -m nitro.prebuilt); NitroLearn uses a program only while that matches the folder's code. It also
+# holds THIRD_PARTY_NOTICES.md: the crates linked into each program for its platform, with their copyright
+# notices and licences (python/nitro/notices.py, run where the programs were built). Each wheel carries the
+# same for the compiled core, as nitro/THIRD_PARTY_NOTICES.md ([tool.maturin] include).
+# The Windows programs link the C runtime statically (+crt-static), so they need no Visual C++ runtime.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["release-trial/**"] # a trial build of a branch: artifacts only, as workflow_dispatch
+  workflow_dispatch: # a trial build: the files are kept as the run's artifacts (release-files), no release
+    inputs:
+      publish:
+        description: "Publish this version: create its tag (v + Cargo.toml's version) and its release from main"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  REPLICAR_VERSION: "2.2.1" # nitro.replays.REPLICAR_VERSION
+
+jobs:
+  core:
+    name: core wheel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Third-party notices of the core
+        shell: bash
+        run: |
+          python python/nitro/notices.py core --fetch --out python/nitro/THIRD_PARTY_NOTICES.md --target ${{ matrix.target }}
+      - name: Build the abi3 wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+          target: x86_64
+          manylinux: "2_28"
+          rust-toolchain: "1.97.0" # rust-toolchain.toml
+      - name: The wheel's core loads
+        shell: bash
+        run: |
+          python -m pip install --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          python -c "from nitro import _core; print('core', _core.__version__)"
+          python -c "import nitro, pathlib; print((pathlib.Path(nitro.__file__).parent / 'THIRD_PARTY_NOTICES.md').read_text(encoding='utf-8')[:200])"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-${{ matrix.os }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  programs-windows:
+    name: programs (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (the version rust-toolchain.toml pins)
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
+      - name: Build nitro_bot, nitro-replicar and replicar
+        shell: pwsh
+        run: |
+          $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+          # Static C runtime; the build machine's folders replaced by short names (as `nitro export` does).
+          $env:RUSTFLAGS = "-C target-feature=+crt-static " +
+            "--remap-path-prefix=$(Join-Path $cargoHome 'registry\src')=crates " +
+            "--remap-path-prefix=$env:GITHUB_WORKSPACE=nitrolearn"
+          cargo build --release --locked -p nitro_bot
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo build --release --locked --manifest-path crates/nitro_replicar/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo install replicar-cli --version $env:REPLICAR_VERSION --locked --root out/replicar
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          New-Item -ItemType Directory -Force programs | Out-Null
+          Copy-Item target/release/nitro_bot.exe programs/
+          Copy-Item crates/nitro_replicar/target/release/nitro-replicar.exe programs/
+          Copy-Item out/replicar/bin/replicar.exe programs/
+      - name: Third-party notices
+        shell: pwsh
+        run: |
+          python python/nitro/notices.py programs --fetch --out programs/THIRD_PARTY_NOTICES.md `
+            --replicar-version $env:REPLICAR_VERSION --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: No Visual C++ runtime needed
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { Write-Error 'dumpbin.exe not found'; exit 1 }
+          foreach ($exe in Get-ChildItem programs/*.exe) {
+            $deps = & $dumpbin /dependents $exe.FullName | Out-String
+            if ($deps -match '(?i)vcruntime|msvcp') { Write-Error "$($exe.Name) needs the VC++ runtime"; exit 1 }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: programs-windows-x64
+          path: programs/*
+          if-no-files-found: error
+
+  programs-linux:
+    name: programs (Linux)
+    runs-on: ubuntu-latest
+    # The same old glibc as the manylinux_2_28 wheel, so the programs run on as many Linux systems.
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (the version rust-toolchain.toml pins)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.97.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build nitro_bot, nitro-replicar and replicar
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=$HOME/.cargo/registry/src=crates --remap-path-prefix=$GITHUB_WORKSPACE=nitrolearn"
+          cargo build --release --locked -p nitro_bot
+          cargo build --release --locked --manifest-path crates/nitro_replicar/Cargo.toml
+          cargo install replicar-cli --version "$REPLICAR_VERSION" --locked --root out/replicar
+          mkdir -p programs
+          cp target/release/nitro_bot crates/nitro_replicar/target/release/nitro-replicar out/replicar/bin/replicar programs/
+      - name: Third-party notices
+        run: |
+          /opt/python/cp311-cp311/bin/python python/nitro/notices.py programs --fetch --out programs/THIRD_PARTY_NOTICES.md \
+            --replicar-version "$REPLICAR_VERSION" --target x86_64-unknown-linux-gnu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: programs-linux-x64
+          path: programs/*
+          if-no-files-found: error
+
+  bundles:
+    name: the release's own copies (uv, Python, recordings, crates, wheels)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Rust (the version rust-toolchain.toml pins) and uv (the version the installers pin)
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
+          python -m pip install "uv==0.11.32"
+      - name: Fetch, vendor and pack them, each checked against its pin
+        env:
+          RUSTUP_TOOLCHAIN: "1.97.0" # the pinned version, without rust-toolchain.toml's rustfmt/clippy (not needed to vendor)
+        run: |
+          python tools/bundles.py upstream bundles
+          python tools/bundles.py crates bundles
+          python tools/bundles.py wheels bundles --platform windows-x64
+          python tools/bundles.py wheels bundles --platform linux-x64
+          python tools/bundles.py notices bundles
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles
+          path: bundles/*
+          if-no-files-found: error
+
+  setup:
+    name: setup wizard (NitroLearn-Setup.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Inno Setup 6 (the runner's own, else the newest from Chocolatey; its version goes in the log)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y; if ($LASTEXITCODE -ne 0) { exit 1 } }
+          if (-not (Test-Path $iscc)) { Write-Error "ISCC.exe not found after installing Inno Setup"; exit 1 }
+          (Get-Item $iscc).VersionInfo.ProductVersion
+      - name: The wizard's files (NitroLearn's tree, uv, the licence page)
+        run: python tools/setup_wizard.py
+      - name: Compile NitroLearn-Setup.exe
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" installer\NitroLearn.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $size = (Get-Item installer\build\output\NitroLearn-Setup.exe).Length
+          Write-Host ("NitroLearn-Setup.exe: {0:N1} MB" -f ($size / 1MB))
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup
+          path: installer/build/output/NitroLearn-Setup.exe
+          if-no-files-found: error
+
+  release:
+    name: release files
+    needs: [core, programs-windows, programs-linux, bundles, setup]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Package the programs with their prebuilt.json, and hash everything
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "The tag $GITHUB_REF_NAME does not match Cargo.toml's version $version" >&2
+            exit 1
+          fi
+          mkdir -p release
+          cp artifacts/core-*/*.whl release/
+          # prebuilt.json is written from this (Linux) checkout; the fingerprints ignore line endings.
+          python -m pip install --no-deps release/*manylinux*.whl
+          for platform in windows-x64 linux-x64; do
+            python -m nitro.prebuilt . "artifacts/programs-$platform"
+          done
+          (cd artifacts/programs-windows-x64 && zip -q -X "../../release/nitrolearn-programs-$version-windows-x64.zip" *)
+          chmod +x artifacts/programs-linux-x64/nitro_bot artifacts/programs-linux-x64/*replicar
+          tar -czf "release/nitrolearn-programs-$version-linux-x64.tar.gz" -C artifacts/programs-linux-x64 .
+          cp artifacts/bundles/* artifacts/setup/NitroLearn-Setup.exe release/
+          python tools/bundles.py check release
+          (cd release && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: release/*
+      - name: Attach to the tag's release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release/* --title "NitroLearn $VERSION" --notes "Windows: download NitroLearn-Setup.exe and double-click it (Windows may say it protected your PC: choose More info, then Run anyway). The other files are what the installers download; BUNDLED-NOTICES.md lists the copies of other projects' files and their licences."
+          fi
+      - name: Publish this version (a manual run with publish ticked, from main)
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "v$VERSION is published already" >&2
+            exit 1
+          fi
+          gh release create "v$VERSION" release/* --target "$GITHUB_SHA" --title "NitroLearn $VERSION" --notes "Windows: download NitroLearn-Setup.exe and double-click it (Windows may say it protected your PC: choose More info, then Run anyway). Linux: download the source code (.tar.gz), unpack it, and run \`bash install.sh\` in its folder. The other files are what the installers download; BUNDLED-NOTICES.md lists the copies of other projects' files and their licences."

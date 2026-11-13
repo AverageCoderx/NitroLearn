@@ -1,0 +1,18 @@
+# Practice task: collect boost. A lone car starts at rest with no boost; every episode lasts 20 seconds.
+# Checks that the observation carries the boost pads. Measured by boost collected per episode
+# (nitro.tasks).
+
+[env]
+opponents = false
+num_arenas = 512
+
+[terminals]
+no_touch_seconds = 0
+max_episode_seconds = 20
+
+[[rewards]]
+name = "pickup_boost"
+weight = 10
+
+[[state_setters]]
+name = "boost_pickup"

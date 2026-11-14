@@ -2,7 +2,7 @@
 (Windows) and install.sh (Linux) run this with `.venv`'s Python. Standard library only, since NitroLearn is
 not installed yet when it starts.
 
-    python tools/install_steps.py --uv <uv> [--torch auto|cpu|cu126|cu128|cu130] [--cpu | --gpu] [--rust]
+    python tools/install_steps.py --uv <uv> [--torch auto|cpu|cu126|cu130|cu132] [--cpu | --gpu] [--rust]
                                   [--from-source] [--dev] [--recordings] [--no-launch] [--rlbot | --no-rlbot]
                                   [--desktop | --start-menu | --no-shortcuts] [--parts LIST]
                                   [--bundles FOLDER] [--progress]
@@ -33,6 +33,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import locale
 import os
 import re
 import shutil
@@ -40,11 +41,13 @@ import subprocess
 import sys
 import sysconfig
 import tarfile
+import threading
 import time
 import tomllib
 import urllib.error
 import urllib.request
 import zipfile
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,7 +56,6 @@ from types import ModuleType
 ROOT = Path(__file__).resolve().parents[1]
 TORCH_VERSION = "2.14.1"
 TORCH_INDEX = "https://download.pytorch.org/whl/"
-TORCH_VARIANTS = ("cpu", "cu126", "cu128", "cu130")
 # Where the release's ready-made files are: the core (a wheel per platform), the programs, the bundled
 # copies (tools/bundles.py), SHA256SUMS.txt.
 RELEASES = "https://github.com/AverageCoderx/NitroLearn/releases/download/v{version}/"
@@ -154,29 +156,309 @@ RUSTUP_PATH_NOTE = (
     "NitroLearn finds Rust in its own folder by itself."
 )
 TIMED_OUT = 124  # run()'s code for a program stopped at its time limit
+KEPT_LINES = 80  # the last lines of a program's output kept to say why it failed
+HEARTBEAT_SECONDS = 60  # a long download with no output says it is still going this often
+UV_HTTP_TIMEOUT = "300"  # seconds uv waits for data before a download counts as stalled (uv's own: 30)
+NETWORK_TRIES = 4  # a uv step that fails on the network is tried this often in all
+NETWORK_WAITS = (15, 45, 90)  # seconds before each new try
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# uv draws its error trees with letters the classic Windows console shows as "?": plain ones instead.
+PLAIN = (
+    ("\u251c\u2500\u25b6", "->"),
+    ("\u2570\u2500\u25b6", "->"),
+    ("\u00d7", "x"),
+    ("\u2502", "|"),
+    ("\u2500", "-"),
+    ("\u25b6", ">"),
+    ("\u2570", "`"),
+    ("\u251c", "|"),
+    ("\u26a0", "!"),
+)
+# Said when a file in the folder could not be written (in use, or held by an antivirus scan).
+LOCKED_HINT = (
+    "Close NitroLearn (the dashboard, and any bot that is training: training goes on in the background) "
+    "and anything else using its folder, then run the installer again. Antivirus programs can also hold new "
+    "files while they scan them: allow NitroLearn's folder in your antivirus."
+)
+# Said when the reason is none of the usual ones.
+HELP_HINT = (
+    "Run the installer again; what was already downloaded is kept. If it stops the same way, ask in "
+    "NitroLearn's Discord (https://discord.gg/bYP3kYtryg) with install-log.txt from NitroLearn's folder (the "
+    "setup wizard's log) or the text of this window."
+)
 
 
-def run(command: Sequence[str | Path], check: bool = True, minutes: float | None = None) -> int:
-    """Runs a program with its output shown and nothing to read on its input; a failure stops setup when
-    `check`. With `minutes` (a step that downloads), the program is stopped once it has run that long, and
-    a failure or the stop says what usually holds downloads back."""
-    what = f"{Path(str(command[0])).name} {command[1] if len(command) > 1 else ''}".strip()
+def plain(line: str) -> str:
+    """A line of a program's output as every console shows it: no colour codes, uv's tree letters plain."""
+    line = ANSI.sub("", line).replace("\r", "")
+    for fancy, simple in PLAIN:
+        line = line.replace(fancy, simple)
+    return line.rstrip()
+
+
+def _decode(raw: bytes) -> str:
     try:
-        code = subprocess.run(
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode(locale.getpreferredencoding(False), errors="replace")
+
+
+@dataclass(frozen=True)
+class Ran:
+    """How a program ended: its exit code and the last lines it wrote (plain)."""
+
+    code: int
+    lines: tuple[str, ...] = ()
+    timed_out: bool = False
+
+
+def run_output(
+    command: Sequence[str | Path],
+    minutes: float | None = None,
+    env: Mapping[str, str] | None = None,
+    heartbeat: str = "",
+) -> Ran:
+    """Runs a program with nothing to read on its input. Its output is shown as it comes (plain, so it reads
+    well in any console and in the setup wizard's log) and the last lines are kept to say why it failed. With
+    `minutes`, it is stopped once it has run that long; with `heartbeat` (what it does), a minute without
+    output says it is still going and how much it has written to the disk."""
+    try:
+        process = subprocess.Popen(
             [str(part) for part in command],
             stdin=subprocess.DEVNULL,
-            timeout=None if minutes is None else minutes * 60,
-            check=False,
-        ).returncode
-    except subprocess.TimeoutExpired:
-        stuck = f"{what} was stopped after {minutes} minutes without finishing. {failure_hint()}"
-        if check:
-            raise Stop(stuck) from None
-        note(stuck)
-        return TIMED_OUT
-    if check and code != 0:
-        raise Stop(f"{what} failed (see above)." + (f" {failure_hint()}" if minutes is not None else ""))
-    return code
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=None if env is None else dict(env),
+        )
+    except OSError as err:
+        return Ran(127, (f"{Path(str(command[0])).name} could not be started: {err}",))
+    kept: deque[str] = deque(maxlen=KEPT_LINES)
+    heard = [time.monotonic()]
+
+    def read() -> None:
+        assert process.stdout is not None
+        for raw in iter(process.stdout.readline, b""):
+            line = plain(_decode(raw))
+            kept.append(line)
+            heard[0] = time.monotonic()
+            print(line, flush=True)
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    start = time.monotonic()
+    deadline = None if minutes is None else start + minutes * 60
+    free_before = free_gb(ROOT) if heartbeat else None
+    timed_out = False
+    while True:
+        wait: float | None = HEARTBEAT_SECONDS if heartbeat else None
+        if deadline is not None:
+            left = max(0.0, deadline - time.monotonic())
+            wait = left if wait is None else min(wait, left)
+        try:
+            code = process.wait(timeout=wait)
+            break
+        except subprocess.TimeoutExpired:
+            if deadline is not None and time.monotonic() >= deadline:
+                process.kill()
+                process.wait()
+                code, timed_out = TIMED_OUT, True
+                break
+            if heartbeat and time.monotonic() - heard[0] >= HEARTBEAT_SECONDS:
+                note(still_going(heartbeat, time.monotonic() - start, free_before, free_gb(ROOT)))
+    reader.join(timeout=10)
+    return Ran(code, tuple(kept), timed_out)
+
+
+def still_going(what: str, seconds: float, free_before: float | None, free_now: float | None) -> str:
+    text = f"{what}: still going, {int(seconds // 60)} minutes so far"
+    if free_before is not None and free_now is not None and free_before - free_now >= 0.05:
+        text += f", about {free_before - free_now:.1f} GB written to the disk"
+    return text + "."
+
+
+def is_uv(command: Sequence[str | Path]) -> bool:
+    return Path(str(command[0])).stem.lower() == "uv"
+
+
+def uv_env() -> dict[str, str]:
+    """This process's environment, with a longer wait before uv counts a download as stalled (antivirus
+    scanning holds big files back) unless one is set already. UV_SYSTEM_CERTS comes from folder_env."""
+    return {"UV_HTTP_TIMEOUT": UV_HTTP_TIMEOUT} | dict(os.environ)
+
+
+@dataclass(frozen=True)
+class Failure:
+    """Why a program failed: its kind (missing, network, stalled, blocked, certificate, disk, locked or
+    other), the reason in plain words, and the whole message for the user."""
+
+    kind: str
+    reason: str
+    text: str
+
+
+RETRIED = frozenset({"network", "stalled"})
+
+
+def uv_message(lines: Sequence[str]) -> list[str]:
+    """uv's last error (from its last line starting "error:" or "x ") as its parts, each one line: the error,
+    then each cause. Lines that only continue the one before are joined to it; hints are left out."""
+    start = None
+    for number, line in enumerate(lines):
+        if re.match(r"\s*(?:error:|x )", line):
+            start = number
+    if start is None:
+        return [line.strip() for line in lines if line.strip() and not line.startswith(("==>", "    "))][-3:]
+    parts: list[str] = []
+    hint = False
+    for line in lines[start:]:
+        text = line.strip()
+        if not text:
+            continue
+        marker = re.match(r"(?:error:|x |->|\|->|Caused by:|hint:)\s*", text)
+        if marker:
+            hint = text.startswith("hint:")
+            if not hint:
+                parts.append(text[marker.end() :].strip())
+        elif parts and not hint:
+            parts[-1] += " " + text
+    return [part for part in parts if part]
+
+
+def _host(text: str) -> str:
+    found = re.search(r"(?:https?|file)://([^/`)\s]+)", text)
+    return found[1] if found else "the download site"
+
+
+def _package(text: str) -> str:
+    found = re.search(r"Failed to download `([^`]+)`", text) or re.search(r"Downloading (\S+) \(", text)
+    return found[1] if found else "a package"
+
+
+def explain(ran: Ran, what: str, folder: Path | None = None) -> Failure:
+    """Why `what` failed, from the end of its output, in plain words with the advice that fits."""
+    folder = folder or ROOT
+    parts = uv_message(ran.lines)
+    text = " | ".join(parts)
+    everything = "\n".join(ran.lines)
+    cause = parts[-1] if parts else ""
+    if ran.timed_out:
+        return Failure("stalled", "it did not finish in time", "")
+    if re.search(r"os error (?:28|112)\b|No space left on device|not enough space on the disk", text):
+        return Failure("disk", "the disk is full", disk_full(folder))
+    if re.search(r"os error (?:5|13)\b|Access is denied|Permission denied|used by another process", text):
+        return Failure("locked", f"a file in NitroLearn's folder could not be changed ({cause})", LOCKED_HINT)
+    found = re.search(r"there is no version of (\S+?)(?:\s+and\b|,|$)", text)
+    if found:
+        return Failure("missing", f"there is no {found[1]} to download", HELP_HINT)
+    found = re.search(r"(\S+) has no wheels with a matching ([\w ]+?) tag", text)
+    if found:
+        return Failure("missing", f"{found[1]} has no files for this kind of PC ({found[2]})", HELP_HINT)
+    found = re.search(r"(\S+) was not found in the (?:package registry|provided package locations)", text)
+    if found:
+        return Failure("missing", f"{found[1]} was not found where it was looked for", HELP_HINT)
+    if re.search(r"certificate|UnknownIssuer|CertificateExpired|tls handshake|SSL", text, re.IGNORECASE):
+        reason = f"the secure connection to {_host(everything)} was not trusted ({cause})"
+        return Failure("certificate", reason, DOWNLOAD_HINT)
+    found = re.search(r"client error \((40[37][^)]*)\)", text)
+    if found:
+        return Failure("blocked", f"{_host(text)} refused the download ({found[1]})", DOWNLOAD_HINT)
+    if re.search(r"network timeout|timed out|os error (?:10060|110)\b", text, re.IGNORECASE):
+        return Failure("network", f"the download of {_package(everything)} stalled (no data for a while)", "")
+    if re.search(
+        r"connection reset|forcibly closed|connection closed|os error (?:10053|10054|104)\b"
+        r"|end of file before|unexpected end of file|error decoding response body|body error|incomplete"
+        r"|broken pipe",
+        text,
+        re.IGNORECASE,
+    ):
+        return Failure("network", f"the connection was cut off while downloading {_package(everything)}", "")
+    found = re.search(r"server error \((5\d\d[^)]*)\)", text)
+    if found:
+        return Failure("network", f"{_host(text)} answered with a server error ({found[1]})", "")
+    if re.search(
+        r"dns error|failed to lookup address|No such host|os error (?:11001|10061|111)\b|tunnel error"
+        r"|tcp connect error|Connection refused|client error \(Connect\)|error sending request",
+        text,
+        re.IGNORECASE,
+    ):
+        return Failure("network", f"{_host(text)} could not be reached", "")
+    if re.search(r"invalid package format|Failed to read from zip|Invalid zip file|Failed to extract", text):
+        reason = f"the download of {_package(everything)} arrived damaged (cut off or changed on the way)"
+        return Failure("network", reason, "")
+    if re.search(r"Request failed after|Failed to fetch|Failed to download", text):
+        return Failure("network", f"the download of {_package(everything)} failed ({cause})", "")
+    if parts:
+        reason = "; ".join(parts[-3:])
+        return Failure("other", reason if len(reason) <= 400 else reason[:397] + "...", "")
+    return Failure("other", f"it ended with code {ran.code} and gave no reason", "")
+
+
+def failure(ran: Ran, what: str, minutes: float | None) -> Failure:
+    """explain()'s Failure with its whole message: what failed, why, and what to do about it."""
+    found = explain(ran, what)
+    if ran.timed_out:
+        stopped = f"{what} was stopped after {minutes} minutes without finishing. {failure_hint()}"
+        return Failure(found.kind, found.reason, stopped)
+    advice = found.text
+    if not advice:
+        if found.kind in RETRIED:
+            advice = DOWNLOAD_HINT
+        else:
+            free = free_gb(ROOT)
+            advice = disk_full(ROOT) if free is not None and free < LOW_DISK_GB else HELP_HINT
+    return Failure(found.kind, found.reason, f"{what} failed: {found.reason.rstrip('.')}. {advice}")
+
+
+def attempt(
+    command: Sequence[str | Path], what: str = "", minutes: float | None = None, heartbeat: str = ""
+) -> Failure | None:
+    """Runs a program (run_output); None when it worked, else why not. A uv step that fails on the network is
+    tried again a few times, after a pause, within its time limit: uv keeps every package it downloaded in
+    full in its cache, so a new try does not download those again."""
+    what = what or _what(command)
+    uv = is_uv(command)
+    deadline = None if minutes is None else time.monotonic() + minutes * 60
+    tries = NETWORK_TRIES if uv else 1
+    for number in range(1, tries + 1):
+        left = None if deadline is None else max(0.1, (deadline - time.monotonic()) / 60)
+        ran = run_output(command, left, uv_env() if uv else None, heartbeat)
+        if ran.code == 0:
+            return None
+        found = failure(ran, what, minutes)
+        pause = NETWORK_WAITS[min(number, len(NETWORK_WAITS)) - 1]
+        out_of_time = deadline is not None and time.monotonic() + pause >= deadline
+        if found.kind != "network" or number == tries or out_of_time:
+            return found
+        note(
+            f"{what}: {found.reason}. Trying again in {pause} seconds (try {number + 1} of {tries}); what "
+            "was downloaded in full is kept."
+        )
+        time.sleep(pause)
+    raise AssertionError("unreachable")
+
+
+def _what(command: Sequence[str | Path]) -> str:
+    return f"{Path(str(command[0])).name} {command[1] if len(command) > 1 else ''}".strip()
+
+
+def run(
+    command: Sequence[str | Path], check: bool = True, minutes: float | None = None, what: str = ""
+) -> int:
+    """Runs a program (attempt). A failure stops setup when `check`, with why it failed and what to do;
+    otherwise it is said and its code returned (TIMED_OUT for one stopped at its time limit)."""
+    found = attempt(command, what, minutes)
+    if found is None:
+        return 0
+    if check:
+        raise Stop(found.text)
+    note(found.text)
+    return TIMED_OUT if found.kind == "stalled" else 1
+
+
+def tell(text: str) -> None:
+    """Something the user should read even when the install goes on: the setup wizard shows these lines in a
+    message box at the end."""
+    print(f"\nSETUP NOTE: {text}", flush=True)
 
 
 # ---------- the PyTorch build for this PC ----------
@@ -192,13 +474,17 @@ class Card:
 class NvidiaFacts:
     driver_cuda: tuple[int, int] | None  # the newest CUDA the driver runs
     cards: tuple[Card, ...]
+    answered: bool = True  # False: the system lists these NVIDIA cards, but no driver answered for them
 
 
 def parse_nvidia(table: str, query: str) -> NvidiaFacts:
-    """`nvidia-smi`'s header (the driver's CUDA version) and `--query-gpu=name,compute_cap` lines."""
+    """`nvidia-smi`'s header (the driver's CUDA version) and `--query-gpu=name,compute_cap` lines (or
+    `--query-gpu=name` lines, from a driver too old to name the compute capability)."""
     found = re.search(r"CUDA (?:UMD )?Version:\s*(\d+)\.(\d+)", table)
     cards = []
     for line in query.splitlines():
+        if not line.strip():
+            continue
         name, _, cap = line.rpartition(",")
         if not name.strip():
             name, cap = cap, ""
@@ -207,28 +493,31 @@ def parse_nvidia(table: str, query: str) -> NvidiaFacts:
     return NvidiaFacts((int(found[1]), int(found[2])) if found else None, tuple(cards))
 
 
-def nvidia_facts() -> NvidiaFacts | None:
-    """What the NVIDIA driver says, or None without one."""
-    smi = shutil.which("nvidia-smi")
-    if smi is None and WINDOWS:
-        system = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32" / "nvidia-smi.exe"
-        smi = str(system) if system.is_file() else None
-    if smi is None:
-        return None
+def _smi(smi: str, *args: str) -> subprocess.CompletedProcess[str] | None:
     try:
-        table = subprocess.run([smi], capture_output=True, text=True, timeout=60, check=False)
-        query = subprocess.run(
-            [smi, "--query-gpu=name,compute_cap", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
+        return subprocess.run(
+            [smi, *args], capture_output=True, text=True, timeout=60, check=False, stdin=subprocess.DEVNULL
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    if table.returncode != 0:
-        return None
-    return parse_nvidia(table.stdout, query.stdout if query.returncode == 0 else "")
+
+
+def nvidia_facts() -> NvidiaFacts | None:
+    """What the NVIDIA driver says (nvidia-smi, also where Windows' driver puts it off the PATH); without an
+    answer, the NVIDIA cards the system lists (answered False); None when there is no NVIDIA card."""
+    finder = nitro_module("nvidia_smi")
+    smi = finder.find() if finder is not None else shutil.which("nvidia-smi")
+    table = _smi(smi) if smi else None
+    if table is not None and table.returncode == 0:
+        query = _smi(smi, "--query-gpu=name,compute_cap", "--format=csv,noheader") if smi else None
+        if query is None or query.returncode != 0:  # a driver too old for compute_cap
+            query = _smi(smi, "--query-gpu=name", "--format=csv,noheader") if smi else None
+        lines = query.stdout if query is not None and query.returncode == 0 else ""
+        facts = parse_nvidia(table.stdout, lines)
+        if facts.cards or facts.driver_cuda is not None:
+            return facts
+    names = finder.adapters() if finder is not None else []
+    return NvidiaFacts(None, tuple(Card(name, None) for name in names), answered=False) if names else None
 
 
 def _capability(card: Card) -> tuple[int, int] | None:
@@ -239,35 +528,137 @@ def _capability(card: Card) -> tuple[int, int] | None:
     return None
 
 
-def choose_torch(facts: NvidiaFacts | None) -> tuple[str, list[str]]:
-    """The PyTorch build (index name) for this PC, with notes for the user. CUDA 12.6 is the build
-    NitroLearn's speed numbers were measured with; cards it has no code for (compute capability 10 and
-    newer: RTX 50xx) get CUDA 12.8. No NVIDIA driver, or a card too old for PyTorch: the CPU build."""
+@dataclass(frozen=True)
+class Build:
+    """One of PyTorch's graphics-card builds of TORCH_VERSION: its index name, the CUDA version it is made
+    for, and the cards it has code for (compute capability `lowest` up to, not including, `beyond`)."""
+
+    name: str
+    cuda: tuple[int, int]
+    lowest: tuple[int, int]
+    beyond: tuple[int, int] | None = None
+
+
+# PyTorch's graphics-card builds of 2.14.1, as download.pytorch.org lists them for Python 3.11 on Windows and
+# Linux: cu126, cu130 and cu132 (no cu128 or cu129 build of 2.14). cu126 is the build NitroLearn's speeds
+# were measured with, but it has no code for compute capability 10 and newer (RTX 50). CUDA 13 dropped the
+# cards older than capability 7.5 (Maxwell, Pascal, Volta).
+GPU_BUILDS = (
+    Build("cu126", (12, 6), (5, 0), (10, 0)),
+    Build("cu130", (13, 0), (7, 5)),
+    Build("cu132", (13, 2), (7, 5)),
+)
+TORCH_VARIANTS = ("cpu", *(build.name for build in GPU_BUILDS))
+DRIVERS = "https://www.nvidia.com/drivers"
+
+
+def runs_build(driver: tuple[int, int] | None, build: Build) -> bool:
+    """Whether a driver that runs CUDA `driver` runs `build`: any driver of the same CUDA major version or
+    newer does (CUDA's minor version compatibility); an unknown version is given the benefit of the doubt."""
+    return driver is None or driver[0] >= build.cuda[0]
+
+
+@dataclass(frozen=True)
+class TorchPlan:
+    """The graphics-card builds to try for this PC, best first (none: PyTorch for the processor), what to tell
+    the user about them, why there is no graphics-card build ("" when there is one), and what to do to get one
+    when the install ends on the processor build."""
+
+    builds: tuple[str, ...]
+    notes: tuple[str, ...] = ()
+    no_card: str = ""
+    later: str = ""
+
+
+def torch_reinstall(variant: str) -> str:
+    """How to install a PyTorch build later, from a terminal in NitroLearn's folder."""
+    if WINDOWS:
+        return f'& ".\\Install NitroLearn.cmd" -Torch {variant}'
+    return f"bash install.sh --torch {variant}"
+
+
+def plan_torch(facts: NvidiaFacts | None) -> TorchPlan:
+    """The PyTorch builds for this PC. Most cards: cu126 (the measured build), then cu130 and cu132 for a card
+    and driver they run on. Capability 10 and newer (RTX 50): cu130, then cu132, never cu126 (it has no code
+    for them). A build the driver is too old for is left out, and the driver named; no NVIDIA driver, or a
+    card too old for PyTorch: the processor build."""
     if facts is None:
-        return "cpu", [
-            "No NVIDIA driver found: installing PyTorch for the processor (training is many times slower).",
-            "If this PC has an NVIDIA card, install its driver from https://www.nvidia.com/drivers, restart, "
-            "and run the installer again.",
-        ]
+        return TorchPlan(
+            (),
+            (
+                "No NVIDIA graphics card found: installing PyTorch for the processor (training is many times "
+                "slower). If this PC has an NVIDIA card, install its driver from "
+                f"{DRIVERS}, restart, and run the installer again.",
+            ),
+            "no NVIDIA card was found",
+        )
+    names = [card.name for card in facts.cards if card.name]
+    if not facts.answered:
+        card = names[0] if names else "an NVIDIA graphics card"
+        return TorchPlan(
+            (),
+            (
+                f"This PC has an NVIDIA graphics card ({card}), but its driver is missing or does not "
+                "answer, so PyTorch for the processor is installed for now (training is many times slower). "
+                f"Install or update the NVIDIA driver ({DRIVERS}, or the NVIDIA app), restart the PC, then "
+                "run the installer again: it then installs PyTorch for the graphics card.",
+            ),
+            "the NVIDIA card's driver is missing or does not answer",
+        )
     caps = [cap for cap in map(_capability, facts.cards) if cap is not None]
-    notes = []
     if caps and max(caps) < (5, 0):
-        return "cpu", ["This NVIDIA card is too old for PyTorch: installing PyTorch for the processor."]
-    variant = "cu128" if caps and max(caps) >= (10, 0) else "cu126"
-    if caps and max(caps) >= (10, 0) and min(caps) < (7, 5):
+        return TorchPlan(
+            (),
+            ("This NVIDIA card is too old for PyTorch: installing PyTorch for the processor.",),
+            "this NVIDIA card is too old for PyTorch",
+        )
+    newest = max(caps) if caps else None
+    fits = [
+        build
+        for build in GPU_BUILDS
+        if newest is None or (build.lowest <= newest and (build.beyond is None or newest < build.beyond))
+    ]
+    driver = facts.driver_cuda
+    runs = [build for build in fits if runs_build(driver, build)]
+    have = ".".join(map(str, driver)) if driver else ""
+    update = f"update the NVIDIA driver ({DRIVERS}, or the NVIDIA app) and restart the PC"
+    if not runs:
+        need = min(fits, key=lambda b: b.cuda) if fits else GPU_BUILDS[0]
+        return TorchPlan(
+            (),
+            (
+                f"The NVIDIA driver runs CUDA {have}: too old for PyTorch's builds for this card, which need "
+                f"CUDA {need.cuda[0]}.{need.cuda[1]} or newer ({need.name}). So PyTorch for "
+                "the processor is installed for now (training is many times slower). To train on the "
+                f"graphics card, {update}, then run the installer again: it then installs PyTorch for the "
+                "graphics card.",
+            ),
+            "the NVIDIA driver is too old for PyTorch's graphics-card builds",
+        )
+    notes = []
+    best = runs[0]
+    if driver is not None and driver < best.cuda:
         notes.append(
-            "This PC also has an older card that PyTorch's CUDA 12.8 build has no code for: train on the "
+            f"The NVIDIA driver runs CUDA {have}; PyTorch's {best.name} build is made for CUDA "
+            f"{best.cuda[0]}.{best.cuda[1]}. It runs, but for best results {update}; nothing needs "
+            "installing again."
+        )
+    if caps and min(caps) < best.lowest:
+        notes.append(
+            f"This PC also has an older card that PyTorch's {best.name} build has no code for: train on the "
             "newer card."
         )
-    needed = (12, 8) if variant == "cu128" else (12, 6)
-    if facts.driver_cuda is not None and facts.driver_cuda < needed:
-        have = ".".join(map(str, facts.driver_cuda))
-        notes.append(
-            f"The NVIDIA driver runs CUDA {have}; this PyTorch needs {needed[0]}.{needed[1]}. Update the "
-            "driver (https://www.nvidia.com/drivers or the NVIDIA app) and restart; nothing needs installing "
-            "again."
-        )
-    return variant, notes
+    later = (
+        f"To try again later: run the installer again, or {torch_reinstall(best.name)} from a terminal in "
+        "NitroLearn's folder."
+    )
+    return TorchPlan(tuple(build.name for build in runs), tuple(notes), "", later)
+
+
+def choose_torch(facts: NvidiaFacts | None) -> tuple[str, list[str]]:
+    """The first PyTorch build to try for this PC (plan_torch), with the notes for the user."""
+    plan = plan_torch(facts)
+    return (plan.builds[0] if plan.builds else "cpu"), list(plan.notes)
 
 
 def installed_version(name: str) -> str | None:
@@ -277,26 +668,79 @@ def installed_version(name: str) -> str | None:
         return None
 
 
-def install_torch(uv: Path, variant: str) -> None:
-    wanted = f"{TORCH_VERSION}+{variant}"
-    if installed_version("torch") == wanted:
-        note(f"PyTorch {wanted} is already installed.")
-        return
-    size = "about 200 MB" if variant == "cpu" else "about 3 GB"
-    say(f"Installing PyTorch {wanted} ({size} to download the first time)")
-    run(
-        [
-            uv,
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            f"torch=={wanted}",
-            "--index-url",
-            TORCH_INDEX + variant,
-        ],
-        minutes=TORCH_MINUTES,
-    )
+def torch_command(uv: Path, variant: str, reinstall: bool = False) -> list[str | Path]:
+    again: list[str | Path] = ["--reinstall-package", "torch"] if reinstall else []
+    return [
+        uv,
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        *again,
+        f"torch=={TORCH_VERSION}+{variant}",
+        "--index-url",
+        TORCH_INDEX + variant,
+    ]
+
+
+def site_builds(read: Callable[[str], bytes] | None = None) -> list[str] | None:
+    """The PyTorch builds of TORCH_VERSION download.pytorch.org has for this Python on this kind of PC (of
+    TORCH_VARIANTS), or None when its lists cannot be read."""
+    read = read or (lambda url: fetch(url, attempts=1))
+    python = f"cp{sys.version_info[0]}{sys.version_info[1]}"
+    system = "win_amd64" if WINDOWS else "x86_64"
+    found = []
+    for variant in TORCH_VARIANTS:
+        try:
+            page = read(f"{TORCH_INDEX}{variant}/torch/").decode("utf-8", errors="replace")
+        except (urllib.error.URLError, OSError):
+            return None
+        wheel = rf"torch-{re.escape(TORCH_VERSION)}(?:\+|%2B){variant}-{python}-{python}-[\w.]*{system}\.whl"
+        if re.search(wheel, page):
+            found.append(variant)
+    return found
+
+
+def install_torch(uv: Path, builds: Sequence[str], forced: str | None = None) -> str:
+    """PyTorch: the first of the graphics-card `builds` PyTorch's site has (a build it does not have is said
+    and the next one tried), else for the processor (no `builds`, or none of them on the site). A download
+    that fails on the network is tried again (attempt); any other failure stops setup with its reason.
+    Returns the build installed."""
+    tried: list[str] = []
+    for variant in dict.fromkeys([*builds, "cpu"]):
+        wanted = f"{TORCH_VERSION}+{variant}"
+        if installed_version("torch") == wanted:
+            note(f"PyTorch {wanted} is already installed.")
+            return variant
+        size = "about 200 MB" if variant == "cpu" else "about 3 GB"
+        say(f"Installing PyTorch {wanted} ({size} to download the first time)")
+        found = attempt(
+            torch_command(uv, variant), f"Installing PyTorch {wanted}", TORCH_MINUTES, heartbeat="PyTorch"
+        )
+        if found is None:
+            return variant
+        if found.kind != "missing":
+            raise Stop(found.text)
+        tried.append(variant)
+        if variant == forced:
+            known = site_builds()
+            listed = f"; the builds it has for this PC: {', '.join(known)}" if known else ""
+            tell(
+                f"PyTorch {TORCH_VERSION} has no {variant} build on PyTorch's site{listed}. The installer "
+                "picks one for this PC instead (the -Torch choice is forgotten)."
+            )
+        else:
+            note(f"PyTorch's site has no {wanted} build; trying the next one.")
+    none = ", ".join(tried)
+    raise Stop(f"Installing PyTorch failed: PyTorch's site has none of these builds: {none}. {HELP_HINT}")
+
+
+def keep_torch(uv: Path, variant: str) -> None:
+    """Installing NitroLearn must not have swapped PyTorch for another build; if it did, put it back."""
+    if installed_version("torch") != f"{TORCH_VERSION}+{variant}":
+        note("PyTorch was changed by another package: installing the right build again.")
+        again = torch_command(uv, variant, reinstall=True)
+        run(again, minutes=TORCH_MINUTES, what="Installing PyTorch again")
 
 
 # ---------- NitroLearn itself ----------
@@ -989,27 +1433,6 @@ def rebuild_own_rewards(rust: bool, nitro: Callable[..., int] | None = None) -> 
     return True
 
 
-def keep_torch(uv: Path, variant: str) -> None:
-    """Installing NitroLearn must not have swapped PyTorch for another build; if it did, put it back."""
-    if installed_version("torch") != f"{TORCH_VERSION}+{variant}":
-        note("PyTorch was changed by another package: installing the right build again.")
-        run(
-            [
-                uv,
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--reinstall-package",
-                "torch",
-                f"torch=={TORCH_VERSION}+{variant}",
-                "--index-url",
-                TORCH_INDEX + variant,
-            ],
-            minutes=TORCH_MINUTES,
-        )
-
-
 # ---------- what to install: the optional parts ----------
 
 CHOICES_RECORD = Path(".tools") / "install_choices.json"  # the parts chosen at the last install
@@ -1455,16 +1878,16 @@ def setup(
             note(f"The dashboard may open with an empty console window behind it: {windowless}.")
     say("Looking at this PC")
     nvidia = facts()
-    auto, notes = choose_torch(nvidia)
-    for text in notes:
-        note(text)
+    plan = plan_torch(nvidia)
+    for text in plan.notes:
+        (note if nvidia is None else tell)(text)
     remembered = torch_choice(root, args.torch)
-    gpu_variant = remembered if remembered not in (None, "cpu") else auto
+    forced = remembered if remembered not in (None, "cpu") else None
+    gpu_builds = list(dict.fromkeys([forced, *plan.builds])) if forced else list(plan.builds)
     card = ""
-    if gpu_variant != "cpu":
+    if gpu_builds:
         names = [item.name for item in nvidia.cards if item.name] if nvidia else []
         card = names[0] if names else "an NVIDIA card"
-    no_card = "no NVIDIA card was found" if nvidia is None else "this NVIDIA card is too old for PyTorch"
     folder = release_folder(root, getattr(args, "bundles", None))
     if folder is not None:
         os.environ[RELEASE_FILES_ENV] = str(folder)
@@ -1474,10 +1897,10 @@ def setup(
         note("Building NitroLearn from its code (--from-source).")
     else:
         ready_made = find_ready_made(release)
-    found = look_around(root, WINDOWS, person, card, no_card, ready_made is not None, args.from_source)
+    found = look_around(root, WINDOWS, person, card, plan.no_card, ready_made is not None, args.from_source)
     choices = decide(found, read_record(root), switched(args), ask)
 
-    variant = gpu_variant if choices["gpu"] else "cpu"
+    variant = gpu_builds[0] if choices["gpu"] else "cpu"
     check_space(
         root, space_needed_gb(found, choices, installed_version("torch") or "", f"{TORCH_VERSION}+{variant}")
     )
@@ -1486,10 +1909,20 @@ def setup(
     step("torch", "start")
     if remembered is not None and (remembered == "cpu") == choices["gpu"]:
         (root / ".tools" / "torch-choice.txt").unlink(missing_ok=True)  # switched in the menu since
-    elif remembered not in (None, "cpu") and args.torch == "auto":
-        note(f"Using the PyTorch build chosen earlier with --torch: {variant}")
-    install_torch(args.uv, variant)
-    step("torch", "done")
+    elif forced is not None and args.torch == "auto":
+        note(f"Using the PyTorch build chosen earlier with --torch: {forced}")
+    variant = install_torch(args.uv, gpu_builds if choices["gpu"] else [], forced)
+    if forced is not None and choices["gpu"] and variant != forced:
+        (root / ".tools" / "torch-choice.txt").unlink(missing_ok=True)  # PyTorch has no such build
+    if choices["gpu"] and variant == "cpu":
+        tell(
+            f"PyTorch's site has none of the graphics-card builds that fit this card and driver "
+            f"({', '.join(gpu_builds)}), so PyTorch for the processor was installed: NitroLearn works, but "
+            f"trains many times slower. {plan.later or 'Run the installer again later to try again.'}"
+        )
+        step("torch", "fail")
+    else:
+        step("torch", "done")
 
     step("core", "start")
     extras = "dev" if choices["dev"] else EXTRAS

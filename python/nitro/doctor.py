@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nitro import rlbot_find, toolchain
+from nitro import nvidia_smi, rlbot_find, toolchain
 
 MIN_PYTHON = (3, 11)
 MIN_VRAM_GB = 6.0
@@ -253,10 +253,7 @@ def parse_nvidia_smi(text: str) -> DriverFacts | None:
 
 
 def gather_driver() -> DriverFacts | None:
-    smi = shutil.which("nvidia-smi")
-    if smi is None and sys.platform == "win32":
-        system = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32" / "nvidia-smi.exe"
-        smi = str(system) if system.is_file() else None
+    smi = nvidia_smi.find()  # also where Windows' driver puts it, off the PATH
     if smi is None:
         return None
     try:

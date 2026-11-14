@@ -344,5 +344,5 @@ def test_the_finish_page_and_messages_never_promise_what_was_not_made() -> None:
     hint = code[code.index("function OpenFolderHint") : code.index("function StepState")]
     assert "Windows key and R" in hint and "ExpandConstant('{app}')" in hint
     run = code[code.index("procedure RunInstallSteps") : code.index("function InstallSucceeded")]
-    assert run.count("OpenFolderHint") == 2 and "Shortcuts folder" not in run
+    assert run.count("OpenFolderHint") == 3 and "Shortcuts folder" not in run  # stopped, checked, noted
     assert "about 20 minutes" in code[code.index("procedure ShowSteps") :]

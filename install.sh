@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs NitroLearn on Linux (x86-64) into this folder, and nowhere else:
 #
-#     bash install.sh [--torch cpu|cu126|cu128|cu130] [--cpu] [--rust] [--from-source] [--dev] [--recordings]
+#     bash install.sh [--torch cpu|cu126|cu130|cu132] [--cpu] [--rust] [--from-source] [--dev] [--recordings]
 #                     [--bundles FOLDER]
 #
 # It downloads uv (a pinned version, checked by its SHA-256 hash) into .tools/uv, lets uv put its own

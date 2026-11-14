@@ -40,6 +40,17 @@ use them to cheat online. See [LICENSE](LICENSE) and [BOTS-LICENSE.md](BOTS-LICE
 Questions, bugs, or a bot to share: NitroLearn is supported in the Vanta Discord server,
 <https://discord.gg/bYP3kYtryg>. The dashboard's **Help** page (in its top band) has the link too.
 
+## What's new in 1.0.1
+- **RTX 50 cards install again.** 1.0.0 asked PyTorch's site for a CUDA 12.8 build of PyTorch 2.14.1, which
+  does not exist, so setup stopped. RTX 50 cards now get the CUDA 13.0 build.
+- **The installer finds the graphics card more reliably:** it finds NVIDIA's `nvidia-smi` even when it is not
+  on the PATH, reads every card and the driver's CUDA version, and says plainly when the driver is missing or
+  too old instead of quietly installing PyTorch for the processor.
+- **PyTorch's download is sturdier:** a download that is cut off or stalls is tried again (what was downloaded
+  in full is kept), and a build PyTorch's site does not have is skipped for the next one that fits.
+- **Clearer messages when setup stops:** the setup says the real reason (for example "the connection was cut
+  off while downloading torch" or "there is no torch==... to download") with advice that fits it.
+
 ## What you need
 - Windows 10 or 11 (64-bit), or Linux on a 64-bit Intel or AMD computer.
 - An NVIDIA graphics card with 6 GB or more is strongly recommended. Without one, NitroLearn still works, but
@@ -189,11 +200,16 @@ it from there, or into a folder named `release-files` inside the NitroLearn fold
 (`bash install.sh --bundles <folder>` or `-Bundles <folder>` for a folder elsewhere). With PyTorch already
 installed in the folder and the meshes already there, it needs no internet at all.
 
-**Which PyTorch?** The installer asks the NVIDIA driver which card you have: most cards get the CUDA 12.6
-build, RTX 50 cards get CUDA 12.8, and a PC without an NVIDIA card gets the build for the processor. To pick
-another build, run the installer from a terminal in the folder with `-Torch` and one of `cpu`, `cu126`,
-`cu128` or `cu130`, for example `& ".\Install NitroLearn.cmd" -Torch cu128` (Linux:
-`bash install.sh --torch cu128`). The choice is remembered.
+**Which PyTorch?** The installer asks the NVIDIA driver which card you have (it finds the driver's
+`nvidia-smi` even when it is not on the PATH): most cards get the CUDA 12.6 build (the one NitroLearn's speeds
+were measured with), RTX 50 cards get CUDA 13.0 (CUDA 13.2 if PyTorch's site lacks that), and a PC without an
+NVIDIA card gets the build for the processor. A driver too old for the build a card needs is named, with how to
+update it; a card Windows lists without a working driver gets the processor build and a note to install the
+driver first. If PyTorch's site has no build that fits, the installer tries the next one that does and, only
+as a last resort, installs the processor build and says so. To pick another build, run the installer from a
+terminal in the folder with `-Torch` and one of `cpu`, `cu126`, `cu130` or `cu132`, for example
+`& ".\Install NitroLearn.cmd" -Torch cu130` (Linux: `bash install.sh --torch cu130`). The choice is
+remembered.
 
 ### What it does not install
 These change Windows itself, so the installer leaves them to you. `nitro doctor` (the **Check this PC**

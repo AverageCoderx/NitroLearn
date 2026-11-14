@@ -304,7 +304,7 @@ class Recorder:
         self.site = site
         self.torch: str | None = None
 
-    def __call__(self, command: Any, check: bool = True, minutes: float | None = None) -> int:
+    def __call__(self, command: Any, check: bool = True, minutes: float | None = None, what: str = "") -> int:
         command = [str(part) for part in command]
         self.commands.append(command)
         for part in command:
@@ -314,6 +314,10 @@ class Recorder:
                 (self.site / "nitro").mkdir(parents=True, exist_ok=True)
                 (self.site / "nitro" / "_core.abi3.so").write_bytes(b"core")
         return 0
+
+    def output(self, command: Any, minutes: float | None = None, env: Any = None, heartbeat: str = "") -> Any:
+        """Stands in for run_output (the PyTorch install)."""
+        return steps.Ran(self(command, minutes=minutes))
 
 
 @pytest.mark.skipif(steps.platform_tag() != "linux-x64", reason="the stand-in release is for Linux x86-64")
@@ -331,6 +335,7 @@ def test_with_a_folder_of_the_release_files_nothing_else_is_downloaded(
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     monkeypatch.setenv("CARGO_HOME", str(root / ".tools" / "cargo"))
     monkeypatch.setattr(steps, "run", recorder)
+    monkeypatch.setattr(steps, "run_output", recorder.output)
     monkeypatch.setattr(steps, "site_packages", lambda: site)
     monkeypatch.setattr(steps, "installed_version", lambda name: recorder.torch)
     monkeypatch.setattr(steps, "core_matches_code", lambda: True)
@@ -440,6 +445,7 @@ def test_the_progress_lines_name_each_step_in_order(
     (root / "Cargo.toml").write_text('[workspace.package]\nversion = "1.2.0"\n', encoding="utf-8")
     recorder = Recorder(tmp_path / "site")
     monkeypatch.setattr(steps, "run", recorder)
+    monkeypatch.setattr(steps, "run_output", recorder.output)
     monkeypatch.setattr(steps, "installed_version", lambda name: recorder.torch)
     monkeypatch.setattr(steps, "install_from_code", lambda *a: None)
     for progress in (False, True):

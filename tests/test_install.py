@@ -98,20 +98,113 @@ def _facts(cuda: str | None, *cards: tuple[str, str]) -> Any:
 
 
 def test_the_pytorch_build_fits_the_card_and_driver() -> None:
-    assert steps.choose_torch(None)[0] == "cpu"
-    assert steps.choose_torch(_facts("12.9", ("NVIDIA GeForce RTX 3070", "8.6"))) == ("cu126", [])
-    assert steps.choose_torch(_facts("13.0", ("NVIDIA GeForce RTX 5090", "12.0"))) == ("cu128", [])
-    assert steps.choose_torch(_facts("12.8", ("NVIDIA GeForce GTX 1080", "6.1")))[0] == "cu126"
-    assert steps.choose_torch(_facts("12.4", ("Tesla K40", "3.5")))[0] == "cpu"
-    # An old driver: the build the card needs, and a note to update the driver (no reinstall later).
-    variant, notes = steps.choose_torch(_facts("12.6", ("NVIDIA GeForce RTX 5080", "12.0")))
-    assert variant == "cu128" and "Update the driver" in notes[0]
-    old = steps.choose_torch(_facts("12.2", ("NVIDIA GeForce RTX 2060", "7.5")))
-    assert old[0] == "cu126" and "12.2" in old[1][0]
+    """Most cards: cu126 (the measured build), then the CUDA 13 builds when card and driver run them. RTX 50
+    (capability 10 and newer): cu130, then cu132, never cu126 (no code for them). PyTorch 2.14.1 has no cu128
+    build at all."""
+    assert "cu128" not in steps.TORCH_VARIANTS
+    assert steps.TORCH_VARIANTS == ("cpu", "cu126", "cu130", "cu132")
+    plan = steps.plan_torch
+    assert plan(None).builds == () and plan(None).no_card == "no NVIDIA card was found"
+    assert plan(_facts("12.9", ("NVIDIA GeForce RTX 3070", "8.6"))).builds == ("cu126",)
+    assert plan(_facts("13.0", ("NVIDIA GeForce RTX 3070", "8.6"))).builds == ("cu126", "cu130", "cu132")
+    assert plan(_facts("13.0", ("NVIDIA GeForce RTX 5090", "12.0"))).builds == ("cu130", "cu132")
+    assert steps.choose_torch(_facts("13.0", ("NVIDIA GeForce RTX 5090", "12.0"))) == ("cu130", [])
+    # CUDA 13 has no code for cards older than capability 7.5.
+    assert plan(_facts("13.0", ("NVIDIA GeForce GTX 1080", "6.1"))).builds == ("cu126",)
+    assert plan(_facts("12.4", ("Tesla K40", "3.5"))).builds == ()
+    # A driver too old for every build the card can use: the processor build, and the driver named.
+    old50 = plan(_facts("12.8", ("NVIDIA GeForce RTX 5080", "12.0")))
+    assert (
+        old50.builds == ()
+        and "CUDA 13.0 or newer" in old50.notes[0]
+        and "update the NVIDIA driver" in (old50.notes[0])
+    )
+    assert "driver is too old" in old50.no_card
+    ancient = plan(_facts("11.4", ("NVIDIA GeForce RTX 2060", "7.5")))
+    assert ancient.builds == () and "CUDA 12.6 or newer" in ancient.notes[0]
+    # A driver older than the build but of the same CUDA major version runs it: a note to update.
+    older = plan(_facts("12.2", ("NVIDIA GeForce RTX 2060", "7.5")))
+    assert older.builds == ("cu126",) and "12.2" in older.notes[0] and "best results" in older.notes[0]
     # A driver too old to name the compute capability: an RTX 50 card is known by its name.
-    assert steps.choose_torch(_facts("12.8", ("NVIDIA GeForce RTX 5070 Ti", "[N/A]")))[0] == "cu128"
+    assert plan(_facts("13.0", ("NVIDIA GeForce RTX 5070 Ti", "[N/A]"))).builds == ("cu130", "cu132")
+    # No version from the driver: every build that fits the card is tried.
+    assert plan(_facts(None, ("NVIDIA GeForce RTX 4070", "8.9"))).builds == ("cu126", "cu130", "cu132")
+    # Two cards: the newer one decides, and the older one is named when the build has no code for it.
+    two = plan(_facts("13.0", ("NVIDIA GeForce GTX 1080", "6.1"), ("NVIDIA GeForce RTX 5090", "12.0")))
+    assert two.builds == ("cu130", "cu132") and "older card" in two.notes[0]
+    assert (
+        plan(_facts("13.0", ("NVIDIA GeForce RTX 3060", "8.6"), ("NVIDIA GeForce RTX 4090", "8.9"))).builds[0]
+        == "cu126"
+    )
+    # A card Windows lists while no driver answers: the processor build, and the driver is to install.
+    silent = plan(steps.NvidiaFacts(None, (steps.Card("NVIDIA GeForce RTX 4070", None),), answered=False))
+    assert silent.builds == () and "driver is missing or does not answer" in silent.notes[0]
+    assert (
+        "RTX 4070" in silent.notes[0]
+        and silent.no_card == "the NVIDIA card's driver is missing or does not answer"
+    )
     facts = steps.parse_nvidia(SMI_HEADER.format(cuda="13.0").replace("CUDA", "CUDA UMD"), "A, 8.9\nB, 12.0")
     assert facts.driver_cuda == (13, 0) and [card.capability for card in facts.cards] == [(8, 9), (12, 0)]
+
+
+SMI_TWO_CARDS = """\
+NVIDIA GeForce RTX 5090, 12.0
+NVIDIA GeForce RTX 3060, 8.6
+"""
+
+
+def test_nvidia_smi_is_read_in_its_several_forms() -> None:
+    """Two cards; an old driver that answers only names (no compute_cap query); no card lines at all."""
+    two = steps.parse_nvidia(SMI_HEADER.format(cuda="13.2"), SMI_TWO_CARDS)
+    assert two.driver_cuda == (13, 2) and [c.name for c in two.cards] == [
+        "NVIDIA GeForce RTX 5090",
+        "NVIDIA GeForce RTX 3060",
+    ]
+    names_only = steps.parse_nvidia(SMI_HEADER.format(cuda="12.2"), "NVIDIA GeForce RTX 5070\n")
+    assert names_only.cards == (steps.Card("NVIDIA GeForce RTX 5070", None),)
+    assert steps.plan_torch(names_only).builds == (), "an RTX 50 card on a CUDA 12 driver: update it"
+    assert steps.parse_nvidia("NVIDIA-SMI has failed", "").cards == ()
+
+
+def test_nvidia_smi_is_found_off_the_path_and_cards_without_a_driver_are_seen(tmp_path: Path) -> None:
+    finder = steps.nitro_module("nvidia_smi")
+    assert finder is not None
+    env = {"SYSTEMROOT": str(tmp_path / "Windows"), "ProgramFiles": str(tmp_path / "PF")}
+    places = finder.places(env, windows=True)
+    assert places[0] == tmp_path / "Windows" / "System32" / "nvidia-smi.exe"
+    assert tmp_path / "PF" / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe" in places
+    assert finder.find(env, windows=True, which=lambda name: None) is None
+    store = tmp_path / "Windows" / "System32" / "DriverStore" / "FileRepository" / "nvlti.inf_amd64_1"
+    store.mkdir(parents=True)
+    (store / "nvidia-smi.exe").write_bytes(b"")
+    assert finder.find(env, windows=True, which=lambda name: None) == str(store / "nvidia-smi.exe")
+    nvsmi = places[1]
+    nvsmi.parent.mkdir(parents=True)
+    nvsmi.write_bytes(b"")
+    assert finder.find(env, windows=True, which=lambda name: None) == str(nvsmi), "NVSMI before the store"
+    assert finder.find(env, windows=True, which=lambda name: "/usr/bin/nvidia-smi") == "/usr/bin/nvidia-smi"
+    assert finder.places(env, windows=False) == []
+    listed = (
+        "Intel(R) UHD Graphics|PCI\\VEN_8086&DEV_9BC4&SUBSYS_1\n"
+        "Microsoft Basic Display Adapter|PCI\\VEN_10DE&DEV_2684&SUBSYS_2\n"
+        "NVIDIA GeForce RTX 3060|PCI\\VEN_10DE&DEV_2503&SUBSYS_3\n"
+    )
+    assert finder.parse_adapters(listed) == ["an NVIDIA graphics card", "NVIDIA GeForce RTX 3060"]
+    lspci = (
+        "00:02.0 VGA compatible controller: Intel Corporation UHD\n"
+        "01:00.0 VGA compatible controller: NVIDIA Corporation AD104 [GeForce RTX 4070]\n"
+    )
+    assert finder.parse_adapters(lspci) == ["NVIDIA Corporation AD104 [GeForce RTX 4070]"]
+    assert finder.parse_adapters("AMD Radeon RX 7800 XT|PCI\\VEN_1002&DEV_747E\n") == []
+
+    def windows_list(command: list[str], **kwargs: Any) -> Any:
+        assert "Win32_VideoController" in command[-1]
+        return subprocess.CompletedProcess(command, 0, listed, "")
+
+    assert finder.adapters(windows=True, run=windows_list) == [
+        "an NVIDIA graphics card",
+        "NVIDIA GeForce RTX 3060",
+    ]
 
 
 def test_a_chosen_pytorch_build_is_remembered(tmp_path: Path) -> None:
@@ -309,7 +402,7 @@ class Recorder:
         self.torch: str | None = None
         self.limits: list[float | None] = []  # each command's time limit
 
-    def __call__(self, command: Any, check: bool = True, minutes: float | None = None) -> int:
+    def __call__(self, command: Any, check: bool = True, minutes: float | None = None, what: str = "") -> int:
         command = [str(part) for part in command]
         self.commands.append(command)
         self.limits.append(minutes)
@@ -321,6 +414,15 @@ class Recorder:
                     (self.site / "nitro").mkdir(parents=True, exist_ok=True)
                     (self.site / "nitro" / "_core.abi3.so").write_bytes(b"ready-made core")
         return 0
+
+    def output(self, command: Any, minutes: float | None = None, env: Any = None, heartbeat: str = "") -> Any:
+        """Stands in for run_output (the PyTorch install)."""
+        return steps.Ran(self(command, minutes=minutes))
+
+    def patch(self, monkeypatch: pytest.MonkeyPatch) -> Recorder:
+        monkeypatch.setattr(steps, "run", self)
+        monkeypatch.setattr(steps, "run_output", self.output)
+        return self
 
 
 def _release(folder: Path, version: str, wheel: bytes = b"wheel", tamper: bool = False) -> str:
@@ -370,20 +472,20 @@ def test_setup_installs_pytorch_first_then_the_ready_made_nitrolearn(
     base = _release(tmp_path / "release", "1.2.0")
     site = tmp_path / "site-packages"
     recorder = Recorder(site)
-    monkeypatch.setattr(steps, "run", recorder)
+    recorder.patch(monkeypatch)
     monkeypatch.setattr(steps, "site_packages", lambda: site)
     monkeypatch.setattr(steps, "installed_version", lambda name: recorder.torch)
     monkeypatch.setattr(steps, "core_matches_code", lambda: True)
     monkeypatch.setattr(steps, "install_from_code", lambda *a: pytest.fail("the ready-made files are there"))
     args = steps.parse(["--uv", "uv"])
-    facts = _facts("12.8", ("NVIDIA GeForce RTX 5090", "12.0"))
+    facts = _facts("13.0", ("NVIDIA GeForce RTX 5090", "12.0"))
     steps.setup(args, root, base, lambda: facts)
 
     installs = [c for c in recorder.commands if c[1:3] == ["pip", "install"]]
     assert installs[0][-3:] == [
-        "torch==2.14.1+cu128",
+        "torch==2.14.1+cu130",
         "--index-url",
-        "https://download.pytorch.org/whl/cu128",
+        "https://download.pytorch.org/whl/cu130",
     ]
     assert installs[1][-1].startswith("nitrolearn[wandb,replays,dashboard] @ file:")
     assert (root / "python" / "nitro" / "_core.abi3.so").read_bytes() == b"ready-made core"
@@ -399,7 +501,7 @@ def test_setup_installs_pytorch_first_then_the_ready_made_nitrolearn(
     # Run again: PyTorch is not downloaded again.
     recorder.commands.clear()
     steps.setup(args, root, base, lambda: facts)
-    assert not any("torch==2.14.1+cu128" in c for c in recorder.commands)
+    assert not any("torch==2.14.1+cu130" in c for c in recorder.commands)
 
 
 @pytest.mark.skipif(steps.platform_tag() is None, reason="no ready-made files for this kind of computer")
@@ -409,7 +511,7 @@ def test_setup_builds_from_the_code_without_ready_made_files_and_refuses_bad_dow
     root = _project(tmp_path, "9.9.9")
     site = tmp_path / "site-packages"
     recorder = Recorder(site)
-    monkeypatch.setattr(steps, "run", recorder)
+    recorder.patch(monkeypatch)
     monkeypatch.setattr(steps, "site_packages", lambda: site)
     monkeypatch.setattr(steps, "installed_version", lambda name: recorder.torch)
     built: list[str] = []
@@ -450,7 +552,7 @@ def test_a_developer_install_adds_rustfmt_and_clippy_to_the_folders_rust(
     rustup.write_text("", encoding="utf-8")
     monkeypatch.setenv("CARGO_HOME", str(tmp_path / ".tools" / "cargo"))
     recorder = Recorder(tmp_path / "site-packages")
-    monkeypatch.setattr(steps, "run", recorder)
+    recorder.patch(monkeypatch)
     monkeypatch.setattr(steps, "installed_version", lambda name: recorder.torch)
     monkeypatch.setattr(steps, "install_from_code", lambda uv, folder, extras, *rest: None)
     args = steps.parse(["--uv", "uv", "--torch", "cpu", "--dev"])
@@ -684,7 +786,7 @@ def test_typed_numbers_and_switches() -> None:
     assert switches("--desktop") == {"start_menu": True, "desktop": True}
     assert switches("--no-shortcuts") == {"start_menu": False, "desktop": False}
     assert switches("--rust", "--dev", "--recordings") == {"rust": True, "dev": True, "recordings": True}
-    assert steps.parse(["--uv", "uv", "--cpu", "--torch", "cu128"]).torch == "cpu"
+    assert steps.parse(["--uv", "uv", "--cpu", "--torch", "cu130"]).torch == "cpu"
     assert switches("--no-launch", "--from-source") == {}, "not parts: the menu is still shown"
 
 
@@ -789,7 +891,7 @@ def _setup_with(
 ) -> tuple[Any, Recorder]:
     """setup() in `root` with stand-ins for every download, a person typing `answers` in the menu."""
     recorder = Recorder(root / "site-packages")
-    monkeypatch.setattr(steps, "run", recorder)
+    recorder.patch(monkeypatch)
     monkeypatch.setattr(steps, "installed_version", lambda name: recorder.torch)
     monkeypatch.setattr(steps, "install_from_code", lambda uv, folder, extras, *rest: None)
     monkeypatch.setattr(steps, "read_release", lambda root, base, folder: None)
@@ -970,7 +1072,8 @@ def test_the_windows_installer_warns_of_onedrive_and_long_paths_and_checks_the_d
     assert "$PSScriptRoot.Length -gt 80" in ps1
     assert "-not $PSBoundParameters.ContainsKey('Parts') -and -not [Console]::IsInputRedirected" in ps1
     assert ps1.index("Get-FreeGB\nif ($free -ge 0 -and $free -lt 1)") < ps1.index("Getting uv")
-    assert ps1.count("$(Get-FailureHint)") == 3 and '$DownloadHint"' not in ps1
+    assert ps1.count("$(Get-FailureHint)") == 2 and '$DownloadHint"' not in ps1
+    assert "{ Get-FailureHint } else { $HelpHint }" in ps1, "network advice only for a network failure"
     assert "The disk with NitroLearn's folder is full." in ps1
 
 
@@ -1039,11 +1142,15 @@ def test_a_step_reads_no_input_and_a_stalled_or_failed_download_says_what_holds_
         steps.run(sleeper, minutes=0.02)
     assert steps.run(sleeper, check=False, minutes=0.02) == steps.TIMED_OUT
     assert "Antivirus web shields" in capsys.readouterr().out
-    with pytest.raises(steps.Stop, match="failed \\(see above\\)\\. Check the internet connection"):
-        steps.run([python, "-c", "raise SystemExit(2)"], minutes=1)
     with pytest.raises(steps.Stop) as plain:
-        steps.run([python, "-c", "raise SystemExit(2)"])
-    assert "Antivirus" not in str(plain.value), "only a download step names the usual causes"
+        steps.run([python, "-c", "raise SystemExit(2)"], minutes=1)
+    said = str(plain.value)
+    assert "see above" not in said and "ended with code 2 and gave no reason" in said
+    assert "Antivirus" not in said, "the network's usual causes only for a network failure"
+    cut = "import sys; print('error: Failed to fetch: `https://x.org/a`')"
+    cut += "; print('  Caused by: Connection reset'); sys.exit(2)"
+    with pytest.raises(steps.Stop, match=r"x\.org could not be reached|cut off.*Antivirus web shields"):
+        steps.run([python, "-c", cut], minutes=1)
     missing = (tmp_path / "missing.whl").as_uri()
     with pytest.raises(steps.Stop, match=r"could not be downloaded .*Antivirus web shields"):
         steps.fetch_checked(missing, "0" * 64, tmp_path / "out.whl")
@@ -1394,3 +1501,295 @@ def test_paths_reach_windows_powershell_without_an_ansi_round_trip() -> None:
     assert "IShellLinkW" in shortcuts and "MarshalAs(UnmanagedType.LPWStr)" in shortcuts
     install = (PROJECT / "install.ps1").read_text(encoding="utf-8")
     assert "Get-Content -Encoding UTF8 -LiteralPath $config" in install, "pyvenv.cfg as uv writes it"
+
+
+# ---------- PyTorch's download: retries, other builds, and the reason a step stopped ----------
+
+# uv's own words for the usual failures (uv 0.11.32, piped; its tree letters as plain() makes them).
+UV_NO_BUILD = """\
+Using Python 3.11.15 environment at: C:\\NitroLearn\\.venv
+  \u00d7 No solution found when resolving dependencies:
+  \u2570\u2500\u25b6 Because there is no version of torch==2.14.1+cu128 and you require
+      torch==2.14.1+cu128, we can conclude that your requirements are
+      unsatisfiable.
+"""
+UV_CUT_OFF = """\
+Resolved 1 package in 5ms
+Downloading torch (2.4GiB)
+  \u00d7 Failed to download `torch==2.14.1+cu130`
+  \u251c\u2500\u25b6 Failed to write to the distribution cache
+  \u251c\u2500\u25b6 error decoding response body
+  \u251c\u2500\u25b6 request or response body error
+  \u251c\u2500\u25b6 error reading a body from connection
+  \u2570\u2500\u25b6 An existing connection was forcibly closed by the remote host. (os error 10054)
+"""
+UV_STALLED = """\
+Downloading torch (2.4GiB)
+  \u00d7 Failed to download `torch==2.14.1+cu126`
+  \u251c\u2500\u25b6 Failed to extract archive: torch-2.14.1+cu126-cp311-cp311-win_amd64.whl
+  \u251c\u2500\u25b6 I/O operation failed during extraction
+  \u2570\u2500\u25b6 Failed to download distribution due to network timeout. Try increasing
+      UV_HTTP_TIMEOUT (current value: 300s).
+"""
+UV_UNREACHABLE = """\
+error: Request failed after 3 retries in 12.2s
+  Caused by: Failed to fetch: `https://download.pytorch.org/whl/cu130/torch/`
+  Caused by: error sending request for url (https://download.pytorch.org/whl/cu130/torch/)
+  Caused by: client error (Connect)
+  Caused by: dns error: No such host is known. (os error 11001)
+"""
+UV_SERVER = """\
+error: Request failed after 3 retries in 9.1s
+  Caused by: Failed to fetch: `https://download.pytorch.org/whl/cu130/torch/`
+  Caused by: HTTP status server error (503 Service Unavailable) for url (https://download.pytorch.org/whl/cu130/torch/)
+"""
+UV_CERTIFICATE = """\
+error: Request failed after 3 retries in 2.0s
+  Caused by: Failed to fetch: `https://download.pytorch.org/whl/cu126/torch/`
+  Caused by: error sending request for url (https://download.pytorch.org/whl/cu126/torch/)
+  Caused by: client error (Connect)
+  Caused by: invalid peer certificate: UnknownIssuer
+"""
+UV_DISK = """\
+Downloading torch (2.4GiB)
+  \u00d7 Failed to download `torch==2.14.1+cu126`
+  \u251c\u2500\u25b6 Failed to extract archive: torch-2.14.1+cu126-cp311-cp311-win_amd64.whl
+  \u2570\u2500\u25b6 There is not enough space on the disk. (os error 112)
+"""
+UV_LOCKED = """\
+error: Failed to install: torch-2.14.1+cu126-cp311-cp311-win_amd64.whl (torch==2.14.1+cu126)
+  Caused by: failed to remove file `C:\\NitroLearn\\.venv\\Lib\\site-packages\\torch\\lib\\c10.dll`:
+The process cannot access the file because it is being used by another process. (os error 32)
+"""
+UV_NO_WINDOWS = """\
+  \u00d7 No solution found when resolving dependencies:
+  \u2570\u2500\u25b6 Because torch==2.14.1+rocm7.2 has no wheels with a matching platform
+      tag (e.g., `win_amd64`) and you require torch==2.14.1+rocm7.2, we can
+      conclude that your requirements are unsatisfiable.
+
+hint: Wheels are available for `torch` (v2.14.1+rocm7.2) on the following platform: `manylinux_2_28_x86_64`
+"""
+
+
+def _ran(text: str, code: int = 1) -> Any:
+    return steps.Ran(code, tuple(steps.plain(line) for line in text.splitlines()))
+
+
+def test_uvs_output_is_shown_in_plain_letters() -> None:
+    lines = _ran(UV_NO_BUILD).lines
+    assert all(line.isascii() for line in lines), "the classic console showed uv's tree letters as ?"
+    assert lines[1] == "  x No solution found when resolving dependencies:"
+    assert lines[2].startswith("  -> Because there is no version")
+    assert steps.plain("\x1b[31merror\x1b[0m: boom\r") == "error: boom"
+
+
+def test_the_reason_a_uv_step_failed_is_said_in_plain_words(monkeypatch: pytest.MonkeyPatch) -> None:
+    what = "Installing PyTorch 2.14.1+cu128"
+    cases = {
+        UV_NO_BUILD: ("missing", "there is no torch==2.14.1+cu128 to download"),
+        UV_CUT_OFF: ("network", "the connection was cut off while downloading torch==2.14.1+cu130"),
+        UV_STALLED: ("network", "the download of torch==2.14.1+cu126 stalled"),
+        UV_UNREACHABLE: ("network", "download.pytorch.org could not be reached"),
+        UV_SERVER: ("network", "download.pytorch.org answered with a server error (503 Service Unavailable)"),
+        UV_CERTIFICATE: ("certificate", "the secure connection to download.pytorch.org was not trusted"),
+        UV_DISK: ("disk", "the disk is full"),
+        UV_LOCKED: ("locked", "a file in NitroLearn's folder could not be changed"),
+        UV_NO_WINDOWS: ("missing", "torch==2.14.1+rocm7.2 has no files for this kind of PC (platform)"),
+    }
+    for output, (kind, reason) in cases.items():
+        found = steps.failure(_ran(output), what, 120)
+        assert found.kind == kind, output
+        assert reason in found.reason, (found.reason, output)
+        assert found.text.startswith(f"{what} failed: {found.reason.rstrip('.')}. "), found.text
+        assert "see above" not in found.text and "\n" not in found.text, "one line for the setup wizard's box"
+        network = kind in ("network", "certificate")
+        assert ("Antivirus web shields" in found.text) == network, (kind, found.text)
+    assert "is full" in steps.failure(_ran(UV_DISK), what, 120).text
+    assert "Close NitroLearn" in steps.failure(_ran(UV_LOCKED), what, 120).text
+    # Something else: uv's own last words, and where to ask.
+    odd = steps.failure(_ran("error: Something new went wrong\n  Caused by: a detail"), what, 120)
+    assert odd.kind == "other" and "Something new went wrong; a detail" in odd.text and "Discord" in odd.text
+    assert "gave no reason" in steps.failure(steps.Ran(3), what, 120).text
+    stopped = steps.failure(steps.Ran(steps.TIMED_OUT, (), timed_out=True), what, 120)
+    assert stopped.text.startswith(f"{what} was stopped after 120 minutes") and "Antivirus" in stopped.text
+
+
+class FakeUv:
+    """Plays uv for the PyTorch install: `answers` maps a build to its outputs, one per try (0: it worked)."""
+
+    def __init__(self, answers: dict[str, list[str | int]]) -> None:
+        self.answers = {name: list(said) for name, said in answers.items()}
+        self.tried: list[str] = []
+        self.envs: list[Any] = []
+
+    def __call__(
+        self, command: Any, minutes: float | None = None, env: Any = None, heartbeat: str = ""
+    ) -> Any:
+        spec = next(str(part) for part in command if str(part).startswith("torch=="))
+        build = spec.split("+")[1]
+        self.tried.append(build)
+        self.envs.append(env)
+        said = self.answers[build].pop(0)
+        return steps.Ran(0) if said == 0 else _ran(str(said))
+
+
+def _fake_uv(
+    monkeypatch: pytest.MonkeyPatch, answers: dict[str, list[str | int]]
+) -> tuple[FakeUv, list[float]]:
+    uv = FakeUv(answers)
+    waits: list[float] = []
+    monkeypatch.setattr(steps, "run_output", uv)
+    monkeypatch.setattr(steps.time, "sleep", waits.append)
+    monkeypatch.setattr(steps, "installed_version", lambda name: None)
+    return uv, waits
+
+
+def test_a_download_cut_off_is_tried_again(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    uv, waits = _fake_uv(monkeypatch, {"cu130": [UV_CUT_OFF, UV_STALLED, 0]})
+    assert steps.install_torch(Path("uv"), ["cu130", "cu132"]) == "cu130"
+    assert uv.tried == ["cu130", "cu130", "cu130"] and waits == list(steps.NETWORK_WAITS[:2])
+    assert all(env["UV_HTTP_TIMEOUT"] == steps.UV_HTTP_TIMEOUT for env in uv.envs), "longer wait for data"
+    assert all(env["UV_SYSTEM_CERTS"] == "1" for env in uv.envs if "UV_SYSTEM_CERTS" in os.environ)
+    out = capsys.readouterr().out
+    assert "cut off while downloading torch==2.14.1+cu130. Trying again in 15 seconds (try 2 of 4)" in out
+
+
+def test_a_download_that_keeps_failing_stops_with_the_network_advice(monkeypatch: pytest.MonkeyPatch) -> None:
+    uv, _ = _fake_uv(monkeypatch, {"cu126": [UV_UNREACHABLE] * steps.NETWORK_TRIES})
+    with pytest.raises(steps.Stop) as stopped:
+        steps.install_torch(Path("uv"), ["cu126", "cu130"])
+    assert uv.tried == ["cu126"] * steps.NETWORK_TRIES, "a network failure never falls back to another build"
+    said = str(stopped.value)
+    assert "Installing PyTorch 2.14.1+cu126 failed: download.pytorch.org could not be reached." in said
+    assert "Antivirus web shields" in said and "see above" not in said
+
+
+def test_a_build_pytorch_does_not_have_falls_through_to_the_next(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    uv, waits = _fake_uv(monkeypatch, {"cu130": [UV_NO_BUILD.replace("cu128", "cu130")], "cu132": [0]})
+    assert steps.install_torch(Path("uv"), ["cu130", "cu132"]) == "cu132"
+    assert uv.tried == ["cu130", "cu132"] and waits == [], "a missing build is not tried again"
+    assert "PyTorch's site has no 2.14.1+cu130 build; trying the next one." in capsys.readouterr().out
+
+
+def test_other_failures_stop_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    uv, waits = _fake_uv(monkeypatch, {"cu126": [UV_DISK]})
+    with pytest.raises(steps.Stop, match=r"the disk is full.*is full"):
+        steps.install_torch(Path("uv"), ["cu126", "cu130"])
+    assert uv.tried == ["cu126"] and waits == []
+
+
+def test_no_build_on_the_site_ends_on_the_processor_build_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = [UV_NO_BUILD.replace("cu128", name) for name in ("cu130", "cu132")]
+    uv, _ = _fake_uv(monkeypatch, {"cu130": [missing[0]], "cu132": [missing[1]], "cpu": [0]})
+    root = _project(tmp_path)
+    monkeypatch.setattr(steps, "run", lambda *a, **k: 0)
+    monkeypatch.setattr(steps, "install_from_code", lambda uv, folder, extras, *rest: None)
+    monkeypatch.setattr(steps, "read_release", lambda root, base, folder: None)
+    monkeypatch.setattr(steps, "keep_torch", lambda uv, variant: None)
+    facts = _facts("13.0", ("NVIDIA GeForce RTX 5090", "12.0"))
+    done = steps.setup(steps.parse(["--uv", "uv", "--progress"]), root, "unused", lambda: facts)
+    assert uv.tried == ["cu130", "cu132", "cpu"] and done.choices["gpu"]
+    out = capsys.readouterr().out
+    assert (
+        "SETUP NOTE: PyTorch's site has none of the graphics-card builds that fit this card and driver" in out
+    )
+    assert "(cu130, cu132)" in out and "PyTorch for the processor was installed" in out
+    assert "-Torch cu130" in out or "--torch cu130" in out, "how to get the graphics-card build later"
+    assert "@@nitro torch fail" in out
+    steps.PROGRESS[0] = False
+
+
+def test_a_forced_build_pytorch_does_not_have_is_said_with_the_ones_it_has(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fake_uv(monkeypatch, {"cu128": [UV_NO_BUILD], "cu126": [0]})
+    site_builds = steps.site_builds
+    monkeypatch.setattr(steps, "site_builds", lambda: ["cpu", "cu126", "cu130", "cu132"])
+    assert steps.install_torch(Path("uv"), ["cu128", "cu126"], forced="cu128") == "cu126"
+    out = capsys.readouterr().out
+    assert (
+        "SETUP NOTE: PyTorch 2.14.1 has no cu128 build on PyTorch's site; the builds it has for this PC: "
+        "cpu, cu126, cu130, cu132" in out
+    )
+    # The listing itself, from the site's pages (no network here: a stand-in reads them).
+    python = f"cp{sys.version_info[0]}{sys.version_info[1]}"
+    system = "win_amd64" if steps.WINDOWS else "manylinux_2_28_x86_64"
+    pages = {
+        variant: f'<a href="torch-2.14.1%2B{variant}-{python}-{python}-{system}.whl">x</a>'.encode()
+        for variant in ("cpu", "cu126", "cu130")
+    }
+    pages["cu132"] = b'<a href="torch-2.15.0%2Bcu132-cp311-cp311-win_amd64.whl">other version</a>'
+    read = lambda url: pages[url.split("/whl/")[1].split("/")[0]]  # noqa: E731
+    assert site_builds(read) == ["cpu", "cu126", "cu130"]
+
+    def offline(url: str) -> bytes:
+        raise urllib.error.URLError("offline")
+
+    assert site_builds(offline) is None
+
+
+def test_the_nvidia_facts_come_from_nvidia_smi_or_from_windows_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Finder:
+        def __init__(self) -> None:
+            self.smi: str | None = "nvidia-smi"
+            self.listed: list[str] = []
+
+        def find(self) -> str | None:
+            return self.smi
+
+        def adapters(self) -> list[str]:
+            return self.listed
+
+    finder = Finder()
+    monkeypatch.setattr(steps, "nitro_module", lambda name: finder)
+    answers: dict[str, Any] = {}
+
+    def smi(path: str, *args: str) -> Any:
+        said = answers.get(args[0] if args else "")
+        return None if said is None else subprocess.CompletedProcess([path], said[0], said[1], "")
+
+    monkeypatch.setattr(steps, "_smi", smi)
+    answers[""] = (0, SMI_HEADER.format(cuda="13.0"))
+    answers["--query-gpu=name,compute_cap"] = (0, SMI_TWO_CARDS)
+    facts = steps.nvidia_facts()
+    assert facts is not None and facts.answered and facts.driver_cuda == (13, 0) and len(facts.cards) == 2
+    # An old driver that cannot be asked for compute_cap: the names alone.
+    answers["--query-gpu=name,compute_cap"] = (2, "Field compute_cap is not a valid field")
+    answers["--query-gpu=name"] = (0, "NVIDIA GeForce RTX 5070\n")
+    facts = steps.nvidia_facts()
+    assert facts is not None and facts.cards == (steps.Card("NVIDIA GeForce RTX 5070", None),)
+    # nvidia-smi that cannot reach the driver, or none at all: Windows' own list decides.
+    answers[""] = (9, "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.")
+    assert steps.nvidia_facts() is None
+    finder.listed = ["an NVIDIA graphics card"]
+    facts = steps.nvidia_facts()
+    assert facts is not None and not facts.answered and facts.cards[0].name == "an NVIDIA graphics card"
+    finder.smi = None
+    assert steps.nvidia_facts() == facts
+
+
+def test_a_long_download_says_it_is_still_going() -> None:
+    assert steps.still_going("PyTorch", 185, 100.0, 98.8) == (
+        "PyTorch: still going, 3 minutes so far, about 1.2 GB written to the disk."
+    )
+    assert steps.still_going("PyTorch", 60, None, None) == "PyTorch: still going, 1 minutes so far."
+    ran = steps.run_output([sys.executable, "-c", "print('a \u00d7 b'); print('\u2570\u2500\u25b6 c')"])
+    assert ran.code == 0 and ran.lines == ("a x b", "-> c")
+
+
+def test_the_setup_wizard_shows_the_notes_and_names_a_card_without_a_driver() -> None:
+    iss = (PROJECT / "installer" / "NitroLearn.iss").read_text(encoding="utf-8")
+    assert "if Copy(Line, 1, 12) = 'SETUP NOTE: ' then" in iss and len("SETUP NOTE: ") == 12
+    assert "NoteText := NoteText + Copy(Line, 13, Length(Line))" in iss
+    assert "'NitroLearn is installed. Please read this:'" in iss
+    assert "NoDriver := NoCard and NvidiaAdapterFound;" in iss and "VEN_10DE" in iss
+    ps1 = (PROJECT / "install.ps1").read_text(encoding="utf-8")
+    assert "RedirectStandardError = $true" in ps1 and 'Fail "$What failed: $reason. $hint"' in ps1
+    assert "see above" not in ps1
+    assert "'cu128'" not in ps1 and "'cu132'" in ps1

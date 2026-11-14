@@ -99,15 +99,14 @@ if [ "$cpu" = 0 ]; then
     if [ "$card" -lt 50 ]; then
         echo "This graphics card (generation $cap) is too old for PyTorch: pick another machine." >&2
         exit 1
-    elif [ "$card" -ge 100 ] && [ "$driver" -lt 1208 ]; then
-        echo "This card needs a driver that runs CUDA 12.8 or newer; this one runs ${major}.${minor}: pick another machine." >&2
+    elif [ "$card" -ge 100 ] && [ "$driver" -lt 1300 ]; then
+        echo "This card needs a driver that runs CUDA 13.0 or newer; this one runs ${major}.${minor}: pick another machine." >&2
         exit 1
     elif [ "$driver" -lt 1206 ]; then
         echo "The NVIDIA driver here runs CUDA ${major}.${minor}; NitroLearn needs 12.6 or newer: pick another machine." >&2
         exit 1
     elif [ "$card" -lt 75 ]; then index=https://download.pytorch.org/whl/cu126
     elif [ "$driver" -ge 1300 ]; then index=https://download.pytorch.org/whl/cu130
-    elif [ "$driver" -ge 1208 ]; then index=https://download.pytorch.org/whl/cu128
     else index=https://download.pytorch.org/whl/cu126
     fi
 fi

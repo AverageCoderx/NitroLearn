@@ -153,8 +153,8 @@ const
 var
   StepKeys, StepTexts, StepStates: TArrayOfString;
   Checklist: TNewMemo;
-  LogFile, StopText, DoctorText: String;
-  Succeeded, CardShown, RLBotInstalled, NoCard, KeepUserFiles: Boolean;
+  LogFile, StopText, DoctorText, NoteText: String;
+  Succeeded, CardShown, RLBotInstalled, NoCard, NoDriver, KeepUserFiles: Boolean;
   TypesChangedBefore: TNotifyEvent;
 
 { ---------- the install folder ---------- }
@@ -291,6 +291,25 @@ begin
     end;
 end;
 
+{ An NVIDIA card Windows lists (also one running Windows' basic driver) when nvidia-smi gave no answer: its
+  driver is missing or too old. VEN_10DE is NVIDIA's id in a device id. }
+function NvidiaAdapterFound: Boolean;
+var
+  Output: TExecOutput;
+  Code, I: Integer;
+begin
+  Result := False;
+  try
+    if ExecAndCaptureOutput(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), '-NoProfile -NonInteractive -Command "Get-CimInstance Win32_VideoController | ForEach-Object { [string]$_.Name + [string]$_.PNPDeviceID }"', '', SW_HIDE, ewWaitUntilTerminated, Code, Output) then
+      if Code = 0 then
+        for I := 0 to GetArrayLength(Output.StdOut) - 1 do
+          if (Pos('VEN_10DE', Uppercase(Output.StdOut[I])) > 0) or (Pos('NVIDIA', Uppercase(Output.StdOut[I])) > 0) then
+            Result := True;
+  except
+    Result := False;
+  end;
+end;
+
 function RLBotV5Found: Boolean;
 var
   Bases: TArrayOfString;
@@ -323,7 +342,9 @@ end;
 
 procedure SettleFoundParts;
 begin
-  if NoCard then
+  if NoCard and NoDriver then
+    SettleItem(GpuItem, 'PyTorch for the graphics card: this PC has an NVIDIA card, but its driver is missing or does not answer, so the processor version is installed. Install the driver from nvidia.com/drivers, restart, then run this setup again')
+  else if NoCard then
     SettleItem(GpuItem, 'PyTorch for the graphics card: no NVIDIA card was found, so the processor version is installed');
   if RLBotInstalled then
     SettleItem(RLBotItem, 'RLBot v5: already installed on this PC, NitroLearn finds it by itself');
@@ -338,6 +359,7 @@ begin
     Exit;
   Card := NvidiaCard;
   NoCard := Card = '';
+  NoDriver := NoCard and NvidiaAdapterFound;
   if not NoCard then
     WizardForm.ComponentsList.ItemCaption[GpuItem] := 'PyTorch for the graphics card, ' + Card + ' (off: the slower processor version)';
   RLBotInstalled := RLBotV5Found;
@@ -477,6 +499,8 @@ begin
     WizardForm.FilenameLabel.Caption := Line;
   if Copy(Line, 1, 15) = 'SETUP STOPPED: ' then
     StopText := Copy(Line, 16, Length(Line));
+  if Copy(Line, 1, 12) = 'SETUP NOTE: ' then
+    NoteText := NoteText + Copy(Line, 13, Length(Line)) + #13#10#13#10;
   if Copy(Line, 1, 28) = 'NitroLearn is installed, but' then
     DoctorText := Line;
 end;
@@ -559,6 +583,10 @@ begin
         StepStates[I] := 'fail';  { the step it stopped in }
     ShowSteps;
   end;
+  { What the install could not do as chosen (PyTorch for the processor in place of the graphics card's,
+    the driver to update): said once it is done. }
+  if (Succeeded or (DoctorText <> '')) and (NoteText <> '') then
+    SuppressibleMsgBox('NitroLearn is installed. Please read this:' + #13#10#13#10 + NoteText + 'The whole log is install-log.txt in NitroLearn''s folder. ' + OpenFolderHint, mbInformation, MB_OK, IDOK);
   if not Succeeded then
   begin
     if DoctorText <> '' then

@@ -21,7 +21,7 @@
   nothing is asked and the parts stay as they are (first install: no shortcuts, no RLBot).
 
 .PARAMETER Torch
-  A PyTorch build other than the one picked for the card: cpu, cu126, cu128 or cu130 (remembered).
+  A PyTorch build other than the one picked for the card: cpu, cu126, cu130 or cu132 (remembered).
 
 .PARAMETER CPU
   PyTorch for the processor, not the graphics card (as -Torch cpu).
@@ -68,7 +68,7 @@
   Also print a line per step (for NitroLearn-Setup.exe's checklist).
 #>
 param(
-    [ValidateSet('auto', 'cpu', 'cu126', 'cu128', 'cu130')][string]$Torch = '',
+    [ValidateSet('auto', 'cpu', 'cu126', 'cu130', 'cu132')][string]$Torch = '',
     [switch]$Rust,
     [switch]$FromSource,
     [switch]$Dev,
@@ -125,22 +125,62 @@ function Get-FailureHint {
     return $DownloadHint
 }
 
+# Said when uv fails for a reason other than the network or the disk (tools\install_steps.py says the same).
+$HelpHint = 'Run the installer again; what was already downloaded is kept. If it stops the same way, ask in NitroLearn''s Discord (https://discord.gg/bYP3kYtryg) with install-log.txt from NitroLearn''s folder (the setup wizard''s log) or the text of this window.'
+
+function ConvertTo-Plain([string]$Line) {
+    # uv draws its error trees with letters the classic console shows as '?': plain ones instead.
+    $Line = $Line -replace '\x1b\[[0-9;?]*[ -/]*[@-~]', ''
+    $Line = $Line -replace '[\u251C\u2570]\u2500\u25B6', '->' -replace '\u00D7', 'x' -replace '[\u2502\u251C]', '|'
+    $Line = $Line -replace '\u2500', '-' -replace '\u25B6', '>' -replace '\u2570', '`'
+    return $Line.TrimEnd()
+}
+
+function Get-UvReason([string[]]$Lines) {
+    # uv's last error (from its last line that starts with 'error:' or 'x '), its lines joined; '' for none.
+    $first = -1
+    for ($i = 0; $i -lt $Lines.Count; $i++) { if ($Lines[$i] -match '^\s*(error:|x )') { $first = $i } }
+    if ($first -lt 0) { return '' }
+    $parts = @()
+    for ($i = $first; $i -lt $Lines.Count; $i++) {
+        $text = $Lines[$i].Trim()
+        if ($text -match '^hint:') { break }
+        $text = $text -replace '^(error:|x |\|?->|Caused by:)\s*', ''
+        if ($text) { $parts += $text }
+    }
+    $reason = ($parts -join ' ').TrimEnd('.')
+    if ($reason.Length -gt 400) { $reason = $reason.Substring(0, 397) + '...' }
+    return $reason
+}
+
 function Invoke-Uv([int]$Minutes, [string]$What, [string[]]$Arguments) {
-    # uv with its output in this window, nothing to read on its input, and a time limit: a step that has
-    # not finished by then is stopped and the setup says why instead of waiting on.
+    # uv with nothing to read on its input and a time limit: a step that has not finished by then is stopped
+    # and the setup says why instead of waiting on. uv writes its messages to the error stream: they are read
+    # as UTF-8, shown in plain letters once it ends, and its error is the reason the setup gives.
     $start = New-Object System.Diagnostics.ProcessStartInfo
     $start.FileName = $Uv
     $start.Arguments = ($Arguments | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
     $start.WorkingDirectory = $PSScriptRoot
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardErrorEncoding = [Text.Encoding]::UTF8
     $process = [System.Diagnostics.Process]::Start($start)
     $process.StandardInput.Close()
+    $said = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit($Minutes * 60 * 1000)) {
         try { $process.Kill() } catch {}
         Fail "$What was stopped after $Minutes minutes without finishing. $(Get-FailureHint)"
     }
-    if ($process.ExitCode -ne 0) { Fail "$What failed (see above). $(Get-FailureHint)" }
+    $lines = @(($said.Result -split "`r?`n") | ForEach-Object { ConvertTo-Plain $_ })
+    foreach ($line in $lines) { if ($line) { Write-Host $line } }
+    if ($process.ExitCode -ne 0) {
+        $reason = Get-UvReason $lines
+        if (-not $reason) { $reason = "uv ended with code $($process.ExitCode)" }
+        $network = 'Failed to fetch|Failed to download|error sending request|timed out|timeout|connection|dns error|tunnel|certificate|server error|end of file|os error 100'
+        $hint = if ($reason -match $network) { Get-FailureHint } else { $HelpHint }
+        Fail "$What failed: $reason. $hint"
+    }
 }
 
 if (-not [Environment]::Is64BitOperatingSystem) { Fail 'NitroLearn needs 64-bit Windows.' }

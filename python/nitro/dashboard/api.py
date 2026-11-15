@@ -73,7 +73,7 @@ WIZARD = (
     (
         "How it plays",
         "How often the bot decides, and what it sees of the game.",
-        ("env.tick_skip", "env.observation", "env.obs_team_size"),
+        ("env.tick_skip", "env.observation", "env.obs_team_size", "env.ball_prediction"),
     ),
     (
         "Its brain",
@@ -1304,7 +1304,7 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
 
     @_safe
     def set_livery(self, name: str, number: Any, main: Any, contrast: Any) -> dict[str, Any]:
-        """Changes a bot's race number (one or two digits) and its two livery colours (`#RRGGBB`); the
+        """Changes a bot's plate (one or two letters or digits) and its two livery colours (`#RRGGBB`); the
         answer holds the livery as every bot's data does, the readable text colour included."""
         return {"livery": livery.write(self._folder(name).root, number, main, contrast)}
 

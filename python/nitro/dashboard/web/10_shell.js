@@ -8,6 +8,10 @@ function renderBand() {
     if (b.dataset.go === current) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
   });
   put($("#theme-switch"), S.theme === "dark" ? `${ICON.sun}Light` : `${ICON.moon}Dark`);
+  // A new version is out (and not put off with Not now): a dot on App settings, where it is updated.
+  const prefs = $('.nav [data-go="prefs"]'), news = newsOut();
+  if (prefs && prefs.classList.toggle("has-news", news)) prefs.title = `NitroLearn ${S.notice.release.version} is out: update it here`;
+  else if (prefs) prefs.removeAttribute("title");
 }
 
 // A bot's number plate: its race number on its main colour, one corner cut, its second colour along the

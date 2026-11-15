@@ -23,6 +23,9 @@ crates/nitro_bot:  RLBot v5 packet → GameSnapshot → the same observations �
 - `obs.rs` (the `native` and `nitro_v2` observations, padded rooms for several game sizes), `actions.rs`
   (the 90-action table), `rewards.rs` (built-in rewards), `custom/` (the reward library and rewards of your
   own), `setters.rs` and `replay.rs` (how games start), `terminals.rs` (when a game ends).
+- `ball_prediction.rs` (`env.ball_prediction`): where the ball will be, from an arena of its own that holds
+  only the ball; its path carries on while the real ball matches it and is predicted afresh after a touch or
+  a reset. The bot reads RLBot's own prediction at the same times.
 - `pool.rs` and `env.rs` step many arenas on worker threads; every arena has its own seeded random stream,
   so the games do not depend on the thread count.
 - `policy.rs` reads exported policy files (`.nwt`) and runs them on the CPU for the bot.
@@ -38,7 +41,8 @@ crates/nitro_bot:  RLBot v5 packet → GameSnapshot → the same observations �
 - `dashboard/`: the dashboard window (pywebview), its page in parts (`dashboard/web/`) and its texts
   (`dashboard/winapp.py`: one window at a time, its own taskbar identity and icon, the shortcut record);
   `cli.py`: the `nitro` commands; `update.py`: `nitro update` and the dashboard's Update NitroLearn (the
-  newest GitHub release, by git or by its source archive, then the installer again).
+  newest GitHub release, by git or by its source archive, then the installer again; `dashboard/updating.py`
+  asks for it when the dashboard opens, at most once a day, and keeps the answer in `runs/.dashboard`).
 - `viewer/`: the 3D match viewer (three.js, bundled) that `nitro watch` and the dashboard show games in,
   recorded or live; `watch.py` plays those games; `brand/`: the logo, the app icon (`tools/make_icon.py`)
   and the fonts both windows share.

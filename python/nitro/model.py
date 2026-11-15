@@ -927,17 +927,25 @@ _BALL = {"native": 9, "nitro_v2": 20}
 _CAR = {"native": 23, "nitro_v2": 26}
 _PADS = 34
 _PADS_AND_ACTION = _PADS + 8
+# Numbers per ball prediction time (nitro_core::ball_prediction::VALUES_PER_TIME).
+BALL_PREDICTION_VALUES = 12
 
 
-def entity_parts(observation: str) -> Parts:
-    """Where the ball and the own car sit in `observation`'s own part (the ball first, then the pads and the
-    previous action, then the own car; nitro_core::obs). Native and nitro_v2 only, as padding is."""
+def entity_parts(observation: str, ball_prediction: int = 0) -> Parts:
+    """Where the ball and the own car sit in `observation`'s own part (the ball first, with `ball_prediction`
+    times of its predicted path after it, then the pads and the previous action, then the own car;
+    nitro_core::obs). Native and nitro_v2 only, as padding is."""
     if observation not in _BALL:
         raise ValueError(
             f"an attention encoder needs the native or nitro_v2 observation, not {observation!r}"
         )
-    ball = _BALL[observation]
+    ball = _BALL[observation] + BALL_PREDICTION_VALUES * ball_prediction
     return ball, ball + _PADS_AND_ACTION, _CAR[observation]
+
+
+def config_parts(config: NitroConfig) -> Parts:
+    """`entity_parts` of `config`'s observation."""
+    return entity_parts(config.env.observation, len(config.env.ball_prediction))
 
 
 def attention_encoder(model: ActorCritic) -> nn.Module | None:
@@ -964,7 +972,7 @@ def observation_layout(config: NitroConfig) -> Layout:
 
     env = config.env
     _, own, block, teammates, opponents, room = _core.observation_layout_of(
-        env.observation, env.team_size, env.opponents, observation_room(config)
+        env.observation, env.team_size, env.opponents, observation_room(config), len(env.ball_prediction)
     )
     if room == 0:
         raise ValueError("an attention encoder needs places for the cars (env.obs_team_size)")
@@ -994,12 +1002,23 @@ def build_networks(config: NitroConfig, obs_size: int, num_actions: int) -> Acto
     evaluation, export, pretraining, the viewer), so none can build another kind than a save holds."""
     layout = observation_layout(config) if config.model.uses_attention else None
     reads_ball = config.model.encoder in ("attention_communication", "transformer")
-    parts = entity_parts(config.env.observation) if reads_ball else None
+    parts = config_parts(config) if reads_ball else None
     return ActorCritic(obs_size, num_actions, config.model, layout, parts)
 
 
 # How many numbers each value head gives (`model.value_heads`).
 HEAD_OUTPUTS = {"main": 1, "goal": 1, "vdag1": 1, "vdag2": 1}
+
+
+def observation_size(config: NitroConfig) -> int:
+    """Numbers in the observation `config`'s games give its networks (no games built)."""
+    from nitro import _core
+
+    env = config.env
+    size, *_ = _core.observation_layout_of(
+        env.observation, env.team_size, env.opponents, observation_room(config), len(env.ball_prediction)
+    )
+    return int(size)
 
 
 def parameter_counts(config: NitroConfig) -> dict[str, int]:
@@ -1008,10 +1027,7 @@ def parameter_counts(config: NitroConfig) -> dict[str, int]:
     trunk and the policy) and, with value heads, "critic_trunk" and "head_<name>" each."""
     from nitro import _core
 
-    env = config.env
-    obs_size, *_ = _core.observation_layout_of(
-        env.observation, env.team_size, env.opponents, observation_room(config)
-    )
+    obs_size = observation_size(config)
     actions = _core.num_actions()
     with torch.device("meta"):
         model = build_networks(config, obs_size, actions)

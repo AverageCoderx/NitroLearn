@@ -1,6 +1,7 @@
 //! Rust core of NitroLearn: simulator access, environments and rollout collection.
 
 pub mod actions;
+pub mod ball_prediction;
 pub mod capture;
 pub mod config;
 pub mod custom;

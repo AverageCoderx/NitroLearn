@@ -173,6 +173,9 @@ def sizes_note(arena_sizes: Sequence[int], sides: int) -> str:
     return "Game sizes (env.team_sizes): " + ", ".join(parts) + "."
 
 
+# With ball prediction: the share of decisions whose path was predicted afresh (a touch or a reset) and the
+# share of the games' time spent predicting.
+BALL_PREDICTION_COLUMNS = ("ball_prediction_fresh_share", "ball_prediction_time_share")
 # Where an iteration's time goes: playing the games (of which waiting
 # for the CPU workers and for the networks' choices), then learning. The wall clock's speed also counts the
 # time between iterations (the run's own bookkeeping, saves), which steps_per_second leaves out.
@@ -575,6 +578,7 @@ class TrainingRun:
             *(f"growth_{name}" for name in self.trainer.learner.scale_free), *TIME_COLUMNS,
             *PLAY_COLUMNS,
             *size_column_names(config.env.team_sizes),
+            *(BALL_PREDICTION_COLUMNS if config.env.ball_prediction else []),
             *signal_columns(config.ppo),  # the GCO learning signals'
             *(MIX_COLUMNS if self.replay_mix is not None else []),
             *(MIX_KICKOFF_COLUMNS if self.replay_mix is not None and self.replay_mix.kickoff_only else []),
@@ -733,6 +737,9 @@ class TrainingRun:
             weight = self.goal_reward.weight
             share = stats.start_value / weight if weight != 0 else math.nan
             row["start_value_share"] = share if math.isfinite(share) else ""
+        if self.config.env.ball_prediction:  # how often the games predicted afresh, and its time
+            row["ball_prediction_fresh_share"] = env.predictions_fresh / max(env.env_steps, 1)
+            row["ball_prediction_time_share"] = env.prediction_seconds / max(env.step_seconds, 1e-9)
         row |= stats.signals
         if self.replay_mix is not None:
             row |= mix_columns(report.copy)

@@ -55,6 +55,10 @@ CHARTS: dict[str, tuple[str, str]] = {
     "update_size": ("Size of each update", "how far an iteration moved the networks' weights, relative"),
     "playing_seconds": ("Time playing", "seconds an iteration spends playing the games"),
     "learning_seconds": ("Time learning", "seconds an iteration spends learning from them"),
+    "ball_prediction_fresh_share": (
+        "Ball predicted afresh",
+        "share of decisions whose ball prediction started over (a touch or a reset), not carried on",
+    ),
     "entropy_coef": ("Entropy bonus", "the bonus ppo.entropy_target moves to hold the randomness near it"),
     "goal_explained_variance": (
         "Goal critic's predictions",

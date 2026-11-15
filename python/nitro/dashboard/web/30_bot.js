@@ -26,11 +26,12 @@ function figuresHTML(b) {
   const p = b.parameters;
   const parts = p && p.total ? [p.shared ? "shared " + shortCount(p.shared) : "", "policy " + shortCount(p.policy), "value " + shortCount(p.value)].filter(Boolean).join(", ") : "";
   const fig = (label, value, title) => value === "" || value == null ? "" : `<div${title ? ` title="${esc(title)}"` : ""}><dt>${label}</dt><dd>${value}</dd></div>`;
+  const predicts = Boolean(b.ball_prediction && b.ball_prediction.length);
   const cells = [
     fig("Game size", b.team_size ? `${b.team_size}v${b.team_size}` : ""),
     fig("Network", b.encoder ? esc(networkWord(b).replace(" network", "")) : ""),
     fig("Parameters", p && p.total ? shortCount(p.total) : "", parts ? "Network weights in its newest save: " + parts : ""),
-    fig("Observation", b.observation ? esc(OBSERVATION_WORDS[b.observation] || b.observation) : "", b.observation ? "What the bot sees: " + b.observation : ""),
+    fig("Observation", b.observation ? esc(OBSERVATION_WORDS[b.observation] || b.observation) + (predicts ? " + ball prediction" : "") : "", b.observation ? "What the bot sees: " + b.observation + (predicts ? "; where the ball will be in " + b.ball_prediction.join(", ") + " s" : "") : ""),
     fig("Tick skip", b.tick_skip || "", b.tick_skip ? `It decides every ${b.tick_skip} ticks of the game` : ""),
     b.start ? `<div class="wide" title="${esc(b.start.line)}"><dt>Start</dt><dd data-start-chip>${esc(b.start.chip)}</dd></div>` : "",
     fig("Agent steps", steps(b.agent_steps)),
@@ -267,7 +268,7 @@ function liveryModal() {
     <div class="livery">
       <div class="livery-show" id="lv-show"></div>
       <div class="livery-form">
-        <label class="f">Race number<input id="lv-number" class="field" type="text" inputmode="numeric" maxlength="2" autocomplete="off" data-lv="number" value="${esc(S.livery.number)}"><span class="h">One or two digits, 0 to 99.</span></label>
+        <label class="f">Plate<input id="lv-number" class="field" type="text" maxlength="2" autocomplete="off" data-lv="number" value="${esc(S.livery.number)}"><span class="h">One or two letters or digits, like 07 or XM.</span></label>
         ${pairs.length ? `<div class="f">Ready-made colours<div class="swatches">${pairs.map(([main, second]) => `<button type="button" class="swatch" data-lv-pair="${esc(main)},${esc(second)}" style="--a:${esc(main)};--b:${esc(second)};" aria-label="Main ${esc(main)}, second ${esc(second)}"></button>`).join("")}</div></div>` : ""}
         <div class="livery-two">
           <label class="f">Main colour<span class="colour"><input type="color" id="lv-main-pick" data-lv="main" value="${esc(S.livery.main)}" aria-label="Pick the main colour"><input id="lv-main" class="field mono" type="text" maxlength="7" autocomplete="off" data-lv="main" value="${esc(S.livery.main)}"></span></label>

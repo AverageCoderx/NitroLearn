@@ -256,6 +256,7 @@ _SAME_GAME = {
     "opponents": "whether it plays against opponents",
     "tick_skip": "how often it decides (the tick skip)",
     "action_delay": "the action delay",
+    "ball_prediction": "the ball prediction's times (seconds ahead)",
 }
 
 
@@ -270,6 +271,8 @@ def _shown(config: NitroConfig, name: str) -> str:
         return str(value or config.env.team_size)
     if name == "team_size":
         return f"{value}v{value}"
+    if isinstance(value, tuple):
+        return str(list(value))
     return str(value).lower() if isinstance(value, bool) else str(value)
 
 
@@ -447,7 +450,7 @@ def _player(
     if attention == flags or (not attention and observation_room(side.config) > 0):
         return _model(side, obs_size, num_actions, device)
     _, own, block, teammates, opponents, _ = _core.observation_layout_of(
-        env.observation, env.team_size, env.opponents, 0
+        env.observation, env.team_size, env.opponents, 0, len(env.ball_prediction)
     )
     cars = teammates + opponents
     if attention:

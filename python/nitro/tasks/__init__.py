@@ -44,7 +44,7 @@ EVAL_SEEDS = (1_000_001, 1_000_002)
 # How the bot learns, which a task takes from the settings it is given; everything else is the task's.
 _LEARNING_ENV = (
     "tick_skip", "action_delay", "observation", "obs_team_size", "groups", "threads", "pipelined_inference",
-    "concurrent_passes", "card_starts_games",
+    "concurrent_passes", "card_starts_games", "ball_prediction",
 )  # fmt: skip
 
 # The task's own players and arenas, never taken from the settings (every other [env] field is _LEARNING_ENV).

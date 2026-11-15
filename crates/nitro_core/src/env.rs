@@ -4,13 +4,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::actions::{ActionTable, MaskRule};
+use crate::ball_prediction::BallPath;
 use crate::capture::Capture;
 use crate::mechanics::Mechanics;
 use crate::obs::ObsKind;
 use crate::rewards::{RewardSet, RewardStats, RewardTerm};
 use crate::setters::{SetterKind, SetterMix};
 use crate::sim::Sim;
-use crate::snapshot::{CarSnapshot, Controls, GameSnapshot, MAX_CARS, StepEvents, Team};
+use crate::snapshot::{Body, CarSnapshot, Controls, GameSnapshot, MAX_CARS, StepEvents, Team};
 use crate::terminals::{Ending, EpisodeClock, TerminalConfig};
 
 const TICK_RATE: f32 = 120.0;
@@ -40,6 +41,8 @@ pub struct EnvRules {
     pub obs: ObsKind,
     /// Players per team the observation has places for (0 = the game's own).
     pub obs_team_size: usize,
+    /// The ball prediction's times as decisions ahead (`ball_prediction::decisions`); empty = off.
+    pub ball_prediction: Vec<u32>,
     pub masks: MaskRule,
     pub terminals: TerminalConfig,
     pub rewards: Vec<RewardTerm>,
@@ -53,6 +56,7 @@ impl EnvRules {
     pub fn obs_size(&self) -> usize {
         self.obs
             .layout(self.team_size, self.opponents, self.obs_team_size)
+            .with_ball_prediction(self.ball_prediction.len())
             .size
     }
 
@@ -118,6 +122,9 @@ pub struct EnvStats {
     /// Wall time inside `Env::step`, and the part of it spent in the physics engine.
     pub step_time: Duration,
     pub physics_time: Duration,
+    /// The part of `step_time` spent predicting the ball, and the predictions made afresh.
+    pub prediction_time: Duration,
+    pub predictions_fresh: u64,
     pub episodes: Vec<EpisodeRecord>,
     /// With mixed game sizes: `play` per players a side (index = the size); empty otherwise.
     pub play_by_size: Vec<PlayStats>,
@@ -139,6 +146,8 @@ impl EnvStats {
             steps,
             step_time,
             physics_time,
+            prediction_time,
+            predictions_fresh,
             episodes,
             play_by_size,
         } = self;
@@ -147,6 +156,8 @@ impl EnvStats {
         *steps = 0;
         *step_time = Duration::ZERO;
         *physics_time = Duration::ZERO;
+        *prediction_time = Duration::ZERO;
+        *predictions_fresh = 0;
         episodes.clear();
         play_by_size.clear();
     }
@@ -157,6 +168,8 @@ impl EnvStats {
         self.steps += other.steps;
         self.step_time += other.step_time;
         self.physics_time += other.physics_time;
+        self.prediction_time += other.prediction_time;
+        self.predictions_fresh += other.predictions_fresh;
         self.episodes.extend_from_slice(&other.episodes);
         if self.play_by_size.len() < other.play_by_size.len() {
             self.play_by_size
@@ -379,6 +392,9 @@ pub struct Env {
     /// empty otherwise. Drawn from a generator of its own, so the games play as without it.
     slots: Vec<u8>,
     slot_rng: fastrand::Rng,
+    /// The ball's predicted path with ball prediction on, and the bodies the observation reads from it.
+    ball_path: Option<BallPath>,
+    predicted: Vec<Body>,
 }
 
 impl Env {
@@ -409,6 +425,10 @@ impl Env {
 
     fn with_sim(rules: Arc<EnvRules>, id: u32, seed: u64, sim: Sim) -> Self {
         let cars = sim.num_cars();
+        let ball_path = rules
+            .ball_prediction
+            .last()
+            .map(|&last| BallPath::for_observation(rules.tick_skip, last));
         let mut env = Self {
             rewards: RewardSet::new(rules.rewards.clone(), rules.tick_skip),
             counted: vec![true; cars],
@@ -431,6 +451,8 @@ impl Env {
             input: PhysicsInput::default(),
             slots: Vec::new(),
             slot_rng: fastrand::Rng::with_seed(seed ^ 0x51_07_5A_17),
+            ball_path,
+            predicted: Vec::new(),
         };
         env.start_episode();
         env
@@ -469,6 +491,24 @@ impl Env {
         self.step_in_episode = 0;
         if self.rules.shuffle_slots {
             self.shuffle_slots();
+        }
+        if let Some(path) = &mut self.ball_path {
+            path.forget(); // a new start: predicted afresh, whatever the ball's state
+        }
+        self.predict_ball();
+    }
+
+    /// The ball's predicted bodies for the current state, carried on a decision from the last ones.
+    fn predict_ball(&mut self) {
+        if let Some(path) = &mut self.ball_path {
+            let (start, fresh) = (Instant::now(), path.fresh);
+            crate::ball_prediction::pick(
+                path.update(self.snap.ball, 1),
+                &self.rules.ball_prediction,
+                &mut self.predicted,
+            );
+            self.stats.predictions_fresh += path.fresh - fresh;
+            self.stats.prediction_time += start.elapsed();
         }
     }
 
@@ -542,6 +582,7 @@ impl Env {
                 self.last_actions[car],
                 self.rules.obs_team_size,
                 &self.slots,
+                &self.predicted,
                 &mut rows.obs[car * size..(car + 1) * size],
             );
             self.rules.actions.write_mask(
@@ -680,6 +721,9 @@ impl Env {
     /// Saves the final observation of a truncated episode, starts a new episode if one ended, and
     /// writes the observations the next action will be chosen from.
     fn conclude(&mut self, ending: Ending, rows: &mut AgentRows<'_>) {
+        if ending != Ending::Terminal {
+            self.predict_ball(); // a terminal state is never observed: a new start follows
+        }
         match ending {
             Ending::Continues => self.step_in_episode += 1,
             Ending::Truncated => {
@@ -691,6 +735,7 @@ impl Env {
                         self.last_actions[car],
                         self.rules.obs_team_size,
                         &self.slots,
+                        &self.predicted,
                         &mut rows.final_obs[car * size..(car + 1) * size],
                     );
                 }
@@ -906,6 +951,86 @@ mod tests {
             );
         }
         assert!(endings > 20, "only {endings} endings");
+    }
+
+    /// With ball prediction on, every observation (final ones of cut-short episodes too) carries the ball's
+    /// predicted bodies, close to a fresh prediction from the ball it shows; resets and touches are predicted
+    /// afresh, a flying or rolling ball carried on.
+    #[test]
+    fn ball_prediction_follows_the_game_through_touches_and_resets() {
+        use crate::ball_prediction::{BallPath, pick};
+        if !meshes_loaded() {
+            return;
+        }
+        let mut config = pool_config(1, 1, 1, 21);
+        config.ball_prediction = vec![0.5, 1.0, 2.0];
+        config.terminals.max_episode_seconds = 4.0;
+        let rules = Arc::new(config.rules().unwrap());
+        assert_eq!(rules.ball_prediction, [8, 15, 30]);
+        let plain_size = rules.obs.layout(1, true, 0).size;
+        assert_eq!(rules.obs_size(), plain_size + 36);
+        let mut owned = OwnedBuffers::new(BufferShape {
+            agents: 2,
+            obs_size: rules.obs_size(),
+            num_actions: rules.actions.len(),
+        });
+        let mut env = Env::new(Arc::clone(&rules), 0, 5);
+        let mut rng = fastrand::Rng::with_seed(3);
+        let size = rules.obs_size();
+        let (mut worst, mut cut_short) = (0.0f32, 0);
+        let mut expected = vec![0.0; size];
+        let mut fresh = Vec::new();
+        for _ in 0..600 {
+            let actions = [rng.i32(0..90), rng.i32(0..90)];
+            let before = env.ball_path.as_ref().unwrap().fresh;
+            env.step(&actions, &mut rows(&mut owned));
+            // A new episode always predicts afresh.
+            if owned.step[0] == 0 {
+                assert!(env.ball_path.as_ref().unwrap().fresh > before);
+            }
+            let path = BallPath::for_observation(8, 30)
+                .update(env.snap.ball, 1)
+                .to_vec();
+            pick(&path, &rules.ball_prediction, &mut fresh);
+            for (a, b) in env.predicted.iter().zip(&fresh) {
+                worst = worst.max(a.pos.distance(b.pos));
+            }
+            for car in 0..2 {
+                rules.obs.build_predicted(
+                    &env.snap,
+                    car,
+                    env.last_actions[car],
+                    0,
+                    &env.predicted,
+                    &mut expected,
+                );
+                assert_eq!(owned.obs[car * size..(car + 1) * size], expected[..]);
+            }
+            if owned.truncated[0] == 1 {
+                cut_short += 1;
+                // The final observation predicts from the state the episode ended in, so it differs.
+                assert_ne!(owned.final_obs[9..45], owned.obs[9..45]);
+            }
+        }
+        let path = env.ball_path.as_ref().unwrap();
+        eprintln!(
+            "ball prediction under random play: {} of {} decisions predicted afresh; worst gap to a fresh \
+             prediction {worst:.2} uu",
+            path.fresh, path.updates
+        );
+        assert!(
+            cut_short >= 3,
+            "episodes of 4 s in 600 steps (40 s) were cut short"
+        );
+        assert!(
+            path.fresh < path.updates / 2,
+            "a flying or rolling ball is carried on"
+        );
+        assert!(worst < 20.0, "{worst} uu from a fresh prediction");
+        // Off, nothing is predicted and the observation is the plain one.
+        let plain = Arc::new(pool_config(1, 1, 1, 21).rules().unwrap());
+        assert_eq!(plain.obs_size(), plain_size);
+        assert!(Env::new(plain, 0, 5).ball_path.is_none());
     }
 
     #[test]

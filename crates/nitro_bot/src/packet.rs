@@ -56,7 +56,8 @@ impl PadMap {
     }
 }
 
-fn body(physics: &Physics) -> Body {
+/// A body as RLBot's physics gives it.
+pub fn body(physics: &Physics) -> Body {
     let rotation = &physics.rotation;
     Body {
         pos: vec3(physics.location),

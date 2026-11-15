@@ -4,6 +4,7 @@ render();
   await ready();
   await loadHome(); render();
   askUnfinishedUpdate();
+  askNotice();  // in the background: the Garage is drawn already, and no answer is waited for
   // While something fills the window over the page (the match viewer sets S.resting), the page rests: it asks
   // for nothing and redraws nothing.
   const every = (ms, run) => setInterval(() => { if (!S.resting) run(); }, ms);
@@ -17,4 +18,5 @@ render();
   every(1500, pollUpdate);
   every(1500, pollRLBotInstall);
   every(2000, pollConverting);
+  every(3600 * 1000, askNotice);  // a dashboard left open for days hears of a new version too
 })();

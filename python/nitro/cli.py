@@ -151,10 +151,27 @@ def _check_settings(args: argparse.Namespace) -> int:
         print(ConfigError(args.settings, [problem]), file=sys.stderr)
     else:
         print(f"{args.settings}: no problems found.")
+    print(_observation_size(config))
     print(_network_size(config))
     for note in config.advice():
         print(f"Note: {note}")
     return 1 if meshes.status is Status.FAIL else 0
+
+
+def _observation_size(config: NitroConfig) -> str:
+    """The observation's size in one line, with what the ball prediction adds."""
+    from nitro.model import BALL_PREDICTION_VALUES, observation_size
+
+    size = observation_size(config)
+    times = config.env.ball_prediction
+    if not times:
+        return f"Observation: {size} numbers."
+    steps = config.env.ball_prediction_steps()
+    rounded = ", ".join(f"{step * config.env.tick_skip / 120:.3g}" for step in steps)
+    return (
+        f"Observation: {size} numbers, {BALL_PREDICTION_VALUES * len(times)} of them the ball prediction at "
+        f"{rounded} s ahead (rounded to whole decisions)."
+    )
 
 
 def _network_size(config: NitroConfig) -> str:

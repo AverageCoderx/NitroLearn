@@ -307,6 +307,18 @@ MORE: dict[str, str] = {
         "\n"
         'Watch out for: Fixed once the bot has saves (but not with an attention network, whose networks do not depend on the room): change it by making a new bot from this one. It must be 0 or at least team_size, and it needs "native" or "nitro_v2". It costs a few numbers per car: the native observation grows from 112 (plain 1v1) to 173 numbers for room for 2 and 233 for room for 3. Not measured yet: how well a padded bot learns has not been compared.'
     ),
+    "env.ball_prediction": (
+        "What it does: Lets the bot see where the ball is going. For each time in the list (seconds ahead), the bot is told where the ball will be and how fast it will move, also compared with its own car: 12 numbers per time. The prediction follows the ball alone, bounces off the floor, walls and ceiling included; it cannot know that a car will hit the ball. Empty (the default) = off: the bot sees exactly what it saw before.\n"
+        "\n"
+        "When to change it: For a new bot that should read bounces, aerials and incoming shots from where the ball will be.\n"
+        "\n"
+        "How to use it: Write the times before the first start, for example [0.5, 1, 2, 3]. Each is rounded to a whole decision (1/15 s at tick skip 8); nitro check-settings shows the rounded times and the observation's new size. Up to 8 times, above 0, increasing, the last at most 5.9 s ahead at tick skip 8 (the bot reads it from RLBot's own prediction, which reaches 6 s). The exported bot reads RLBot's own ball prediction at the same times; adding --meshes <folder> to its run_command lets it predict the ball itself when RLBot sends none (without either it sits still and says so).\n"
+        "\n"
+        "Watch out for: Fixed once the bot has saves: change it by making a new bot from this one. Copying replays and replays in training work with it. RLBot's prediction and training's both come from RocketSim's physics but can differ slightly. Each game keeps a copy of the arena with only the ball in it and predicts afresh after a touch or a reset, so training runs somewhat slower.\n"
+        "\n"
+        "Measured: on one PC (RTX 2060 SUPER, the 1v1 starter, Small, times [0.5, 1]) training ran at about 330,000 "
+        "steps a second instead of about 387,000 (about 15% slower). Whether it helps the bot learn is not measured yet."
+    ),
     "env.groups": (
         "What it does: Splits the arenas into this many groups, so the processor steps one group's games while the graphics card thinks for another. This hides the waiting on each side.\n"
         "\n"
@@ -1986,6 +1998,16 @@ NERD: dict[str, str] = {
         "```\n"
         "\n"
         "Size with room 3, native: 51 + 32 + 5 x 30 = 233 numbers (each block 29 + the flag)."
+    ),
+    "env.ball_prediction": (
+        "Each arena keeps a second RocketSim arena that holds only the ball. From the real ball's state it predicts the ball's path one decision (tick_skip ticks) at a time, as far as the last time. At each decision the real ball is compared with the path's next point: within 1 uu, 3.5 uu/s and 0.1 rad/s the path carries on (the old point is dropped and one decision more is predicted at the far end); otherwise, and at every new game, the whole path is predicted afresh. One prediction per arena, shared by its cars.\n"
+        "\n"
+        "```toml\n"
+        "[env]\n"
+        "ball_prediction = [0.5, 1, 2, 3]   # at tick skip 8: 8, 15, 30 and 45 decisions ahead\n"
+        "```\n"
+        "\n"
+        "Per time, 12 numbers right after the ball's own: the predicted position and velocity, and both minus the bot's car's, in the team's view (Orange's turned 180 degrees) and the ball features' scales. The exported bot picks, for each time, RLBot's prediction slice nearest the packet's time plus that many decisions, after checking that the slice for now matches the packet's ball (a prediction from before a touch is not used). Replay copying predicts from each decision's recorded ball the same way."
     ),
     "env.groups": (
         "The arenas are split into G groups. While the graphics card works out the actions for group k, the processor's threads step the physics of the other groups, so neither waits for the other. With G = 2 the work alternates; more groups mean smaller passes on the card.\n"

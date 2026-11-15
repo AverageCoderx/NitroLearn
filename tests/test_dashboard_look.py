@@ -132,9 +132,9 @@ def test_a_livery_is_kept_with_the_bot_once_changed_and_checked_first(tmp_path: 
         "kept when the window opens again"
     )
     for number, main_colour, second, said in (
-        ("100", "#0F6B3E", "#FFD60A", "one or two digits"),
-        ("x", "#0F6B3E", "#FFD60A", "one or two digits"),
-        (True, "#0F6B3E", "#FFD60A", "one or two digits"),
+        ("100", "#0F6B3E", "#FFD60A", "letters or digits"),
+        ("x!", "#0F6B3E", "#FFD60A", "letters or digits"),
+        (True, "#0F6B3E", "#FFD60A", "letters or digits"),
         ("7", "green", "#FFD60A", "main colour"),
         ("7", "#0F6B3E", "#FFD60", "second colour"),
         ("7", "#0F6B3E", None, "second colour"),

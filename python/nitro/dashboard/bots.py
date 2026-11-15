@@ -812,6 +812,7 @@ def summary(folder: RunFolder) -> dict[str, Any]:
                 "team_size": config.env.team_size,
                 "tick_skip": config.env.tick_skip,
                 "observation": config.env.observation,
+                "ball_prediction": list(config.env.ball_prediction),
                 "encoder": config.model.encoder,
                 "gco": config.model.value_heads_apart,  # the GCO design: a value side with heads of its own
                 "obs_team_size": config.env.obs_team_size,

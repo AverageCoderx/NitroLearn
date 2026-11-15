@@ -30,6 +30,7 @@ from nitro.runs import (
     encoder_settings,
     fixed_settings,
     reads_any_cars,
+    saved_settings,
     source_paths,
 )
 
@@ -41,6 +42,7 @@ _SAME = (
     "model.layer_norm",
     "model.activation",
     "env.observation",
+    "env.ball_prediction",
 )
 _SAME_GAME = ("env.team_size", "env.opponents")
 # What the bot decides with: 'matching' takes it whole or not at all.
@@ -111,7 +113,7 @@ def find_save(name: str, at: int, runs: Path, setting: str) -> Source:
 
 def problems(source: Source, config: NitroConfig) -> list[str]:
     """Why the source's networks cannot start this run (empty when they can)."""
-    saved, mine = source.state["settings"], fixed_settings(config)
+    saved, mine = saved_settings(source.state), fixed_settings(config)
     parts = source.parts or config.start_from.parts
 
     def differs(path: str) -> bool:

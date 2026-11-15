@@ -55,6 +55,9 @@ struct PyEnvStats {
     env_steps: u64,
     step_seconds: f64,
     physics_seconds: f64,
+    /// The part of `step_seconds` spent predicting the ball, and the predictions made afresh.
+    prediction_seconds: f64,
+    predictions_fresh: u64,
     episodes: Vec<PyEpisodeRecord>,
     /// Gameplay statistics of the counted cars (`nitro_core::env::PlayStats`) by name.
     play: std::collections::HashMap<&'static str, f64>,
@@ -143,6 +146,8 @@ impl From<EnvStats> for PyEnvStats {
             env_steps: stats.steps,
             step_seconds: stats.step_time.as_secs_f64(),
             physics_seconds: stats.physics_time.as_secs_f64(),
+            prediction_seconds: stats.prediction_time.as_secs_f64(),
+            predictions_fresh: stats.predictions_fresh,
             episodes: stats.episodes.into_iter().map(Into::into).collect(),
             play: play_by_name(&stats.play),
             play_by_size: stats

@@ -1,6 +1,11 @@
 /* The Garage page: the bot on track (plate, name, figures, its two buttons, its car), the getting-set-up
    lane, and the other bots, one ruled row (a bay) each. */
-#g-hero:empty, #g-lane:empty { display: none; }
+#g-news:empty, #g-hero:empty, #g-lane:empty { display: none; }
+/* A new version is out: one calm line on top, its buttons at its end. */
+.banner.news { flex-wrap: wrap; gap: 8px 14px; padding-top: 10px; padding-bottom: 10px; }
+.banner.news::before { background: var(--yellow); }
+.banner.news .grow { min-width: min(100%, 320px); }
+.news-acts { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .g-fig { display: flex; flex-direction: column; gap: 3px; white-space: nowrap; }
 .g-fig b { font-size: 18px; }
 

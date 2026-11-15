@@ -241,6 +241,12 @@ def test_the_number_and_colours_are_changed_in_a_dialog_with_a_preview(tmp_path:
     api = Api(tmp_path / "project", runs)
     assert api.check_livery("7", "#C8321F", "#F3F1EC")["livery"]["ink"] == "#F3F1EC"
     assert "too alike" in api.check_livery("7", "#C8321F", "#C8321F")["error"]
+    # Two letters or digits: digits read as a race number (7 is 07), letters are shown in capitals.
+    assert api.check_livery("xm", "#C8321F", "#F3F1EC")["livery"]["number"] == "XM"
+    assert api.check_livery("7", "#C8321F", "#F3F1EC")["livery"]["number"] == "07"
+    assert api.check_livery("R2", "#C8321F", "#F3F1EC")["livery"]["number"] == "R2"
+    assert "letters or digits" in api.check_livery("X!", "#C8321F", "#F3F1EC")["error"]
+    assert "letters or digits" in api.check_livery("XMR", "#C8321F", "#F3F1EC")["error"]
     errors: list[str] = []
     with sync_api.sync_playwright() as p:
         browser = open_chromium(p)

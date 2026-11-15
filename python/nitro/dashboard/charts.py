@@ -591,6 +591,23 @@ _FIXED: dict[str, tuple[str, str, str, str, float, str]] = {
         1,
         "",
     ),
+    "ball_prediction_fresh_share": (
+        "speed",
+        "Ball predicted afresh",
+        "Share of decisions whose ball prediction started over (after a touch or a reset).",
+        "%",
+        100,
+        "env.ball_prediction: each game keeps the ball's predicted path and carries it on while the ball "
+        "moves as predicted; a fresh prediction costs far more time than carrying one on.",
+    ),
+    "ball_prediction_time_share": (
+        "speed",
+        "Time predicting the ball",
+        "Share of the games' time spent predicting where the ball will be.",
+        "%",
+        100,
+        "",
+    ),
     "rating_mu": (
         "selfplay",
         "Skill rating",

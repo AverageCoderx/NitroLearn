@@ -521,11 +521,14 @@ impl EnvPool {
     }
 
     pub fn obs_layout(&self) -> ObsLayout {
-        self.rules.obs.layout(
-            self.rules.team_size,
-            self.rules.opponents,
-            self.rules.obs_team_size,
-        )
+        self.rules
+            .obs
+            .layout(
+                self.rules.team_size,
+                self.rules.opponents,
+                self.rules.obs_team_size,
+            )
+            .with_ball_prediction(self.rules.ball_prediction.len())
     }
 
     pub fn reward_labels(&self) -> &[&'static str] {

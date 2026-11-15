@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import math
+import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,6 +161,23 @@ class RunConfig:
     console_seconds: float = setting(
         10.0, "How often the console line or report is printed while training, in seconds.", minimum=1.0
     )
+
+
+def _f32(value: float) -> float:
+    """`value` rounded to the nearest 32-bit float, as the core holds it."""
+    rounded: float = struct.unpack("<f", struct.pack("<f", value))[0]
+    return rounded
+
+
+def decisions_ahead(time: float, tick_skip: int) -> int:
+    """The decisions of `tick_skip` ticks a ball prediction time stands for, at least one, computed exactly as
+    the core does (nitro_core::ball_prediction::decisions: in 32-bit floats, `time * 120 / tick_skip` rounded
+    half away from zero). A product or quotient of two 32-bit floats worked out in 64 bits and rounded to 32
+    is the 32-bit result, so this agrees bit for bit."""
+    ticks = _f32(_f32(time) * 120.0)
+    value = _f32(ticks / _f32(float(tick_skip)))
+    whole = math.floor(value)
+    return max(1, whole + 1 if value - whole >= 0.5 else whole)
 
 
 def large_networks(shared: Sequence[int], policy: Sequence[int], value: Sequence[int]) -> bool:
@@ -790,6 +809,18 @@ class EnvConfig:
         minimum=0,
         maximum=4,
     )
+    ball_prediction: tuple[float, ...] = setting(
+        (),
+        "Let the bot see where the ball will be: for each time here (seconds ahead, e.g. [0.5, 1, 2, 3]), "
+        "the ball's predicted position and speed, and both relative to the bot's car (12 numbers each, so "
+        "48 for four times), worked out by the simulator from the ball alone (cars are not foreseen). Times "
+        "round to whole decisions (tick_skip ticks each), up to 8 times, the last at most 719 ticks ahead "
+        "(RLBot's reach: 5.9 s at tick skip 8). Empty = off. The exported bot reads RLBot's own ball "
+        "prediction. Fixed once the bot has saves. Costs some training speed; how much, and whether it "
+        "helps the bot learn, is not measured yet.",
+        minimum=0.0,
+        maximum=6.0,
+    )
     groups: int = setting(
         2,
         "Arenas are split into this many groups so the CPU steps one group while the GPU thinks for "
@@ -835,6 +866,7 @@ class EnvConfig:
             found.append(("num_arenas", f"must be at least groups ({self.groups})"))
         if 0 < self.obs_team_size < self.team_size:
             found.append(("obs_team_size", f"must be 0 or at least team_size ({self.team_size})"))
+        found += [("ball_prediction", problem) for problem in self.ball_prediction_problems()]
         if self.team_size_shares and len(self.team_size_shares) != len(self.team_sizes):
             found.append(
                 ("team_size_shares", f"needs one share for each of team_sizes ({len(self.team_sizes)} sizes)")
@@ -862,6 +894,36 @@ class EnvConfig:
                     f"is too few for {len(self.team_sizes)} game sizes in {self.groups} groups: every group "
                     f"needs at least one arena of each size (at least {len(self.team_sizes) * self.groups})",
                 )
+            )
+        return found
+
+    def ball_prediction_steps(self) -> tuple[int, ...]:
+        """The ball prediction's times as decisions ahead: rounded to whole decisions, at least one
+        (nitro_core::ball_prediction::decisions)."""
+        return tuple(decisions_ahead(t, self.tick_skip) for t in self.ball_prediction)
+
+    def ball_prediction_problems(self) -> list[str]:
+        """Why the ball prediction's times cannot be used, in plain words (the core checks the same)."""
+        times = self.ball_prediction
+        if not times:
+            return []
+        found = []
+        if len(times) > 8:
+            found.append(f"takes at most 8 times, not {len(times)}")
+        if any(t <= 0 for t in times):
+            found.append("times must be above 0 seconds")
+        steps = self.ball_prediction_steps()
+        if any(b <= a for a, b in itertools.pairwise(steps)):
+            found.append(
+                f"times must increase and land on different decisions ({self.tick_skip} ticks, "
+                f"{self.tick_skip / 120:.3f} s each): {list(times)} rounds to {list(steps)} decisions ahead"
+            )
+        # The bot reads the last time from RLBot's prediction, which reaches 720 ticks after a packet; 719
+        # still fits when that prediction comes a tick late (nitro_core::ball_prediction::MAX_TICKS).
+        if steps and steps[-1] * self.tick_skip > 719:
+            found.append(
+                f"the last time rounds to {steps[-1] * self.tick_skip} ticks ahead, beyond the 719 ticks "
+                "(5.99 s) the bot can read from RLBot's prediction"
             )
         return found
 

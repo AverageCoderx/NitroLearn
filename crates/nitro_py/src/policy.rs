@@ -41,6 +41,7 @@ impl PyPolicy {
         dict.set_item("team_size", header.game.team_size)?;
         dict.set_item("opponents", header.game.opponents)?;
         dict.set_item("obs_team_size", header.game.obs_team_size)?;
+        dict.set_item("ball_prediction", header.game.ball_prediction.clone())?;
         dict.set_item("tick_skip", header.game.tick_skip)?;
         dict.set_item("action_delay", header.game.action_delay)?;
         dict.set_item("layers", header.layers.len())?;

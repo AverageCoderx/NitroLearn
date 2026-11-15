@@ -464,7 +464,7 @@ fn a_packet_of_any_game_size_gives_the_padded_observation_training_and_nitro_eva
                 if team_size <= 2 {
                     kind.build(&rebuilt, me, prev, 2, &mut bot);
                 } else {
-                    let places = kind.build_cars(&rebuilt, me, prev, &mut bot);
+                    let places = kind.build_cars(&rebuilt, me, prev, &[], &mut bot);
                     assert_eq!(places, (team_size - 1, team_size));
                 }
                 assert_eq!(bot.len(), sim.len(), "{kind:?} {team_size}v{team_size}");

@@ -34,7 +34,7 @@ from nitro.training import resolve_device
 # Game settings the bot was trained with, which the task situations must keep so its observation fits.
 _BOT_ENV = (
     "team_size", "opponents", "tick_skip", "action_delay", "observation", "obs_team_size", "groups",
-    "threads",
+    "threads", "ball_prediction",
 )  # fmt: skip
 # Tasks a saved bot can be scored on alone; `kickoff` needs an opponent policy and is left out.
 DEFAULT_TASKS = ("ball_touch", "recovery", "boost_pickup", "shot", "save", "aerial_touch")

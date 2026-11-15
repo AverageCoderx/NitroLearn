@@ -146,6 +146,9 @@ pub struct GameSettings {
     /// Players a side the observation has places for (0 = exactly `team_size`). Absent: 0.
     #[serde(default)]
     pub obs_team_size: usize,
+    /// The ball prediction's times in seconds; empty = none. Absent: none.
+    #[serde(default)]
+    pub ball_prediction: Vec<f32>,
     pub tick_skip: u32,
     pub action_delay: u32,
 }

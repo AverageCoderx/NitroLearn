@@ -282,8 +282,8 @@ function nameStep() {
         <label class="f" for="wz-name"><span class="lab">Name</span><span class="h">Up to 64 letters, digits, -, _ and . (starting with a letter or digit). It names the bot's folder and its RLBot bot.</span>
           <input id="wz-name" class="field" type="text" autocomplete="off" spellcheck="false" value="${esc(w.name)}" ${w.nameError ? 'aria-invalid="true"' : ""}></label>
         <span class="err" id="wz-name-err" role="alert">${esc(w.nameError)}</span>
-        <label class="f" for="wz-number"><span class="lab">Race number</span><span class="h">One or two digits, on its number plate and its car.</span>
-          <input id="wz-number" class="field mono wiz-number" type="text" inputmode="numeric" maxlength="2" autocomplete="off" value="${esc(l.number || "")}"></label>
+        <label class="f" for="wz-number"><span class="lab">Plate</span><span class="h">One or two letters or digits (like 07 or XM), on its plate and its car.</span>
+          <input id="wz-number" class="field mono wiz-number" type="text" maxlength="2" autocomplete="off" value="${esc(l.number || "")}"></label>
         <div class="f"><span class="lab">Colours</span><span class="h">Pick a pair, or set the main and the second colour yourself.</span>
           <div class="wiz-swatches">${w.palette.map((pair, i) => `<button type="button" class="wiz-swatch" data-swatch="${i}" aria-pressed="${pair[0] === l.main && pair[1] === l.contrast}" aria-label="Colour pair ${i + 1}" title="Colour pair ${i + 1}"><span style="background:${esc(pair[0])};"></span><span style="background:${esc(pair[1])};"></span></button>`).join("")}</div>
           <div class="row"><label class="wiz-colour" for="wz-main"><input id="wz-main" type="color" value="${hex(l.main)}"><span>Main colour</span></label><label class="wiz-colour" for="wz-second"><input id="wz-second" type="color" value="${hex(l.contrast)}"><span>Second colour</span></label></div></div>

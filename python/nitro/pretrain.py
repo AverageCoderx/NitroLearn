@@ -38,7 +38,7 @@ from nitro import replays as replays_module
 from nitro.config.schema import NitroConfig, PretrainConfig
 from nitro.envs import core_settings
 from nitro.learner import Learner
-from nitro.model import ActorCritic, build_networks, entity_parts
+from nitro.model import ActorCritic, build_networks, config_parts
 from nitro.ppo import discount_from_half_life
 from nitro.ratings import MU
 from nitro.runs import RunFolder, all_settings, fixed_settings, portable
@@ -291,6 +291,9 @@ def copy_settings(config: NitroConfig, replicar_rows: bool = False) -> str:
 def _made_with(config: NitroConfig) -> dict[str, Any]:
     """What the copy depends on: the [pretrain] settings that choose the replays and the networks' shape."""
     chosen = config.pretrain
+    settings = fixed_settings(config)
+    if not config.env.ball_prediction:  # left out when off, so a copy made before the setting existed serves
+        del settings["env.ball_prediction"]
     made: dict[str, Any] = json.loads(
         json.dumps(
             {
@@ -310,7 +313,7 @@ def _made_with(config: NitroConfig) -> dict[str, Any]:
                 **({"continue_from": chosen.continue_from} if chosen.continue_from else {}),
                 **({"new_only": True} if chosen.new_only else {}),
                 "seed": config.run.seed,
-                "settings": fixed_settings(config),
+                "settings": settings,
                 # What the labels depend on beyond the fixed settings.
                 "env": {
                     name: getattr(config.env, name)
@@ -564,7 +567,7 @@ def _measure_packed(
 
 def previous_action(config: NitroConfig) -> slice:
     """Where the previous action (8 numbers) sits in the run's observation (nitro_core::obs)."""
-    start = entity_parts(config.env.observation)[0] + 34  # the ball, then the 34 boost pads
+    start = config_parts(config)[0] + 34  # the ball (and its prediction), then the 34 boost pads
     return slice(start, start + 8)
 
 

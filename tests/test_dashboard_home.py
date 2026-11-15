@@ -137,7 +137,7 @@ def test_a_livery_is_picked_and_checked_before_its_bot_exists(tmp_path: Path) ->
     assert api.livery_check("7", "#0f6b3e", "#FFD60A") == {
         "livery": {"number": "07", "main": "#0F6B3E", "contrast": "#FFD60A", "ink": "#F3F1EC"}
     }
-    assert "one or two digits" in api.livery_check("", "#0F6B3E", "#FFD60A")["error"]
+    assert "letters or digits" in api.livery_check("", "#0F6B3E", "#FFD60A")["error"]
     assert "too alike" in api.livery_check("7", "#0F6B3E", "#0F6B3F")["error"]
     assert not (tmp_path / "runs").exists(), "nothing is written"
 
@@ -821,8 +821,8 @@ def test_the_wizards_name_number_and_colours_are_checked_and_kept(tmp_path: Path
             assert tab.locator("#wz-preview svg.livery-car text").text_content() == auto["number"]
             assert tab.locator("[data-swatch]").count() == len(livery.PALETTE) and tab.is_hidden("#wz-auto")
 
-            tab.fill("#wz-number", "x")
-            tab.wait_for_selector("#wz-livery-err >> text=A race number is one or two digits")
+            tab.fill("#wz-number", "x!")
+            tab.wait_for_selector("#wz-livery-err >> text=A plate shows one or two letters or digits")
             tab.click("[data-act=wiz-next]")
             tab.wait_for_function("document.activeElement.id === 'wz-number'")
             assert tab.is_visible("#wz-name"), "still on its step, the keyboard on the field to put right"

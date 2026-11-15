@@ -40,6 +40,16 @@ use them to cheat online. See [LICENSE](LICENSE) and [BOTS-LICENSE.md](BOTS-LICE
 Questions, bugs, or a bot to share: NitroLearn is supported in the Vanta Discord server,
 <https://discord.gg/bYP3kYtryg>. The dashboard's **Help** page (in its top band) has the link too.
 
+## What's new in 1.0.2
+- **NitroLearn tells you when an update is out.** When the dashboard opens (at most once a day) it asks GitHub
+  for the newest version; when there is one, the Garage says so, with what is new and an **Update now**
+  button. Nothing about you or your PC is sent. You can turn the check off in App settings.
+- **Ball prediction (new setting, off by default):** a bot can see where the ball will be a moment ahead, as
+  Rocket League's own prediction shows it. Turn it on for a new bot under Settings, Games (advanced). It costs some
+  training speed (about 15% on one test PC); whether it makes a better bot is not measured yet.
+- **Bot plates take letters too:** a bot's plate shows one or two letters or digits (like 07 or XM), in the
+  colours you pick.
+
 ## What's new in 1.0.1
 - **RTX 50 cards install again.** 1.0.0 asked PyTorch's site for a CUDA 12.8 build of PyTorch 2.14.1, which
   does not exist, so setup stopped. RTX 50 cards now get the CUDA 13.0 build.
@@ -152,12 +162,15 @@ example `-Parts gpu,start_menu`; NitroLearn-Setup passes its ticks this way). On
 as they are, and a first install makes no shortcuts and installs no RLBot unless a switch says so.
 
 ### Update
-In the dashboard, open **App settings** and press **Check for updates**. When a new version is out, **Update
-now** brings it in and runs the installer again with the parts you chose before, without asking anything;
-on Windows, NitroLearn closes, a window shows the installer working, and NitroLearn opens again when it is
-done. From a terminal: `.\nitro update` (Linux: `./nitro.sh update`), or `.\nitro update --check` to only
-look. Nothing is checked in the background, and training must be stopped first. If you have your own Rust
-rewards and Rust in the folder, the installer builds them in again by itself.
+When a new version is out, the dashboard says so at the top of the Garage (and with a yellow dot on **App
+settings**): it asks GitHub for the newest version number when it opens, at most once a day, and sends nothing
+about you. **Not now** hides the notice until the next version; to stop the check, turn off **Check for new
+versions when NitroLearn opens** in **App settings**. You can also check there any time with **Check for
+updates**. **Update now** brings the new version in and runs the installer again with the parts you chose
+before, without asking anything; on Windows, NitroLearn closes, a window shows the installer working, and
+NitroLearn opens again when it is done. From a terminal: `.\nitro update` (Linux: `./nitro.sh update`), or
+`.\nitro update --check` to only look. Training must be stopped first. If you have your own Rust rewards and
+Rust in the folder, the installer builds them in again by itself.
 
 Everything of yours stays: your bots and their saves (`runs`), exported and packed bots, replays,
 `my-settings`, the arena meshes and the tool folders. Files NitroLearn itself no longer has in the new
@@ -293,7 +306,7 @@ without a terminal. Every button that has a matching command shows it, so you ca
 you need most (**Stop and save**, **Watch it play**). Under it a short **Getting set up** checklist (this PC,
 the arena files, your first bot, where RLBot is) that goes away once everything is done, and then every other
 bot as a row with the one button that fits it (Start training, Carry on, See progress, Fix settings). Each bot
-has a race number and two colours, picked from its name, so you know it at a glance; click its number plate on
+has a plate (two letters or digits, like 07 or XM) and two colours, picked from its name, so you know it at a glance; click its number plate on
 its page to change them.
 
 **+ New bot** is four steps: the kind of bot (a 1v1, 2v2 or 3v3 starter, the
@@ -528,6 +541,21 @@ in 1v1** (with `obs_team_size = 3`) and add the bigger sizes on a resume once th
 Pulsar's authors found that training every size from scratch spread the first touches thin and the run
 stalled. `shuffle_slots` helps a plain network learn that every place in its view can hold a car; attention
 networks do not need it.
+
+**Seeing where the ball will be (ball prediction; off by default, not proven yet):** list a few times in
+seconds and the bot is told, at each decision, where the ball will be that far ahead and how fast it will
+move, also compared with its own car:
+```toml
+[env]
+ball_prediction = [0.5, 1, 2, 3]    # seconds ahead; each time adds 12 numbers to what the bot sees
+```
+The prediction follows the ball alone (bounces off the floor, walls and ceiling included): it cannot know that
+a car is about to hit the ball. Each time is rounded to a whole decision, and `nitro check-settings` shows the
+rounded times. Choose it before the first start: it is fixed for a run, like the observation. It costs some
+training speed, as every game also works out the ball's path; how much, and whether it helps the bot learn,
+is not measured yet. Copying replays and replays in training work with it. An exported bot reads RLBot's own
+ball prediction at the same times; its README says how to let it predict the ball itself when RLBot sends
+none.
 
 **Playing against past versions:** with `enabled = true` under `[selfplay]` in the settings, one game in
 five is played against a saved earlier version of the bot (a copy joins the pool every 20M steps; the

@@ -43,8 +43,10 @@ FIXED_SETTINGS = (
     "run.precision", "model.encoder", "model.attention_width", "model.attention_blocks",
     "model.attention_heads", "model.attention_skip", "model.transformer_layers", "model.transformer_width",
     "model.transformer_heads", "model.transformer_ff", "model.transformer_pads", "model.transformer_readout",
-    "model.residual", "model.value_heads", "model.value_head_layers",
+    "model.residual", "model.value_heads", "model.value_head_layers", "env.ball_prediction",
 )  # fmt: skip
+# Fixed settings added in a later version, with the value every earlier save had.
+_ADDED_LATER: dict[str, Any] = {"env.ball_prediction": ()}
 # A padded observation (env.obs_team_size) is the same size for every game up to its room, so the
 # team size and opponents can change on a resume as long as the room stays.
 _FREE_WHEN_PADDED = ("env.team_size", "env.opponents")
@@ -71,6 +73,11 @@ def encoder_settings(saved: dict[str, Any], config: NitroConfig) -> tuple[str, .
     """The sizes that shape the saved networks' encoder or `config`'s, in order (none for plain networks)."""
     kinds = (saved["model.encoder"], config.model.encoder)
     return tuple(dict.fromkeys(path for kind in kinds for path in _ENCODER_SETTINGS.get(kind, ())))
+
+
+def saved_settings(state: dict[str, Any]) -> dict[str, Any]:
+    """A checkpoint's fixed settings, those added since it was saved at the value it had."""
+    return {**_ADDED_LATER, **state["settings"]}
 
 
 def fixed_settings(config: NitroConfig) -> dict[str, Any]:
@@ -371,7 +378,7 @@ class RunFolder:
             paths = dataclasses.replace(config.paths, collision_meshes=Path(meshes))
             config = dataclasses.replace(config, paths=paths)
         if state is not None:
-            saved, lines = state["settings"], KeyLocator(text)
+            saved, lines = saved_settings(state), KeyLocator(text)
             issues = [
                 ConfigIssue(
                     path,

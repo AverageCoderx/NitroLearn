@@ -42,6 +42,9 @@ pub struct PoolConfig {
     /// Players per team the observation has places for; 0 = the game's own.
     #[serde(default)]
     pub obs_team_size: usize,
+    /// The ball prediction's times in seconds; none by default (off).
+    #[serde(default)]
+    pub ball_prediction: Vec<f32>,
     pub action_masks: MaskRule,
     pub terminals: TerminalConfig,
     pub rewards: Vec<RewardTerm>,
@@ -111,6 +114,9 @@ impl PoolConfig {
         }
         if self.shuffle_slots && self.obs_team_size == 0 {
             return Err("shuffle_slots needs a padded observation (obs_team_size)".to_owned());
+        }
+        if !self.ball_prediction.is_empty() {
+            crate::ball_prediction::decisions(&self.ball_prediction, self.tick_skip)?;
         }
         Ok(())
     }
@@ -239,6 +245,8 @@ impl PoolConfig {
     pub fn rules(&self) -> Result<EnvRules, String> {
         let actions = ActionTable::new();
         let setters = SetterMix::new(self.state_setters.clone(), self.team_size, self.opponents)?;
+        let ball_prediction =
+            crate::ball_prediction::decisions(&self.ball_prediction, self.tick_skip)?;
         Ok(EnvRules {
             team_size: self.team_size,
             opponents: self.opponents,
@@ -246,6 +254,7 @@ impl PoolConfig {
             action_delay: self.action_delay,
             obs: self.observation,
             obs_team_size: self.obs_team_size,
+            ball_prediction,
             masks: self.action_masks,
             terminals: self.terminals,
             rewards: self.rewards.clone(),
@@ -308,6 +317,21 @@ mod tests {
         assert_eq!(config.check(), Ok(()));
         config.team_size = 4;
         assert!(config.check().unwrap_err().contains("obs_team_size"));
+
+        // Ball prediction's times
+        let mut config = pool_config(2, 1, 1, 0);
+        assert!(config.ball_prediction.is_empty(), "off unless set");
+        assert!(config.rules().unwrap().ball_prediction.is_empty());
+        config.ball_prediction = vec![0.5, 1.0, 2.0, 3.0];
+        assert_eq!(config.check(), Ok(()));
+        assert_eq!(config.rules().unwrap().ball_prediction, [8, 15, 30, 45]);
+        config.ball_prediction = vec![1.0, 0.5];
+        assert!(config.check().unwrap_err().contains("increase"));
+        config.ball_prediction = vec![6.0];
+        assert!(config.check().unwrap_err().contains("719 ticks"));
+        config.ball_prediction = vec![1.0];
+        config.observation = crate::obs::ObsKind::NitroV2;
+        assert_eq!(config.check(), Ok(()));
     }
 
     #[test]

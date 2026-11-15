@@ -67,6 +67,27 @@ fn pool_config(settings_json: &str) -> PyResult<nitro_core::config::PoolConfig> 
         .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
+/// The ball prediction's decisions ahead in `config`; with any, the collision meshes are loaded, as the
+/// prediction's ball-only arenas need them.
+fn prediction_steps(config: &nitro_core::config::PoolConfig) -> PyResult<Vec<u32>> {
+    if config.ball_prediction.is_empty() {
+        return Ok(Vec::new());
+    }
+    let steps = nitro_core::ball_prediction::decisions(&config.ball_prediction, config.tick_skip)
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let report = nitro_core::meshes::load(&config.collision_meshes)
+        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?;
+    if !report.is_complete() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "ball prediction needs the collision meshes: only {}/{} soccar meshes in {}",
+            report.soccar_recognized,
+            nitro_core::meshes::SOCCAR_MESH_COUNT,
+            report.folder.display()
+        )));
+    }
+    Ok(steps)
+}
+
 fn le_bytes<T: Copy, const N: usize>(values: &[T], to: fn(T) -> [u8; N]) -> Vec<u8> {
     values.iter().flat_map(|&v| to(v)).collect()
 }
@@ -184,9 +205,11 @@ fn demo_rules(
     let (pool_json, keys) = nitro_core::demos::split_copy_keys(settings_json)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
     let config = pool_config(&pool_json)?;
+    let steps = prediction_steps(&config)?;
     let expected = config
         .observation
         .layout(config.team_size, config.opponents, config.obs_team_size)
+        .with_ball_prediction(steps.len())
         .size;
     let rules = nitro_core::demos::DemoRules {
         obs: config.observation,
@@ -197,6 +220,7 @@ fn demo_rules(
         softness,
         replicar_rows: keys.replicar_rows,
         kickoff_only: keys.kickoff_only,
+        ball_prediction: nitro_core::ball_prediction::Steps::new(&steps),
     };
     Ok((rules, expected))
 }
@@ -239,6 +263,7 @@ fn samples_dict<'py>(
     out.set_item("obs_size", demos.obs_size)?;
     out.set_item("skipped", demos.skipped)?;
     out.set_item("outside_window", demos.outside_window)?;
+    out.set_item("predictions_fresh", demos.predictions_fresh)?;
     out.set_item(
         "obs",
         pyo3::types::PyBytes::new(py, &le_bytes(&demos.obs, f32::to_le_bytes)),
@@ -260,6 +285,7 @@ struct CompactBytes {
     obs_size: usize,
     skipped: usize,
     outside_window: usize,
+    predictions_fresh: u64,
     obs: Vec<u8>,
     mask: Vec<u8>,
     label_index: Vec<u8>,
@@ -274,6 +300,7 @@ impl CompactBytes {
             obs_size: demos.obs_size,
             skipped: demos.skipped,
             outside_window: demos.outside_window,
+            predictions_fresh: demos.predictions_fresh,
             obs: le_bytes(&compact.obs, u16::to_le_bytes),
             mask: compact.mask,
             label_index: compact.label_index,
@@ -295,6 +322,7 @@ fn compact_dict<'py>(
     out.set_item("obs_size", made.obs_size)?;
     out.set_item("skipped", made.skipped)?;
     out.set_item("outside_window", made.outside_window)?;
+    out.set_item("predictions_fresh", made.predictions_fresh)?;
     out.set_item("obs", pyo3::types::PyBytes::new(py, &made.obs))?;
     out.set_item("mask", pyo3::types::PyBytes::new(py, &made.mask))?;
     out.set_item(
@@ -313,10 +341,10 @@ fn compact_dict<'py>(
 #[pyfunction]
 fn observation_layout(settings_json: &str) -> PyResult<(usize, usize, usize, usize, usize, usize)> {
     let config = pool_config(settings_json)?;
-    let layout =
-        config
-            .observation
-            .layout(config.team_size, config.opponents, config.obs_team_size);
+    let layout = config
+        .observation
+        .layout(config.team_size, config.opponents, config.obs_team_size)
+        .with_ball_prediction(config.ball_prediction.len());
     Ok((
         layout.size,
         layout.self_part,
@@ -327,21 +355,33 @@ fn observation_layout(settings_json: &str) -> PyResult<(usize, usize, usize, usi
     ))
 }
 
+/// The decisions of `tick_skip` ticks each ball prediction time (seconds) stands for: the core's rounding,
+/// which the settings check reproduces. ValueError, saying why, for times the core refuses.
+#[pyfunction]
+fn ball_prediction_decisions(times: Vec<f32>, tick_skip: u32) -> PyResult<Vec<u32>> {
+    nitro_core::ball_prediction::decisions(&times, tick_skip)
+        .map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
 /// The observation's layout from the observation settings alone: what rebuilding a saved network
 /// needs, so the rest of a settings file (rewards, start states, endings) is not checked on the way.
+/// `ball_prediction`: how many ball prediction times it has.
 #[pyfunction]
+#[pyo3(signature = (observation, team_size, opponents, obs_team_size, ball_prediction=0))]
 fn observation_layout_of(
     observation: &str,
     team_size: usize,
     opponents: bool,
     obs_team_size: usize,
+    ball_prediction: usize,
 ) -> PyResult<(usize, usize, usize, usize, usize, usize)> {
     let kind = nitro_core::obs::ObsKind::from_name(observation).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!("unknown observation '{observation}'"))
     })?;
     let layout = kind
         .checked_layout(team_size, opponents, obs_team_size)
-        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        .map_err(pyo3::exceptions::PyValueError::new_err)?
+        .with_ball_prediction(ball_prediction);
     Ok((
         layout.size,
         layout.self_part,
@@ -392,6 +432,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(replay_samples, m)?)?;
     m.add_function(wrap_pyfunction!(observation_layout, m)?)?;
     m.add_function(wrap_pyfunction!(observation_layout_of, m)?)?;
+    m.add_function(wrap_pyfunction!(ball_prediction_decisions, m)?)?;
     policy::register(m)?;
     env_pool::register(m)
 }

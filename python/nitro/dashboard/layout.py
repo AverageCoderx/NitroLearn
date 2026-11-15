@@ -109,6 +109,7 @@ SETTINGS: dict[str, Place] = {
     "env.tick_skip": basic("games", "Physics ticks per decision"),
     "env.observation": advanced("games", "What the bot sees (observation)"),
     "env.obs_team_size": advanced("games", "Observation room (players per team)"),
+    "env.ball_prediction": advanced("games", "Ball prediction: seconds ahead the bot sees"),
     "env.action_delay": advanced("games", "Delay before an action acts (ticks)"),
     "env.team_sizes": advanced("games", "Several game sizes in one bot"),
     "env.team_size_shares": advanced("games", "Share of games for each size"),
@@ -278,6 +279,9 @@ PLAIN: dict[str, str] = {
     "clearly better than the basic one ('native').",
     "env.obs_team_size": "Room in what the bot sees for bigger teams, so one bot can later play 1v1, 2v2 and "
     "3v3. 0 = room for its own game size only.",
+    "env.ball_prediction": "Let the bot see where the ball will be, this many seconds ahead (for example "
+    "[0.5, 1, 2, 3]). Empty (the default) = off. It slows training (about 15% on one test PC); whether it "
+    "helps is not measured yet.",
     "model.encoder": "The kind of network. 'mlp' (plain layers, the default) suits 1v1 and trains fastest; "
     "the attention kinds play any team size and suit 2v2 and 3v3, but train slower.",
     "model.shared": "Layers the policy and the value network share. Empty (the usual) = two separate "

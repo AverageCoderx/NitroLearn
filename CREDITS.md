@@ -112,6 +112,17 @@ next to the release's ready-made programs, and in every exported bot folder (`NO
   release (`rocketsim-recordings.zip`: the five files unchanged with RocketSim's licence,
   `LICENSES/RocketSim-MIT.txt`), else from that commit on GitHub.
 
+## Ball prediction (`env.ball_prediction`; ideas and two constants, MIT, no code copied)
+- **RocketSim's `BallPredTracker`** (C++ RocketSim, `src/Sim/BallPredTracker/`) — MIT, Copyright (c) 2022
+  ZealanL; notice in `LICENSES/RocketSim-cpp-MIT.txt`. The idea of a ball-only copy of the arena whose
+  predicted path carries on while the real ball matches it (old points dropped, the far end extended) and is
+  predicted afresh when it does not. `crates/nitro_core/src/ball_prediction.rs` is our own code.
+- **buta-ppo's observation** (`src/obs/default_obs.{hpp,cpp}`) — MIT, Copyright (c) 2026 ButaMasta; notice in
+  `LICENSES/buta-ppo-MIT.txt`. The idea of putting the predicted ball (and the ball relative to the car) in
+  the observation at a few times ahead rounded to decisions, carried on one decision at a time and predicted
+  afresh past tolerances; its position and velocity tolerances (1 uu, 3.5 uu/s) are `Tolerance::OBSERVATION`'s.
+  `github.com/thecosmicskye/buta-ppo`.
+
 ## Viewer ideas (the match viewer, `python/nitro/viewer/`; ideas only, no code and no art)
 - **RocketSimVis** — ZealanL, and **RLViser** — VirxEC: what a RocketSim match viewer shows (cars, ball,
   pads, trails, cameras). Ours is a page in a window instead of a program listening on a port.

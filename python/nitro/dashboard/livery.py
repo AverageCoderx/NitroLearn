@@ -61,15 +61,16 @@ def pick(name: str) -> dict[str, str]:
 def checked(number: Any, main: Any, second: Any) -> dict[str, str]:
     """A livery as chosen in the window, or LiveryError saying what is wrong with it."""
     text = str(number).strip() if isinstance(number, (str, int)) and not isinstance(number, bool) else ""
-    if not re.fullmatch(r"[0-9]{1,2}", text):
-        raise LiveryError("a race number is one or two digits, 0 to 99")
+    if not re.fullmatch(r"[0-9A-Za-z]{1,2}", text):
+        raise LiveryError("a plate shows one or two letters or digits, like 07 or XM")
     for what, colour in (("main colour", main), ("second colour", second)):
         if not isinstance(colour, str) or not _COLOUR.fullmatch(colour):
             raise LiveryError(f"the {what} is written like #FFD60A (a # and six of 0-9 and A-F)")
     main, second = main.upper(), second.upper()
     if contrast(main, second) < 1.5:
         raise LiveryError("the two colours are too alike to tell apart: pick a second colour that stands out")
-    return {"number": f"{int(text):02d}", "main": main, "contrast": second, "ink": ink(main)}
+    plate = f"{int(text):02d}" if text.isdigit() else text.upper()  # digits as a race number: 7 is 07
+    return {"number": plate, "main": main, "contrast": second, "ink": ink(main)}
 
 
 def read(folder: Path) -> dict[str, str]:

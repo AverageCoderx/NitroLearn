@@ -1,12 +1,16 @@
 //! The bot program RLBot starts:
 //! `nitro_bot <policy.nwt> [--sample] [--seed N] [--latency T] [--trained-size-only] [--threads N]
-//! [--no-decider]`.
+//! [--no-decider] [--meshes <folder>]`.
 //!
 //! RLBot sets the server address and the agent id in the environment (`rlbot::util::AgentEnvironment`).
 //! One process drives every car RLBot hands it (`hivemind = true` in bot.toml), each on its own thread.
 //! The cars share one copy of the policy and one decider thread: each packet is answered at once,
 //! the network runs while the game plays the action delay, and cars deciding at the same tick share one
 //! pass. `--no-decider` decides on each car's packet thread instead, answering after the decision.
+//!
+//! A policy trained with ball prediction asks RLBot for its ball prediction and reads it at whole decisions
+//! ahead; `--meshes` (a folder of collision meshes) lets the bot predict the ball itself when RLBot sends
+//! none. Without either it coasts and says so.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -17,7 +21,9 @@ use nitro_bot::{Choice, NitroBot, controller_state};
 use nitro_core::policy::Policy;
 use rlbot::RLBotConnection;
 use rlbot::agents::{BotAgent, run_bot_agents};
-use rlbot::flat::{ControllableInfo, FieldInfo, GamePacket, MatchConfiguration, PlayerInput};
+use rlbot::flat::{
+    BallPrediction, ControllableInfo, FieldInfo, GamePacket, MatchConfiguration, PlayerInput,
+};
 use rlbot::util::{AgentEnvironment, PacketQueue};
 
 struct Settings {
@@ -31,6 +37,8 @@ struct Settings {
     threads: usize,
     /// Decide on each car's packet thread instead of the shared decider.
     no_decider: bool,
+    /// Collision meshes, to predict the ball when RLBot's prediction is missing.
+    meshes: Option<PathBuf>,
 }
 
 // `BotAgent::new` takes no arguments of ours, so the command line is kept here for it.
@@ -39,6 +47,8 @@ static SETTINGS: OnceLock<Settings> = OnceLock::new();
 static POLICY: OnceLock<Arc<Policy>> = OnceLock::new();
 /// The cars' decider (absent with `--no-decider`).
 static DECIDER: OnceLock<Arc<Decider>> = OnceLock::new();
+/// Whether `--meshes` loaded the collision meshes, so the bot can predict the ball itself.
+static MESHES_LOADED: OnceLock<bool> = OnceLock::new();
 
 struct Agent {
     index: u32,
@@ -75,6 +85,9 @@ impl BotAgent for Agent {
             if let Some(decider) = DECIDER.get() {
                 bot.use_decider(decider.seat());
             }
+            if MESHES_LOADED.get().copied().unwrap_or(false) {
+                bot.predict_ball_itself();
+            }
             bot
         });
         match &bot {
@@ -99,6 +112,12 @@ impl BotAgent for Agent {
             player_index: self.index,
             controller_state: controller_state(controls),
         });
+    }
+
+    fn on_ball_prediction(&mut self, prediction: &BallPrediction, _queue: &mut PacketQueue) {
+        if let Some(bot) = self.bot.as_mut() {
+            bot.set_ball_prediction(prediction);
+        }
     }
 }
 
@@ -142,6 +161,7 @@ fn parse_args() -> Result<Settings, String> {
     // decider the two cars of a 2v2 share one pass on these threads.
     let mut threads = 2;
     let mut no_decider = false;
+    let mut meshes = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -167,6 +187,11 @@ fn parse_args() -> Result<Settings, String> {
                     .ok_or("--threads needs a whole number, 1 or more")?;
             }
             "--no-decider" => no_decider = true,
+            "--meshes" => {
+                meshes = Some(PathBuf::from(
+                    args.next().ok_or("--meshes needs a folder name")?,
+                ))
+            }
             "--help" | "-h" => return Err(String::new()),
             other if policy.is_none() && !other.starts_with('-') => {
                 policy = Some(PathBuf::from(other))
@@ -182,6 +207,7 @@ fn parse_args() -> Result<Settings, String> {
         trained_size_only,
         threads,
         no_decider,
+        meshes,
     })
 }
 
@@ -194,7 +220,7 @@ fn main() -> ExitCode {
             }
             eprintln!(
                 "usage: nitro_bot <policy.nwt> [--sample] [--seed N] [--latency T] [--trained-size-only] \
-                 [--threads N] [--no-decider]"
+                 [--threads N] [--no-decider] [--meshes <folder>]"
             );
             return ExitCode::FAILURE;
         }
@@ -225,6 +251,35 @@ fn main() -> ExitCode {
              only at the sizes it trained at)."
         );
     }
+    let wants_prediction = nitro_bot::wants_ball_prediction(&policy);
+    if wants_prediction {
+        println!(
+            "nitro_bot: trained with ball prediction: reading RLBot's prediction at {:?} s.",
+            header.game.ball_prediction
+        );
+    }
+    let mut meshes_loaded = false;
+    if let Some(folder) = &settings.meshes {
+        match nitro_core::meshes::load(folder) {
+            Ok(report) if report.is_complete() => {
+                meshes_loaded = true;
+                if wants_prediction {
+                    println!(
+                        "nitro_bot: collision meshes loaded: the bot predicts the ball itself when RLBot's \
+                         prediction is missing."
+                    );
+                }
+            }
+            Ok(report) => println!(
+                "nitro_bot: only {}/{} soccar collision meshes in {}; not predicting the ball itself.",
+                report.soccar_recognized,
+                nitro_core::meshes::SOCCAR_MESH_COUNT,
+                folder.display()
+            ),
+            Err(err) => println!("nitro_bot: --meshes: {err}; not predicting the ball itself."),
+        }
+    }
+    MESHES_LOADED.set(meshes_loaded).expect("set once");
     let policy = Arc::new(policy);
     if !settings.no_decider {
         DECIDER
@@ -248,7 +303,7 @@ fn main() -> ExitCode {
         }
     };
     println!("nitro_bot: connected to RLBot at {server_addr} as '{agent_id}'.");
-    let outcome = run_bot_agents::<Agent>(agent_id, false, false, connection);
+    let outcome = run_bot_agents::<Agent>(agent_id, wants_prediction, false, connection);
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

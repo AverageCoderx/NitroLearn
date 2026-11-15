@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -63,7 +63,9 @@ PROGRAM = f"{BOT_CRATE}.exe" if sys.platform == "win32" else BOT_CRATE  # the bo
 _BUILD_FOLDERS = (b".cargo", b"registry/src", b"registry\\src", b"git/checkouts", b"git\\checkouts")
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_-]+")
 # The game a policy was trained for, written into its file for the bot.
-_GAME_SETTINGS = ("observation", "obs_team_size", "team_size", "opponents", "tick_skip", "action_delay")
+_GAME_SETTINGS = (
+    "observation", "obs_team_size", "team_size", "opponents", "tick_skip", "action_delay", "ball_prediction"
+)  # fmt: skip
 
 
 class ExportError(RuntimeError):
@@ -213,6 +215,9 @@ def _header(
         "game": {
             "observation": config.env.observation,
             "obs_team_size": observation_room(config),
+            # The ball prediction's times: the bot asks RLBot for its prediction. Left out when off, so a
+            # policy without it is written exactly as before.
+            **({"ball_prediction": list(config.env.ball_prediction)} if config.env.ball_prediction else {}),
             "action_masks": "standard",
             "team_size": config.env.team_size,
             "opponents": config.env.opponents,
@@ -340,6 +345,19 @@ again without `--no-build` to build `{PROGRAM}` and copy it here.
 printed says why). Run `nitro export` again once that is fixed (for example once Rust is installed): it
 builds the program and copies it here.
 """
+    predicting = (
+        f"""
+## Ball prediction
+This bot was trained with ball prediction: it sees where the ball will be in
+{_seconds(config.env.ball_prediction)}. The bot program asks RLBot for RLBot's own ball prediction, which,
+like training's, comes from RocketSim's physics; the two can differ slightly. If RLBot sends none, the bot
+sits still (and says so) unless `--meshes <folder>` in `run_command` points it at a folder of Rocket League
+collision meshes (the `collision_meshes` folder of your NitroLearn install), from which it predicts the ball
+itself.
+"""
+        if config.env.ball_prediction
+        else ""
+    )
     sizes = config.env.sizes_label + (" side by side" if config.env.team_sizes else "")
     delay = config.env.action_delay
     return f"""# {name}
@@ -350,7 +368,7 @@ tick skip {config.env.tick_skip}, action delay {delay} tick{"" if delay == 1 els
 ## Fair play
 Play it offline only: RLBot matches, private matches against your own bots, and bot tournaments. Never use it
 in online matches against real players: that is cheating, and it breaks Rocket League's terms of service.
-
+{predicting}
 ## Playing it in RLBot v5
 1. Install RLBot v5 (https://rlbot.org) and start it.
 2. In RLBot, add this folder (or its parent) as a bot folder: the bot appears as **{name}**.
@@ -382,6 +400,12 @@ on each car's own thread instead.
 {missing}
 Any RLBot bot folder works from any location: copy this whole folder wherever you keep your bots.
 """
+
+
+def _seconds(times: Sequence[float]) -> str:
+    """Prediction times as words: "0.5, 1, 2 and 3 s"."""
+    words = [f"{t:g}" for t in times]
+    return (", ".join(words[:-1]) + " and " + words[-1] if len(words) > 1 else words[0]) + " s"
 
 
 @dataclass(frozen=True)
@@ -586,7 +610,11 @@ def export_run(
     # The game settings the weights were trained with come from the save itself: the run's settings file
     # may have been edited since (tick skip and action delay are not fixed for a resume).
     saved = state.get("all_settings", {})
-    trained = {name: saved[f"env.{name}"] for name in _GAME_SETTINGS if f"env.{name}" in saved}
+    trained: dict[str, Any] = {
+        name: tuple(value) if isinstance(value, list) else value
+        for name in _GAME_SETTINGS
+        if (value := saved.get(f"env.{name}")) is not None
+    }
     config = dataclasses.replace(config, env=dataclasses.replace(config.env, **trained))
     table = _core.num_actions()
     if problem := actions_problem(state["learner"]["model"], f"'{folder.root.name}'"):

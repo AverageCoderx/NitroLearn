@@ -1,6 +1,6 @@
-// The App settings page: the look, where RLBot is, where the bots are kept, updating NitroLearn (only when
-// asked), what people who change NitroLearn's code need, and the About block (the logo, the version, how
-// NitroLearn may be used and the licences of the pieces that come inside it).
+// The App settings page: the look, where RLBot is, where the bots are kept, updating NitroLearn (and the
+// Garage's notice of a new version), what people who change NitroLearn's code need, and the About block (the
+// logo, the version, how NitroLearn may be used and the licences of the pieces that come inside it).
 async function loadAbout() {
   const out = await call("about");
   S.about = out.error ? { error: out.error } : out;
@@ -26,11 +26,12 @@ function aboutHTML() {
 // S.upd.phase: idle, checking, checked (S.upd.check), error, running, done or failed (S.upd.result).
 function updateHTML() {
   const u = S.upd || { phase: "idle" }, c = u.check, a = S.about || {};
-  const version = (c && c.installed) || a.version || "";
+  const version = (c && c.installed) || (S.notice && S.notice.installed) || a.version || "";
   const checkButton = label => `<button type="button" class="btn small" id="upd-check" data-act="upd-check" ${u.phase === "checking" ? "disabled" : ""}>${esc(label)}</button>`;
   const consoleBox = u.text ? `<pre class="console mono upd-console" id="updText">${esc(u.text)}</pre>` : "";
   if (u.phase === "idle" || u.phase === "checking") {
-    return `<div class="row upd-line"><span class="grow">You have NitroLearn <b>${esc(version)}</b>.${u.phase === "checking" ? " Asking GitHub for the newest version…" : ""}</span>${checkButton(u.phase === "checking" ? "Checking…" : "Check for updates")}</div>`;
+    const n = S.notice, out = n && n.state === "newer" && u.phase === "idle" ? ` <b>NitroLearn ${esc(n.release.version)} is out.</b>` : "";
+    return `<div class="row upd-line"><span class="grow">You have NitroLearn <b>${esc(version)}</b>.${out}${u.phase === "checking" ? " Asking GitHub for the newest version…" : ""}</span>${checkButton(u.phase === "checking" ? "Checking…" : out ? "See the update" : "Check for updates")}</div>`;
   }
   if (u.phase === "error") return `<div class="banner bad" role="alert" id="upd-said"><b>${esc(u.error)}</b></div><div class="row">${checkButton("Check again")}</div>`;
   if (u.phase === "checked" && c.state !== "newer") return `<div class="banner" role="status" id="upd-said"><span class="tag good">Up to date</span><span>${esc(c.line)}</span></div><div class="row">${checkButton("Check again")}</div>`;
@@ -114,6 +115,76 @@ ACTIONS["upd-restart"] = async () => {
   drawUpdate();
 };
 
+// ---------- the notice of a new version ----------
+// S.notice: update_notice's answer (asked when the page opens and every hour; Python asks GitHub at most once
+// a day and says nothing when it cannot). The Garage shows it as a line on top, App settings' button in the
+// band as a dot; Not now hides both until the next version, and while a bot runs only the dot shows.
+async function askNotice() {
+  const out = await call("update_notice");
+  if (out.error) return;  // a check nobody asked for never shows an error
+  S.notice = out;
+  renderBand();
+  if (S.view === "home") drawGarage(); else if (S.view === "prefs") drawUpdate();
+}
+function newsOut() { const n = S.notice; return !!n && n.state === "newer" && !n.not_now && !!n.release; }
+function newsHTML(bots) {
+  if (!newsOut() || bots.some(b => botRuns(b) || b.status === "starting" || b.checking)) return "";
+  const n = S.notice, r = n.release;
+  const how = n.git ? ` This folder is a git checkout: updating moves it to ${r.tag} with git.` : "";
+  return `<div class="banner news" role="status" id="news">
+      <span class="tag hot">New version</span>
+      <span class="grow"><b id="news-line">NitroLearn ${esc(r.version)} is out.</b> <span class="muted">You have ${esc(n.installed)}. Your bots, settings and saves are kept.${esc(how)}</span></span>
+      <span class="news-acts"><button type="button" class="btn link" id="news-notes" data-act="news-notes">What's new</button>
+      <button type="button" class="btn small ghost" id="news-later" data-act="news-later" title="Hides this until the next version">Not now</button>
+      <button type="button" class="btn small primary" id="news-update" data-act="news-update">Update now</button></span>
+    </div>`;
+}
+// Update now: App settings' own steps (a fresh check, which says why an update cannot run now), then its
+// confirmation when nothing stands in the way.
+ACTIONS["news-update"] = async () => {
+  closeModal();
+  goTo("prefs");
+  const busy = S.upd && ["checking", "running"].includes(S.upd.phase);
+  if (!busy) await ACTIONS["upd-check"]();
+  const box = $("#update");
+  if (box) box.scrollIntoView({ block: "start" });
+  const u = S.upd || {}, c = u.check;
+  if (S.view === "prefs" && u.phase === "checked" && c.state === "newer" && !(c.blocked || c.busy)) ACTIONS["upd-confirm"]();
+};
+ACTIONS["news-notes"] = () => {
+  const n = S.notice, r = n.release;
+  modal(`<h2 class="display">What's new in NitroLearn ${esc(r.version)}</h2>
+    <div class="muted">${r.date ? `Out since ${esc(r.date)}. ` : ""}You have ${esc(n.installed)}.</div>
+    ${r.notes ? `<pre class="upd-notes" id="news-text">${esc(r.notes)}</pre>` : '<div id="news-text">This release has no notes here: its page on GitHub says what changed.</div>'}
+    <div class="foot">${r.page ? '<button type="button" class="btn link" id="news-page" data-act="news-page">All the notes, on GitHub</button><span class="grow"></span>' : ""}<button type="button" class="btn" data-close="1">Close</button><button type="button" class="btn primary" data-act="news-update">Update now</button></div>`);
+};
+ACTIONS["news-page"] = () => call("open_url", S.notice.release.page);
+ACTIONS["news-later"] = async () => {
+  const n = S.notice;
+  n.not_now = true;
+  renderBand();
+  if (S.view === "home") drawGarage();
+  const out = await call("update_not_now", n.release.version);
+  if (out.error) toast(out.error, true);
+};
+on("change", el => {
+  if (el.id !== "pref-check-updates") return SKIP;
+  const wanted = el.checked;
+  return call("set_pref", "check_updates", wanted).then(out => {
+    if (out.error) return toast(out.error, true);
+    if (S.home) S.home.prefs = out.prefs;
+    const sub = $("#upd-sub");
+    if (sub) sub.textContent = updateSubtitle();
+    if (wanted) return askNotice();
+    S.notice = { state: "off" };
+    renderBand(); drawUpdate();
+  });
+});
+function checksOnOpen() { return ((S.home && S.home.prefs) || {}).check_updates !== false; }
+function updateSubtitle() {
+  return checksOnOpen() ? "NitroLearn looks for a new version when it opens, at most once a day." : "Checked only when you press the button.";
+}
+
 // ---------- editing NitroLearn ----------
 function editBuildHTML() {
   const b = (S.res && S.res.buildLive) || { state: "none", text: "" };
@@ -146,7 +217,10 @@ function prefsView() {
           ${row("Bots folder", "Where your bots, their saves and their settings are kept.", `<span class="mono" style="font-size:13px;overflow-wrap:anywhere;">${esc(S.home && S.home.runs)}</span>`)}
         </div>
       </section>
-      <section id="update"><div class="heading"><h2 class="display">Update NitroLearn</h2><span class="muted grow">Checked only when you press the button, never in the background.</span></div>
+      <section id="update"><div class="heading"><h2 class="display">Update NitroLearn</h2><span class="muted grow" id="upd-sub">${esc(updateSubtitle())}</span></div>
+        <div class="set-rows">
+          ${row("Check for new versions when NitroLearn opens", "At most once a day, NitroLearn asks GitHub for the number of its newest version, and the Garage tells you when a new one is out. Nothing about you or this PC is sent, and nothing is downloaded or changed until you press Update now. Off: only the button below checks.", `<input class="sw" type="checkbox" id="pref-check-updates" ${checksOnOpen() ? "checked" : ""} aria-label="Check for new versions when NitroLearn opens">`)}
+        </div>
         <div class="card pad upd-card" id="upd-box"></div>
       </section>
       <section id="editing"><div class="heading"><h2 class="display">Editing NitroLearn</h2><span class="muted grow">For people who change NitroLearn's own code.</span></div>

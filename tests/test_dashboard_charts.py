@@ -20,6 +20,7 @@ from nitro.dashboard.api import Api
 from nitro.learner import signal_columns
 from nitro.runs import RunFolder
 from nitro.training import (
+    BALL_PREDICTION_COLUMNS,
     EVEN_START_COLUMNS,
     KICKOFF_COLUMNS,
     PLAY_COLUMNS,
@@ -62,6 +63,7 @@ def every_column() -> list[str]:
         *TIME_COLUMNS,
         *PLAY_COLUMNS,
         *size_column_names([1, 2, 3]),
+        *BALL_PREDICTION_COLUMNS,
         *signal_columns(ppo),
         *replay_mix.COLUMNS,
         *replay_mix.KICKOFF_COLUMNS,

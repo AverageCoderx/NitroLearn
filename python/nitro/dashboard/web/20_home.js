@@ -274,6 +274,7 @@ function drawGarage() {
   if (!$("#g-list")) return;
   keepFocus(() => {
     const bots = homeBots(), hero = heroBot(bots);
+    put($("#g-news"), newsHTML(bots));
     drawHero(bots, hero);
     put($("#g-lane"), laneHTML(bots));
     drawList(bots, hero);
@@ -289,7 +290,7 @@ async function loadGarage() {
 }
 // `changedOnly` (the 5-second refresh): only what changed is drawn again.
 function renderHome(changedOnly) {
-  if (!changedOnly || !$("#g-list")) $("#main").innerHTML = '<div id="g-hero"></div><div id="g-lane"></div><div id="g-list"></div>';
+  if (!changedOnly || !$("#g-list")) $("#main").innerHTML = '<div id="g-news"></div><div id="g-hero"></div><div id="g-lane"></div><div id="g-list"></div>';
   drawGarage();
   loadGarage();
   askSetup();

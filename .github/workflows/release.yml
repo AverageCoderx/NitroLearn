@@ -73,6 +73,7 @@ jobs:
           python -c "import nitro, pathlib; print((pathlib.Path(nitro.__file__).parent / 'THIRD_PARTY_NOTICES.md').read_text(encoding='utf-8')[:200])"
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 7 # trial builds are kept a week; a release's files live on the release itself
           name: core-${{ matrix.os }}
           path: dist/*.whl
           if-no-files-found: error
@@ -122,6 +123,7 @@ jobs:
           }
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 7 # trial builds are kept a week; a release's files live on the release itself
           name: programs-windows-x64
           path: programs/*
           if-no-files-found: error
@@ -151,6 +153,7 @@ jobs:
             --replicar-version "$REPLICAR_VERSION" --target x86_64-unknown-linux-gnu
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 7 # trial builds are kept a week; a release's files live on the release itself
           name: programs-linux-x64
           path: programs/*
           if-no-files-found: error
@@ -179,6 +182,7 @@ jobs:
           python tools/bundles.py notices bundles
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 7 # trial builds are kept a week; a release's files live on the release itself
           name: bundles
           path: bundles/*
           if-no-files-found: error
@@ -210,6 +214,7 @@ jobs:
           Write-Host ("NitroLearn-Setup.exe: {0:N1} MB" -f ($size / 1MB))
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 7 # trial builds are kept a week; a release's files live on the release itself
           name: setup
           path: installer/build/output/NitroLearn-Setup.exe
           if-no-files-found: error
@@ -251,8 +256,19 @@ jobs:
           echo "VERSION=$version" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 7 # trial builds are kept a week; a release's files live on the release itself
           name: release-files
           path: release/*
+      - name: Release notes (the README's newest "What's new" section, which the dashboard's update notice shows, then how to install)
+        run: |
+          awk '/^## What.s new in /{n++} n==1 && /^## / && !/^## What.s new in /{exit} n==1' README.md > notes.md
+          test -s notes.md || { echo "README.md has no What's new section" >&2; exit 1; }
+          {
+            echo
+            echo "## Install"
+            echo "Windows: download NitroLearn-Setup.exe and double-click it (Windows may say it protected your PC: choose More info, then Run anyway). Linux: download the source code (.tar.gz), unpack it, and run \`bash install.sh\` in its folder. The other files are what the installers download; BUNDLED-NOTICES.md lists the copies of other projects' files and their licences."
+          } >> notes.md
+          cat notes.md
       - name: Attach to the tag's release
         if: github.ref_type == 'tag'
         env:
@@ -261,7 +277,7 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" release/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" release/* --title "NitroLearn $VERSION" --notes "Windows: download NitroLearn-Setup.exe and double-click it (Windows may say it protected your PC: choose More info, then Run anyway). The other files are what the installers download; BUNDLED-NOTICES.md lists the copies of other projects' files and their licences."
+            gh release create "$GITHUB_REF_NAME" release/* --title "NitroLearn $VERSION" --notes-file notes.md
           fi
       - name: Publish this version (a manual run with publish ticked, from main)
         if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
@@ -272,4 +288,4 @@ jobs:
             echo "v$VERSION is published already" >&2
             exit 1
           fi
-          gh release create "v$VERSION" release/* --target "$GITHUB_SHA" --title "NitroLearn $VERSION" --notes "Windows: download NitroLearn-Setup.exe and double-click it (Windows may say it protected your PC: choose More info, then Run anyway). Linux: download the source code (.tar.gz), unpack it, and run \`bash install.sh\` in its folder. The other files are what the installers download; BUNDLED-NOTICES.md lists the copies of other projects' files and their licences."
+          gh release create "v$VERSION" release/* --target "$GITHUB_SHA" --title "NitroLearn $VERSION" --notes-file notes.md

@@ -4,7 +4,8 @@
 //! `action_delay` ticks) the bot builds the observation and action mask with the very code training used
 //! (`nitro_core::obs`, `nitro_core::actions`), runs the policy on the CPU and sends the controls. A policy
 //! with an attention encoder plays any number of cars a side: in a game bigger than its room, the
-//! observation gets one place per car present (`ObsKind::build_cars`).
+//! observation gets one place per car present (`ObsKind::build_cars`). A policy trained with ball
+//! prediction reads RLBot's own prediction at the same times ahead as in training.
 
 pub mod angles;
 pub mod decider;
@@ -12,10 +13,13 @@ pub mod packet;
 pub mod rhythm;
 
 use nitro_core::actions::ActionTable;
+use nitro_core::ball_prediction::{self, BallPath};
 use nitro_core::policy::Policy;
-use nitro_core::snapshot::{Controls, GameSnapshot};
+use nitro_core::snapshot::{Body, Controls, GameSnapshot};
 use nitro_core::team::Team;
-use rlbot::flat::{ControllerState, FieldInfo, GamePacket, MatchPhase};
+use rlbot::flat::{
+    BallPrediction, ControllerState, FieldInfo, GamePacket, MatchPhase, PredictionSlice,
+};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -51,6 +55,13 @@ pub enum Choice {
     Sample,
 }
 
+/// Decisions in a row without a ball prediction before the bot says it is coasting for want of one.
+const UNPREDICTED_NOTE: u32 = 3;
+
+/// RLBot's prediction slices kept beyond the furthest decision ahead: for a prediction this many ticks
+/// older than its packet.
+const SPARE_SLICES: usize = 4;
+
 pub struct NitroBot {
     policy: Arc<Policy>,
     table: ActionTable,
@@ -82,6 +93,16 @@ pub struct NitroBot {
     threads: usize,
     /// The decider this car hands its decisions to; None decides on the packet's own thread.
     seat: Option<Seat>,
+    /// A policy trained with ball prediction: the decisions ahead it reads (empty = none), RLBot's latest
+    /// prediction, the bot's own (with `--meshes`) for when RLBot's is missing or stale, and the bodies
+    /// picked for the decision.
+    prediction_steps: Vec<u32>,
+    rlbot_prediction: Vec<PredictionSlice>,
+    own_prediction: Option<BallPath>,
+    predicted: Vec<Body>,
+    /// Decisions in a row without a prediction, and whether the note saying so was printed.
+    unpredicted: u32,
+    told_prediction: bool,
 }
 
 impl NitroBot {
@@ -97,9 +118,11 @@ impl NitroBot {
         let policy = policy.into();
         let game = &policy.header().game;
         let room = game.obs_team_size;
+        let prediction_steps = ball_prediction::decisions(&game.ball_prediction, game.tick_skip)?;
         let layout = game
             .observation
-            .layout(game.team_size, game.opponents, room);
+            .layout(game.team_size, game.opponents, room)
+            .with_ball_prediction(prediction_steps.len());
         if layout.size != policy.obs_size() {
             return Err(format!(
                 "the policy file says its observation has {} values, but {:?} for {}v{} (room for {}) has {}",
@@ -147,8 +170,80 @@ impl NitroBot {
             },
             threads: 1,
             seat: None,
+            predicted: Vec::with_capacity(prediction_steps.len()),
+            prediction_steps,
+            rlbot_prediction: Vec::new(),
+            own_prediction: None,
+            unpredicted: 0,
+            told_prediction: false,
             policy,
         })
+    }
+
+    /// The observation of the latest decision in a game of the trained size (for checks).
+    pub fn observation(&self) -> &[f32] {
+        &self.obs
+    }
+
+    /// Whether the policy reads the ball's predicted path, so RLBot should send its prediction.
+    pub fn wants_ball_prediction(&self) -> bool {
+        !self.prediction_steps.is_empty()
+    }
+
+    /// RLBot's newest ball prediction (a slice per tick, each with its game time; the first a tick after the
+    /// packet it was made with), read at the next decision: only the slices a decision can read are kept (as
+    /// far as the furthest time, and a few ticks for a prediction a little older than its packet), copied into
+    /// a buffer reused tick after tick.
+    pub fn set_ball_prediction(&mut self, prediction: &BallPrediction) {
+        if let Some(&last) = self.prediction_steps.last() {
+            let tick_skip = self.policy.header().game.tick_skip;
+            let kept = (last * tick_skip) as usize + SPARE_SLICES;
+            self.rlbot_prediction.clear();
+            self.rlbot_prediction
+                .extend_from_slice(&prediction.slices[..prediction.slices.len().min(kept)]);
+        }
+    }
+
+    /// Predicts the ball itself when RLBot's prediction is missing (`--meshes`): the collision meshes must
+    /// be loaded. RocketSim's physics, as training's prediction.
+    pub fn predict_ball_itself(&mut self) {
+        if let Some(&last) = self.prediction_steps.last() {
+            let tick_skip = self.policy.header().game.tick_skip;
+            self.own_prediction = Some(BallPath::for_observation(tick_skip, last));
+        }
+    }
+
+    /// The ball's predicted bodies for a decision on `packet`: from RLBot's prediction at whole decisions
+    /// ahead, else from the bot's own; false when there is neither.
+    fn predict_ball(&mut self, packet: &GamePacket) -> bool {
+        let tick_skip = self.policy.header().game.tick_skip;
+        let now = ball_prediction::Now {
+            seconds: packet.match_info.seconds_elapsed,
+            ball: self.snapshot.ball,
+        };
+        // A stale prediction (from before a touch or a reset, or older than its packet by more than a
+        // tick or two) does not fit the packet's ball and is not used.
+        let from_rlbot = ball_prediction::pick_timed(
+            &self.rlbot_prediction,
+            |slice| slice.game_seconds,
+            |slice| packet::body(&slice.physics),
+            now,
+            &self.prediction_steps,
+            tick_skip,
+            &mut self.predicted,
+        );
+        if from_rlbot.is_some() {
+            return true;
+        }
+        let Some(path) = &mut self.own_prediction else {
+            return false;
+        };
+        ball_prediction::pick(
+            path.update(self.snapshot.ball, 1),
+            &self.prediction_steps,
+            &mut self.predicted,
+        );
+        true
     }
 
     /// Hands this car's decisions to `seat`'s decider: every packet is answered at once and the
@@ -202,6 +297,9 @@ impl NitroBot {
     /// Starts afresh, as a training episode does: the rhythm and any decision in flight.
     fn restart(&mut self) {
         self.rhythm.reset();
+        if let Some(path) = &mut self.own_prediction {
+            path.forget();
+        }
         if let Some(seat) = &mut self.seat {
             if self.choice == Choice::Sample {
                 // Drawn and thrown away, so the random numbers run as when deciding on this thread.
@@ -301,14 +399,30 @@ impl NitroBot {
         }
         if let Some(previous) = self.rhythm.begin(frame) {
             let began = Instant::now();
+            if self.wants_ball_prediction() && !self.predict_ball(packet) {
+                // RLBot may send its prediction after the packet it goes with: a first decision without one
+                // is normal, a few in a row are not.
+                self.unpredicted += 1;
+                if self.unpredicted >= UNPREDICTED_NOTE && !self.told_prediction {
+                    println!(
+                        "nitro_bot: this bot was trained with ball prediction, but RLBot sent none and no \
+                         --meshes folder was given to compute one; coasting until a prediction comes."
+                    );
+                    self.told_prediction = true;
+                }
+                self.rhythm.supply(Controls::default());
+                return self.rhythm.current(frame);
+            }
+            self.unpredicted = 0;
             let game = &self.policy.header().game;
             let index = self.index;
             let cars = if fits {
-                game.observation.build(
+                game.observation.build_predicted(
                     &self.snapshot,
                     index,
                     previous,
                     game.obs_team_size,
+                    &self.predicted,
                     &mut self.obs,
                 );
                 None
@@ -317,6 +431,7 @@ impl NitroBot {
                     &self.snapshot,
                     index,
                     previous,
+                    &self.predicted,
                     &mut self.cars_obs,
                 ))
             };
@@ -377,6 +492,11 @@ impl NitroBot {
             }
         }
     }
+}
+
+/// Whether `policy` reads the ball's predicted path, so its program must ask RLBot for its ball prediction.
+pub fn wants_ball_prediction(policy: &Policy) -> bool {
+    !policy.header().game.ball_prediction.is_empty()
 }
 
 /// RLBot's controller state for our controls (`use_item` is for rumble, never used).

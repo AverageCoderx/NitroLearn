@@ -261,6 +261,11 @@ impl Sim {
         }));
     }
 
+    /// The ball alone (`read` without the cars and pads).
+    pub fn ball(&self) -> Body {
+        body_of(&self.ball_state().phys)
+    }
+
     pub fn read(&self, snapshot: &mut GameSnapshot) {
         let ball = self.ball_state();
         snapshot.ball = body_of(&ball.phys);

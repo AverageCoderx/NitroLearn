@@ -38,6 +38,7 @@ use rocketsim::consts::{TICK_TIME, boost_pads, car::boost::SPAWN_AMOUNT, car::su
 use rocketsim::{CarBodyConfig, GameMode, Vec3A};
 
 use crate::actions::{ActionTable, MaskRule, NUM_ACTIONS};
+use crate::ball_prediction::{Recorded, Steps};
 use crate::obs::ObsKind;
 use crate::replay::{ball_at_kickoff, is_kickoff, teams_of};
 use crate::rlpr::{CarRecord, Recording, Tick};
@@ -60,6 +61,8 @@ pub struct DemoRules {
     /// Only the decisions in kickoff windows, each to this many ticks after the ball's first touch;
     /// 0 = every decision.
     pub kickoff_only: u32,
+    /// The ball prediction's decisions ahead; none = off.
+    pub ball_prediction: Steps,
 }
 
 /// The longest kickoff window after the first touch (`kickoff_only_seconds`), in seconds.
@@ -149,6 +152,8 @@ pub struct Demos {
     pub skipped: usize,
     /// Samples (car decisions) left out because they lie outside every kickoff window.
     pub outside_window: usize,
+    /// With ball prediction: decisions whose path was predicted afresh, not carried on.
+    pub predictions_fresh: u64,
 }
 
 impl Demos {
@@ -313,7 +318,12 @@ pub fn demonstrations(recording: &Recording, rules: &DemoRules) -> Result<Demos,
     let obs_size = rules
         .obs
         .layout(team_size, orange > 0, rules.obs_team_size)
+        .with_ball_prediction(rules.ball_prediction.len())
         .size;
+    // The ball's predicted path from each decision's recorded ball, carried on while the recording's ball
+    // moves as RocketSim predicts it.
+    let mut prediction = Recorded::new(rules.tick_skip, &rules.ball_prediction, 1);
+    let mut predicted = Vec::new();
     let mut demos = Demos {
         obs_size,
         ..Demos::default()
@@ -353,6 +363,7 @@ pub fn demonstrations(recording: &Recording, rules: &DemoRules) -> Result<Demos,
         if !whole {
             demos.skipped += 1;
             previous.fill(Controls::default());
+            prediction.forget(0);
             t += skip;
             continue;
         }
@@ -364,13 +375,21 @@ pub fn demonstrations(recording: &Recording, rules: &DemoRules) -> Result<Demos,
             || windows
                 .iter()
                 .any(|&(start, end)| start <= frame && frame <= end);
+        if kept {
+            prediction.predict(0, snap.ball, &mut predicted);
+        }
         let mut obs = vec![0.0; obs_size];
         let mut mask = [0u8; NUM_ACTIONS];
         for (car, &team) in teams.iter().enumerate() {
             if kept {
-                rules
-                    .obs
-                    .build(&snap, car, previous[car], rules.obs_team_size, &mut obs);
+                rules.obs.build_predicted(
+                    &snap,
+                    car,
+                    previous[car],
+                    rules.obs_team_size,
+                    &predicted,
+                    &mut obs,
+                );
             }
             table.write_mask(rules.masks, &snap.cars[car], &mut mask);
             // In either convention `applied[i]` acts on the state of record `t + delay + i`.
@@ -407,6 +426,7 @@ pub fn demonstrations(recording: &Recording, rules: &DemoRules) -> Result<Demos,
         }
         t += skip;
     }
+    demos.predictions_fresh = prediction.counts().0;
     Ok(demos)
 }
 
@@ -788,6 +808,7 @@ mod tests {
             team: vec![0],
             skipped: 0,
             outside_window: 0,
+            predictions_fresh: 0,
         };
         for a in [0, 9, 89] {
             demos.mask[a] = 1;
@@ -1118,6 +1139,96 @@ mod tests {
         assert_eq!(car_snapshot(&car, Team::Blue, false).flip_time_left, 0.0);
     }
 
+    /// With ball prediction, each sample carries the ball's path predicted from its decision's recorded
+    /// ball, the rest of the observation unchanged; a recording whose ball moves as RocketSim's carries the
+    /// path on, a gap in it predicts afresh.
+    #[test]
+    fn a_recording_gives_its_balls_predicted_path() {
+        use crate::ball_prediction::{BallPath, Tolerance, decisions, pick};
+        if !crate::testing::meshes_loaded() {
+            return;
+        }
+        let mut flight = BallPath::new(1, 81, Tolerance::EXACT);
+        let start = Body {
+            pos: Vec3A::new(-300.0, 1200.0, 800.0),
+            vel: Vec3A::new(900.0, -400.0, 600.0),
+            ang_vel: Vec3A::new(1.0, 0.5, -2.0),
+            ..Body::RESTING
+        };
+        // The kickoff's ball at tick 0 (the teams are told apart there), then a ball in flight.
+        let mut made = recording(81);
+        let mut balls = vec![made.ticks[0].ball, start];
+        balls.extend_from_slice(&flight.update(start, 1)[..79]);
+        for (tick, &ball) in made.ticks.iter_mut().zip(&balls).skip(1) {
+            tick.ball = ball;
+        }
+        let plain = DemoRules {
+            obs: ObsKind::Native,
+            obs_team_size: 0,
+            tick_skip: 8,
+            action_delay: 7,
+            masks: MaskRule::Standard,
+            softness: 0.1,
+            replicar_rows: false,
+            kickoff_only: 0,
+            ball_prediction: Steps::default(),
+        };
+        let steps = decisions(&[0.25, 1.0], 8).unwrap();
+        let rules = DemoRules {
+            ball_prediction: Steps::new(&steps),
+            ..plain
+        };
+        let (without, with) = (
+            demonstrations(&made, &plain).unwrap(),
+            demonstrations(&made, &rules).unwrap(),
+        );
+        assert_eq!(with.obs_size, without.obs_size + 24);
+        assert_eq!(with.len(), without.len());
+        // Decisions at ticks 0 (the kickoff), 8, 16, 24 (before the gap) and 48, 56, 64: fresh at 0, at 8 (the
+        // ball was set in flight) and after the gap; carried on otherwise.
+        assert_eq!(with.predictions_fresh, 3);
+        let decision_ticks = [0, 8, 16, 24, 48, 56, 64];
+        let mut fresh = Vec::new();
+        for (row, (a, b)) in with
+            .obs
+            .chunks(with.obs_size)
+            .zip(without.obs.chunks(without.obs_size))
+            .enumerate()
+        {
+            assert_eq!(a[..9], b[..9]);
+            assert_eq!(a[33..], b[9..]);
+            let ball = balls[decision_ticks[row / 2]];
+            pick(
+                BallPath::for_observation(8, 15).update(ball, 1),
+                &steps,
+                &mut fresh,
+            );
+            let mut expected = vec![0.0; with.obs_size];
+            let me = with.car[row] as usize;
+            let tick = decision_ticks[row / 2];
+            let mut rebuilt = Rebuilt::new();
+            rebuilt.advance(&made.ticks.iter().collect::<Vec<_>>(), tick);
+            let mut snap = GameSnapshot::default();
+            fill_snapshot(
+                &mut snap,
+                &made.ticks[tick],
+                &[Team::Blue, Team::Orange],
+                &rebuilt,
+            );
+            ObsKind::Native.build_predicted(
+                &snap,
+                me,
+                Controls::default(),
+                0,
+                &fresh,
+                &mut expected,
+            );
+            for (k, (x, y)) in a[9..33].iter().zip(&expected[9..33]).enumerate() {
+                assert!((x - y).abs() < 1e-3, "row {row}, value {k}: {x} vs {y}");
+            }
+        }
+    }
+
     #[test]
     fn a_recording_gives_one_sample_per_car_and_decision_with_its_label() {
         let rules = DemoRules {
@@ -1129,6 +1240,7 @@ mod tests {
             softness: 0.1,
             replicar_rows: false,
             kickoff_only: 0,
+            ball_prediction: Steps::default(),
         };
         let demos = demonstrations(&recording(81), &rules).unwrap();
         let table = ActionTable::new();
@@ -1496,6 +1608,7 @@ mod tests {
                     softness: 0.1,
                     replicar_rows: false,
                     kickoff_only: 0,
+                    ball_prediction: Steps::default(),
                 },
                 (
                     0xd14b_0d58_6182_cab2,
@@ -1513,6 +1626,7 @@ mod tests {
                     softness: 0.1,
                     replicar_rows: true,
                     kickoff_only: 0,
+                    ball_prediction: Steps::default(),
                 },
                 (
                     0x517e_6c67_5f75_5e31,
@@ -1542,6 +1656,7 @@ mod tests {
             softness: 0.1,
             replicar_rows,
             kickoff_only: 0,
+            ball_prediction: Steps::default(),
         }
     }
 
@@ -1598,6 +1713,7 @@ mod tests {
                 team: vec![0],
                 skipped: 0,
                 outside_window: 0,
+                predictions_fresh: 0,
             };
             for &(a, share) in shares {
                 demos.label[a] = share;
@@ -2169,6 +2285,7 @@ mod tests {
             softness: 0.1,
             replicar_rows: false,
             kickoff_only: 0,
+            ball_prediction: Steps::default(),
         };
         let demos = demonstrations(&rec, &rules).unwrap();
         // Decision 4, Blue then Orange; the pads were taken during the step into tick 3.

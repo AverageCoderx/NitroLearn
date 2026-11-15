@@ -12,6 +12,9 @@ body { display: flex; flex-direction: column; }
 .nav button { padding: 21px 2px 18px; margin-bottom: -3px; border: 0; border-bottom: 3px solid transparent; background: none; color: var(--band-dim); white-space: nowrap; font-stretch: 75%; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; font-size: 12.5px; }
 .nav button:hover { color: var(--band-text); }
 .nav button[aria-current="page"] { color: var(--band-text); border-bottom-color: var(--band-text); }
+/* A new version is out: a small yellow square beside App settings. */
+.nav button.has-news { position: relative; }
+.nav button.has-news::after { content: ""; position: absolute; top: 15px; right: -7px; width: 6px; height: 6px; background: var(--yellow); transform: var(--lean); }
 .band-tools { display: flex; align-items: center; gap: 12px; margin-left: auto; padding: 11px 0; }
 .band-btn { position: relative; isolation: isolate; display: inline-flex; align-items: center; gap: 8px; padding: 7px 13px; border: 0; background: none; color: var(--band-text); white-space: nowrap; font-stretch: 80%; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; font-size: 12.5px; line-height: 1.25; }
 .band-btn::before { content: ""; position: absolute; inset: 0; z-index: -1; background: var(--band-raised); transform: var(--lean); }

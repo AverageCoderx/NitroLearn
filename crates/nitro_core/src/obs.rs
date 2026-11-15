@@ -4,6 +4,7 @@
 use rocketsim::{Mat3A, Vec3A};
 use serde::Deserialize;
 
+use crate::ball_prediction::VALUES_PER_TIME;
 use crate::snapshot::{Body, CarSnapshot, Controls, GameSnapshot, MAX_CARS, NUM_BOOST_PADS, Team};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Deserialize)]
@@ -30,6 +31,19 @@ pub struct ObsLayout {
     pub opponents: usize,
     /// Players per team the observation has places for; 0 = exactly the game's (no padding).
     pub room: usize,
+}
+
+impl ObsLayout {
+    /// This layout with the ball's predicted path at `times` prediction times: `VALUES_PER_TIME` numbers
+    /// each, in the own part right after the ball's.
+    pub fn with_ball_prediction(self, times: usize) -> Self {
+        let extra = times * VALUES_PER_TIME;
+        Self {
+            size: self.size + extra,
+            self_part: self.self_part + extra,
+            ..self
+        }
+    }
 }
 
 const NATIVE_CAR: usize = 23;
@@ -129,12 +143,27 @@ impl ObsKind {
         room: usize,
         out: &mut [f32],
     ) {
-        self.build_slotted(snap, me, prev_action, room, &[], out);
+        self.build_predicted(snap, me, prev_action, room, &[], out);
+    }
+
+    /// `build` with the ball's predicted bodies at each prediction time (world frame, as
+    /// `ball_prediction::pick` gives them); `out.len()` must equal the layout's `with_ball_prediction` size.
+    pub fn build_predicted(
+        self,
+        snap: &GameSnapshot,
+        me: usize,
+        prev_action: Controls,
+        room: usize,
+        prediction: &[Body],
+        out: &mut [f32],
+    ) {
+        self.build_slotted(snap, me, prev_action, room, &[], prediction, out);
     }
 
     /// `build` with each car at place `slots[car]` among its team's `room` places (`env.shuffle_slots`);
     /// a car's teammates keep their places' order with its own left out. Empty `slots` = the cars in
-    /// order, as `build`.
+    /// order, as `build`. `prediction` as in `build_predicted`.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_slotted(
         self,
         snap: &GameSnapshot,
@@ -142,6 +171,7 @@ impl ObsKind {
         prev_action: Controls,
         room: usize,
         slots: &[u8],
+        prediction: &[Body],
         out: &mut [f32],
     ) {
         assert!(
@@ -154,6 +184,7 @@ impl ObsKind {
             prev_action,
             (room > 0).then(|| (room - 1, room)),
             slots,
+            prediction,
             out,
         );
     }
@@ -161,30 +192,36 @@ impl ObsKind {
     /// Writes the observation of car `me` with one flagged block per other car in the game and no empty
     /// places (`cars_layout`), into `out` resized to fit; returns the (teammates, opponents) written. For a
     /// policy whose attention encoder reads any number of cars, in a game bigger than its room (any size,
-    /// e.g. RLBot's 12v12).
+    /// e.g. RLBot's 12v12). `prediction` as in `build_predicted`.
     pub fn build_cars(
         self,
         snap: &GameSnapshot,
         me: usize,
         prev_action: Controls,
+        prediction: &[Body],
         out: &mut Vec<f32>,
     ) -> (usize, usize) {
         let team = snap.cars[me].team;
         let teammates = snap.cars.iter().filter(|car| car.team == team).count() - 1;
         let opponents = snap.cars.len() - 1 - teammates;
         out.clear();
-        out.resize(self.cars_layout(teammates, opponents).size, 0.0);
+        let layout = self
+            .cars_layout(teammates, opponents)
+            .with_ball_prediction(prediction.len());
+        out.resize(layout.size, 0.0);
         self.write(
             snap,
             me,
             prev_action,
             Some((teammates, opponents)),
             &[],
+            prediction,
             out,
         );
         (teammates, opponents)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write(
         self,
         snap: &GameSnapshot,
@@ -192,13 +229,14 @@ impl ObsKind {
         prev_action: Controls,
         places: Places,
         slots: &[u8],
+        prediction: &[Body],
         out: &mut [f32],
     ) {
         let mut writer = Writer { out, len: 0 };
         let places = (places, slots);
         match self {
-            Self::Native => native(snap, me, prev_action, places, &mut writer),
-            Self::NitroV2 => nitro_v2(snap, me, prev_action, places, &mut writer),
+            Self::Native => native(snap, me, prev_action, places, prediction, &mut writer),
+            Self::NitroV2 => nitro_v2(snap, me, prev_action, places, prediction, &mut writer),
         }
         assert_eq!(writer.len, writer.out.len(), "observation size mismatch");
     }
@@ -377,6 +415,7 @@ fn native(
     me: usize,
     prev_action: Controls,
     places: (Places, &[u8]),
+    prediction: &[Body],
     w: &mut Writer<'_>,
 ) {
     use native_scale as s;
@@ -386,6 +425,7 @@ fn native(
     w.vec(ball.pos * s::POS);
     w.vec(ball.vel * s::VEL);
     w.vec(ball.ang_vel * s::BALL_ANG_VEL);
+    write_prediction(prediction, team, team_view(my.body, team), w);
     for i in 0..NUM_BOOST_PADS {
         let pad = snap.pads[if team == Team::Blue {
             i
@@ -410,6 +450,20 @@ fn native(
         w.vec(local(me_body.rot, body.pos - me_body.pos) * s::REL_POS);
         w.vec(local(me_body.rot, body.vel - me_body.vel) * s::VEL);
     });
+}
+
+/// The ball's predicted path, per prediction time: its position and velocity, then both relative to the
+/// observing car (`me`, in the team view), all in the team view and the ball features' scales. Relative
+/// vectors stay in world axes: the own-car part already gives the ball in the car's frame.
+fn write_prediction(prediction: &[Body], team: Team, me: Body, w: &mut Writer<'_>) {
+    use native_scale as s;
+    for &body in prediction {
+        let ball = team_view(body, team);
+        w.vec(ball.pos * s::POS);
+        w.vec(ball.vel * s::VEL);
+        w.vec((ball.pos - me.pos) * s::REL_POS);
+        w.vec((ball.vel - me.vel) * s::VEL);
+    }
 }
 
 fn native_car(car: &CarSnapshot, body: Body, w: &mut Writer<'_>) {
@@ -457,6 +511,7 @@ fn nitro_v2(
     me: usize,
     prev_action: Controls,
     places: (Places, &[u8]),
+    prediction: &[Body],
     w: &mut Writer<'_>,
 ) {
     use v2_scale as s;
@@ -476,6 +531,7 @@ fn nitro_v2(
     w.vec(to_own_goal * s::DIST);
     w.scalar(to_own_goal.length() * s::DIST);
     w.scalar(speed_toward(ball.vel, ball.pos, s::OPPONENT_GOAL) * s::VEL);
+    write_prediction(prediction, team, team_view(my.body, team), w);
     for i in 0..NUM_BOOST_PADS {
         let pad = snap.pads[if team == Team::Blue {
             i
@@ -550,6 +606,90 @@ mod tests {
         assert_eq!(padded, ObsKind::Native.layout(2, true, 3));
         assert!(ObsKind::Native.checked_layout(3, true, 2).is_err());
         assert!(ObsKind::Native.checked_layout(0, true, 0).is_err());
+    }
+
+    /// The ball prediction sits right after the ball, has its size, reads the same for both teams in
+    /// mirrored games, and is checked by hand.
+    #[test]
+    fn the_ball_prediction_follows_the_ball() {
+        let predicted = [body(11.0), body(13.0), body(17.0)];
+        let prev = Controls {
+            steer: 1.0,
+            ..Controls::default()
+        };
+        for kind in [ObsKind::Native, ObsKind::NitroV2] {
+            for (team_size, room) in [(1, 0), (2, 0), (2, 3)] {
+                let snap = snapshot(team_size);
+                let layout = kind.layout(team_size, true, room);
+                let with = layout.with_ball_prediction(predicted.len());
+                assert_eq!(with.size, layout.size + 36);
+                assert_eq!(with.self_part, layout.self_part + 36);
+                assert_eq!((with.other_car, with.room), (layout.other_car, layout.room));
+                let ball = if kind == ObsKind::Native { 9 } else { 20 };
+                for me in 0..snap.cars.len() {
+                    let (mut plain, mut out) = (vec![0.0; layout.size], vec![0.0; with.size]);
+                    kind.build(&snap, me, prev, room, &mut plain);
+                    kind.build_predicted(&snap, me, prev, room, &predicted, &mut out);
+                    // Everything else is where it was, shifted past the prediction.
+                    assert_eq!(out[..ball], plain[..ball]);
+                    assert_eq!(out[ball + 36..], plain[ball..]);
+                    // Seen from the other side: the same numbers.
+                    let swapped = swapped_sides(&snap);
+                    let turned = predicted.map(|b| team_view(b, Team::Orange));
+                    let mut other = vec![0.0; with.size];
+                    kind.build_predicted(&swapped, me, prev, room, &turned, &mut other);
+                    assert_eq!(out, other, "{kind:?} car {me}");
+                }
+            }
+        }
+        // With attention's one place per car, the same numbers after the ball.
+        let snap = snapshot(2);
+        let mut cars = Vec::new();
+        ObsKind::Native.build_cars(&snap, 0, prev, &predicted, &mut cars);
+        let layout = ObsKind::Native.cars_layout(1, 2).with_ball_prediction(3);
+        assert_eq!(cars.len(), layout.size);
+        let mut padded = vec![
+            0.0;
+            ObsKind::Native
+                .layout(2, true, 0)
+                .with_ball_prediction(3)
+                .size
+        ];
+        ObsKind::Native.build_predicted(&snap, 0, prev, 0, &predicted, &mut padded);
+        assert_eq!(cars[9..45], padded[9..45]);
+        // By hand: an Orange car at (100, 200, 17) moving at (0, 300, 0); the ball predicted at (500, -1000,
+        // 300) moving at (0, -1200, 0). Orange sees it rotated 180°.
+        let mut snap = snapshot(1);
+        snap.cars[1].body = Body {
+            pos: Vec3A::new(100.0, 200.0, 17.0),
+            vel: Vec3A::new(0.0, 300.0, 0.0),
+            ..Body::RESTING
+        };
+        let ahead = Body {
+            pos: Vec3A::new(500.0, -1000.0, 300.0),
+            vel: Vec3A::new(0.0, -1200.0, 0.0),
+            ..Body::RESTING
+        };
+        let layout = ObsKind::Native.layout(1, true, 0).with_ball_prediction(1);
+        let mut out = vec![0.0; layout.size];
+        ObsKind::Native.build_predicted(&snap, 1, prev, 0, &[ahead], &mut out);
+        let expected = [
+            -500.0 / 4096.0,
+            1000.0 / 5120.0,
+            300.0 / 2044.0,
+            0.0,
+            1200.0 / 2300.0,
+            0.0,
+            -400.0 / 2300.0,
+            1200.0 / 2300.0,
+            283.0 / 2300.0,
+            0.0,
+            1500.0 / 2300.0,
+            0.0,
+        ];
+        for (i, (&got, want)) in out[9..21].iter().zip(expected).enumerate() {
+            assert!((got - want).abs() < 1e-6, "value {i}: {got} vs {want}");
+        }
     }
     use crate::snapshot::PadSnapshot;
     use std::f32::consts::PI;
@@ -809,7 +949,7 @@ mod tests {
             let (own, block) = (layout.self_part, layout.other_car);
             let build = |me: usize, slots: &[u8]| {
                 let mut out = vec![9.0; layout.size];
-                kind.build_slotted(&snap, me, Controls::default(), 3, slots, &mut out);
+                kind.build_slotted(&snap, me, Controls::default(), 3, slots, &[], &mut out);
                 out
             };
             let slots = [2, 0, 0, 2];
@@ -848,7 +988,7 @@ mod tests {
                 kind.build(&snap, 1, Controls::default(), 3, &mut full);
                 let mut cars = Vec::new();
                 let (teammates, opponents) =
-                    kind.build_cars(&snap, 1, Controls::default(), &mut cars);
+                    kind.build_cars(&snap, 1, Controls::default(), &[], &mut cars);
                 assert_eq!((teammates, opponents), (team_size - 1, team_size));
                 let layout = kind.cars_layout(teammates, opponents);
                 assert_eq!(cars.len(), layout.size);
@@ -876,7 +1016,7 @@ mod tests {
             for (snap, expected) in [(snapshot(12), (11, 12)), (uneven, (4, 2))] {
                 let mut cars = Vec::new();
                 assert_eq!(
-                    kind.build_cars(&snap, 0, Controls::default(), &mut cars),
+                    kind.build_cars(&snap, 0, Controls::default(), &[], &mut cars),
                     expected
                 );
                 let layout = kind.cars_layout(expected.0, expected.1);

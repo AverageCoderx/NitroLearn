@@ -1,4 +1,5 @@
-"""`nitro update`: NitroLearn's newest release, only when asked. Nothing here runs in the background.
+"""`nitro update`: NitroLearn's newest release. Nothing here runs by itself: the dashboard asks `latest` when
+it opens, at most once a day (`nitro.dashboard.updating`), and the update runs only when asked.
 
 The installed version is Cargo.toml's (the installer's `project_version`); releases are the GitHub Releases
 of the project, tagged v<version>. Two ways to the new version:
@@ -233,13 +234,11 @@ def read_release(data: object) -> Release:
     )
 
 
-def check(root: Path, get: Fetch = fetch) -> Check:
-    """Asks GitHub for the newest release and compares it with the folder's version. UpdateError, with a
-    message for the user, when it cannot."""
-    installed = installed_version(root)
+def latest(get: Fetch | None = None) -> Release:
+    """Asks GitHub for the newest release. UpdateError, with a message for the user, when it cannot."""
     what = "Could not check for updates"
     try:
-        answer = get(LATEST, CHECK_SECONDS)
+        answer = (get or fetch)(LATEST, CHECK_SECONDS)
     except urllib.error.HTTPError as err:
         raise UpdateError(_http_problem(err, what)) from None
     except (urllib.error.URLError, OSError) as err:
@@ -250,8 +249,21 @@ def check(root: Path, get: Fetch = fetch) -> Check:
         release = read_release(json.loads(answer.decode("utf-8")))
     except (ValueError, UnicodeDecodeError) as err:
         raise UpdateError(f"{what}: GitHub's answer could not be read ({err}). Try again later.") from None
-    new, old = version_key(release.version), version_key(installed)
-    state = "newer" if new > old else "older" if new < old else "same"
+    return release
+
+
+def compare(release: str, installed: str) -> str:
+    """How the version `release` stands to `installed`: "newer", "older" or "same"."""
+    new, old = version_key(release), version_key(installed)
+    return "newer" if new > old else "older" if new < old else "same"
+
+
+def check(root: Path, get: Fetch | None = None) -> Check:
+    """Asks GitHub for the newest release and compares it with the folder's version. UpdateError, with a
+    message for the user, when it cannot."""
+    installed = installed_version(root)
+    release = latest(get)
+    state = compare(release.version, installed)
     git = is_git(root)
     return Check(installed, release, state, git, blocked=git_blocked(root) if git else "")
 

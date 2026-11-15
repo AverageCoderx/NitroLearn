@@ -56,6 +56,7 @@ _REVIEW_ALWAYS = frozenset(
 # Values that add nothing a newcomer needs to know: left out of the review.
 _REVIEW_NOTHING: dict[str, Any] = {
     "env.obs_team_size": 0,
+    "env.ball_prediction": [],
     "model.value_heads": ["main"],
     "model.value_head_layers": [],
     "model.residual": False,

@@ -261,7 +261,13 @@ jobs:
           path: release/*
       - name: Release notes (the README's newest "What's new" section, which the dashboard's update notice shows, then how to install)
         run: |
-          awk '/^## What.s new in /{n++} n==1 && /^## / && !/^## What.s new in /{exit} n==1' README.md > notes.md
+          # The section as plain text, which every version's update notice shows as it is: each item on one
+          # line, without bold marks, backticks or link targets.
+          awk '/^## What.s new in /{n++} n==1 && /^## / && !/^## What.s new in /{exit} n==1' README.md \
+            | awk '/^[ \t]+[^ \t]/ && joined != "" { sub(/^[ \t]+/, " "); joined = joined $0; next }
+                   { if (NR > 1) print joined; joined = $0 }
+                   END { if (NR > 0) print joined }' \
+            | sed -E 's/\*\*//g; s/`//g; s/\[([^]]*)\]\([^)]*\)/\1/g' > notes.md
           test -s notes.md || { echo "README.md has no What's new section" >&2; exit 1; }
           {
             echo

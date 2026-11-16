@@ -330,6 +330,137 @@ def test_without_the_old_release_every_differing_file_is_copied_first(tmp_path: 
     assert any("could not be downloaded to compare" in line for line in said)
 
 
+def crlf(text: str) -> bytes:
+    return text.replace("\n", "\r\n").encode()
+
+
+def test_only_real_edits_count_as_the_users_whatever_the_line_endings(tmp_path: Path) -> None:
+    """A folder whose text files have CRLF (a Windows checkout, or NitroLearn-Setup 1.0.2's files) where the
+    release's archives have LF: line endings alone are no change of the user's, binary files are compared
+    byte for byte, and a real edit is still found and kept first."""
+    picture, edited_picture = b"\x89PNG\r\n\x1a\n\0\0data\r\n", b"\x89PNG\r\n\x1a\n\0\0data\n"
+    old_files = release_files("1.0.0", {"docs/gone.md": "old page\n", "configs/presets/edited.toml": "a\n"})
+    new_files = release_files("1.1.0", {"configs/presets/edited.toml": "a\n"})
+    del new_files["python/nitro/removed_later.py"]
+    folders = {
+        name: installed(tmp_path / name, files) for name, files in (("old", old_files), ("new", new_files))
+    }
+    for folder in folders.values():
+        (folder / "docs").mkdir(exist_ok=True)
+        (folder / "docs/plate.png").write_bytes(picture)
+    root = tmp_path / "NitroLearn"
+    for name, text in old_files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(crlf(text))
+    (root / "docs/plate.png").write_bytes(edited_picture)  # a binary file: CR or not, it differs
+    (root / "configs/presets/edited.toml").write_bytes(crlf("a\nmine\n"))
+    (root / "Install NitroLearn.cmd").write_bytes(crlf("@echo off\n"))
+    (folders["new"] / "Install NitroLearn.cmd").write_bytes(crlf("@echo off\n"))
+    (folders["old"] / "Install NitroLearn.cmd").write_bytes(crlf("@echo off\n"))
+    said: list[str] = []
+    copied = update.copy_release(root, folders["new"], folders["old"], tmp_path / "backup", said.append)
+    assert sorted(copied.replaced) == ["configs/presets/edited.toml", "docs/plate.png"]
+    assert sorted(copied.changed) == [
+        "Cargo.toml",
+        "configs/presets/edited.toml",
+        "docs/plate.png",
+        "python/nitro/trainer.py",
+    ], "only files whose content differs are written"
+    assert (tmp_path / "backup/configs/presets/edited.toml").read_bytes() == crlf("a\nmine\n")
+    assert (root / "README.md").read_bytes() == crlf("NitroLearn\n"), "the same text: left as it is"
+    assert (root / "python/nitro/trainer.py").read_bytes() == b"VERSION = '1.1.0'\n"
+    assert sorted(copied.removed) == ["docs/gone.md", "python/nitro/removed_later.py"]
+    assert not (tmp_path / "backup/docs/gone.md").exists(), "dropped, and unchanged but for its endings"
+
+
+def test_text_is_told_from_binary_and_compared_by_its_lines() -> None:
+    assert update.is_text(b"a\r\nb\n") and update.is_text(b"") and not update.is_text(b"PK\x03\x04\0\0")
+    assert update.same_content(b"a\r\nb\r\n", b"a\nb\n") and update.same_content(b"\0\r\n", b"\0\r\n")
+    assert not update.same_content(b"\0\r\n", b"\0\n"), "binary: byte for byte"
+    assert not update.same_content(b"a\r\nb\n", b"a\nc\n") and not update.same_content(b"a\n", b"a\n\n")
+    assert not update.same_content(b"a\rb", b"a\nb"), "only CRLF counts as LF"
+
+
+def test_a_long_list_of_the_users_files_is_counted_and_named_in_part(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = installed(tmp_path, release_files("1.1.0"))
+    names = [f"python/nitro/part_{i:03}.py" for i in range(25)]
+    monkeypatch.setattr(
+        update,
+        "update_files",
+        lambda *args: update.Copied(replaced=names, backup="/n/.tmp/update/replaced/1.0.0"),
+    )
+    release = update.Release("1.1.0", "v1.1.0", "", "", "")
+    said: list[str] = []
+    update.apply(root, update.Check("1.0.0", release, "newer", False, ""), say=said.append)
+    assert said[0] == (
+        "25 files of NitroLearn's that you had changed (kept in /n/.tmp/update/replaced/1.0.0 before they "
+        "were replaced):"
+    )
+    assert said[1:] == [f"  {name}" for name in names[: update.LISTED]] + ["  and 15 more"]
+
+
+def test_release_notes_are_shown_as_plain_text() -> None:
+    notes = (
+        "## What's new in 1.0.3\n"
+        "- **Updates list only real changes.** A file whose line endings alone differ is\n"
+        "  no change of yours; see [the README](https://github.com/x/y#update) and `nitro update --check`.\n"
+        "* An *italic* word, __bold__ too, and tick_skip stays as it is.\n"
+        "\n"
+        "Paragraph \\*one\\* with <https://example.com/page>, `a **mark** in code` and ![logo](logo.png).\n"
+        "1. a numbered item\n"
+    )
+    assert update.first_lines(notes) == (
+        "What's new in 1.0.3\n"
+        "- Updates list only real changes. A file whose line endings alone differ is no change of yours; see "
+        "the README and nitro update --check.\n"
+        "- An italic word, bold too, and tick_skip stays as it is.\n"
+        "Paragraph *one* with https://example.com/page, a **mark** in code and logo.\n"
+        "1. a numbered item"
+    )
+    assert update.first_lines("# A\n- one\n- two\n- three", lines=2) == "A\n- one"
+    assert update.first_lines("#\n\n- " + "x" * 800).endswith("…")
+
+
+def _notes_step() -> str:
+    """The release workflow's Release notes step, as the script it runs."""
+    workflow = (PROJECT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    found = re.search(r"- name: Release notes .*?\n\s+run: \|\n(.*?)\n      - ", workflow, re.DOTALL)
+    assert found is not None
+    return "\n".join(line[10:] for line in found[1].splitlines())
+
+
+@pytest.mark.skipif(
+    shutil.which("bash") is None or sys.platform == "win32", reason="runs as on GitHub (Linux)"
+)
+def test_the_release_notes_are_the_readmes_whats_new_as_plain_text(tmp_path: Path) -> None:
+    """The newest What's new section, plain (1.0.2's update notice shows the notes as they are written), then
+    the Install section."""
+    readme = (PROJECT / "README.md").read_text(encoding="utf-8")
+    (tmp_path / "README.md").write_text(readme, encoding="utf-8")
+    subprocess.run(["bash", "-e", "-c", _notes_step()], cwd=tmp_path, check=True, capture_output=True)
+    notes = (tmp_path / "notes.md").read_text(encoding="utf-8")
+    news, install = notes.split("\n## Install\n")
+    first = re.search(r"^## What.s new in [^\n]+\n.*?(?=^## )", readme, re.MULTILINE | re.DOTALL)
+    assert first is not None and news.startswith(first[0].splitlines()[0])
+    assert "**" not in news and "`" not in news and "](" not in news
+    items = [line for line in news.splitlines() if line.startswith("- ")]
+    assert items and all(not line.startswith(" ") for line in news.splitlines()), "each item on one line"
+    assert len(items) == first[0].count("\n- "), "every item kept"
+    assert install.startswith("Windows: download NitroLearn-Setup.exe")
+    sample = (
+        "## What's new in 9.9.9\n- **Bold** item with `code` and [a link](https://x.y)\n  wrapped on.\n"
+        "- Second\n\n## Older\n- not this\n"
+    )
+    (tmp_path / "README.md").write_text(sample, encoding="utf-8")
+    subprocess.run(["bash", "-e", "-c", _notes_step()], cwd=tmp_path, check=True, capture_output=True)
+    notes = (tmp_path / "notes.md").read_text(encoding="utf-8")
+    assert notes.startswith(
+        "## What's new in 9.9.9\n- Bold item with code and a link wrapped on.\n- Second\n\n\n## Install\n"
+    )
+
+
 def test_a_strange_or_missing_download_changes_nothing(tmp_path: Path) -> None:
     root = installed(tmp_path / "NitroLearn", release_files("1.0.0"))
     before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}

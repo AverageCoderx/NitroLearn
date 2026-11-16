@@ -1021,6 +1021,115 @@ class SelfPlayConfig:
 
 
 @dataclass(frozen=True)
+class ExploitersConfig:
+    """Exploiters (the "main exploiters" of DeepMind's AlphaStar): now and then the bot pauses while a copy of
+    it trains to beat it; afterwards the bot plays a share of its games against those copies, to close the
+    holes they found."""
+
+    enabled: bool = setting(
+        False,
+        "Every every_steps the bot pauses and a copy of it trains against the bot as it was at the pause, "
+        "with the bot's own rewards, learning rates (unless policy_lr or value_lr below are set) and every "
+        "other setting; only the copy learns, so it learns to beat the bot (an exploiter). Its phase ends "
+        "once it clearly beats the bot (target_share) or at max_steps. Then the bot trains on, with a share "
+        "of its games against its newest exploiters, so it learns to stop what beat it. Not measured yet "
+        "(only full games could show it), so off until you try it.",
+    )
+    every_steps: int = setting(
+        5_000_000_000,
+        "The bot's agent steps from one exploiter phase to the next. The first phase comes at the first "
+        "multiple of this after switching it on (switched on at 7.3B with 5B: at 10B).",
+        minimum=1_000_000,
+    )
+    every_multiple: float = setting(
+        0.0,
+        "0 = phases every every_steps. Above 0: the next phase begins this many times the last exploiter's "
+        "own training steps after that exploiter's pause (5: one that took 300M is followed 1.5B later, one "
+        "that ran to max_steps 1B is followed 5B later), so the bot is paused about 1 / (1 + this) of the "
+        "time at most. every_steps still sets the first phase. 0, or 1 and above.",
+        minimum=0.0,
+    )
+    min_steps: int = setting(
+        200_000_000,
+        "The least an exploiter trains before its phase may end early, in agent steps counted as the bot's "
+        "are (every car in its games, the paused bot's too). The bot itself does not move meanwhile.",
+        minimum=1_000_000,
+    )
+    max_steps: int = setting(
+        1_500_000_000,
+        "The most an exploiter trains (agent steps, as min_steps). If it has not clearly beaten the bot by "
+        "then, it ends here, and is kept only with at least min_share of the recent goals.",
+        minimum=1_000_000,
+    )
+    target_share: float = setting(
+        0.6,
+        "The phase ends early (after min_steps) once the exploiter clearly takes this share of the goals "
+        "against the bot: the lower end of the 95% range of its share over its last window_games games "
+        "reaches it. 0.6 = about 3 goals for every 2 it concedes.",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    min_share: float = setting(
+        0.55,
+        "An exploiter still short of target_share at max_steps is kept only if its share of the goals over "
+        "its last window_games games is at least this; below it, it is discarded (it never plays against "
+        "the bot) and the bot carries on.",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    window_games: int = setting(
+        1000,
+        "How many of the exploiter's latest games against the bot (each goal ends one) its share is measured "
+        "over, for target_share and min_share. 1,000 games give a 95% range of about +-3 points.",
+        minimum=50,
+        maximum=100_000,
+    )
+    retire_share: float = setting(
+        0.0,
+        "0 = off: exploiters play until newer ones replace them (keep). Above 0: an exploiter retires (stops "
+        "playing against the bot) once the bot clearly takes this share of the goals against it: the lower "
+        "end of the 95% range of the bot's share over their last window_games games reaches it. Its games go "
+        "to the other exploiters (none left: back to the bot's usual games). 0, or 0.5 to 1.",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    share: float = setting(
+        0.15,
+        "Share of the bot's games against its exploiters once there are any: 0.15 = about one game in seven, "
+        "split evenly between them. Counts with selfplay.past_share (0.95 at most together).",
+        minimum=0.01,
+        maximum=0.9,
+    )
+    keep: int = setting(
+        3,
+        "How many of the newest exploiters stay as opponents (retired ones, see retire_share, not counted). "
+        "Older ones stop playing and their saves are deleted to free the disk (their policy, metrics and "
+        "report stay).",
+        minimum=1,
+        maximum=16,
+    )
+    reward: Literal["same", "goals"] = setting(
+        "same",
+        "What an exploiter is paid for: 'same' = the bot's own rewards; 'goals' = only goals scored and "
+        "conceded (its value network then starts afresh, since it predicts other rewards).",
+    )
+    policy_lr: float = setting(
+        0.0,
+        "The exploiter's policy learning rate; 0 = the bot's own (ppo.policy_lr). A faster rate than the "
+        "bot's lets the exploiter find the bot's holes sooner, though too fast a rate can make its learning "
+        "unsteady. Only the exploiter uses it; the bot keeps its own.",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    value_lr: float = setting(
+        0.0,
+        "The exploiter's value learning rate; 0 = the bot's own (ppo.value_lr). Only the exploiter uses it.",
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
+@dataclass(frozen=True)
 class StartFromConfig:
     """Transfer learning: a new run starts from another run's trained networks."""
 
@@ -1351,6 +1460,9 @@ class NitroConfig:
     model: ModelConfig = section(ModelConfig, "The size and shape of the networks.")
     ppo: PPOConfig = section(PPOConfig, "How the bot learns from the games it plays.")
     selfplay: SelfPlayConfig = section(SelfPlayConfig, "Playing against past versions of the bot.")
+    exploiters: ExploitersConfig = section(
+        ExploitersConfig, "Copies of the bot trained to beat it, then played against (off by default)."
+    )
     start_from: StartFromConfig = section(
         StartFromConfig, "Starting a new run from another run's trained networks (transfer learning)."
     )
@@ -1402,6 +1514,13 @@ class NitroConfig:
                 f"replay_mix.lr ({self.replay_mix.lr:g}) is not below ppo.policy_lr "
                 f"({self.ppo.policy_lr:g}): the copy steps are meant to nudge the trained policy, so their "
                 "rate is usually well below the training rate (3e-5 by default)."
+            )
+        x = self.exploiters
+        if x.enabled and x.every_multiple == 0 and x.max_steps >= x.every_steps:
+            notes.append(
+                f"exploiters.max_steps ({x.max_steps:,}) is not shorter than exploiters.every_steps "
+                f"({x.every_steps:,}): an exploiter that never clearly beats the bot keeps it paused half "
+                "its training time or more (the defaults: at most 1.5B every 5B)."
             )
         return notes
 
@@ -1455,6 +1574,54 @@ class NitroConfig:
                     "state_setters",
                     "cannot be used with several game sizes (env.team_sizes) yet: replay start states (a "
                     "replay state setter)",
+                )
+            )
+        return found
+
+    def _exploiter_problems(self) -> list[tuple[str, str]]:
+        """What [exploiters] needs."""
+        x = self.exploiters
+        if not x.enabled:
+            return []
+        found: list[tuple[str, str]] = []
+        if not self.env.opponents:
+            found.append(("exploiters.enabled", "needs an opposing team (env.opponents = true)"))
+        if x.min_steps > x.max_steps:
+            found.append(("exploiters.min_steps", f"is above exploiters.max_steps ({x.max_steps:,})"))
+        if 0 < x.every_multiple < 1:
+            found.append(
+                ("exploiters.every_multiple", "is below 1 (0 = off): the bot would pause more than it trains")
+            )
+        if x.min_share > x.target_share:
+            found.append(("exploiters.min_share", f"is above exploiters.target_share ({x.target_share:g})"))
+        if 0 < x.retire_share < 0.5:
+            found.append(
+                (
+                    "exploiters.retire_share",
+                    "is below 0.5 (0 = off): the bot would retire exploiters that still beat it; use 0.5 "
+                    "to 1",
+                )
+            )
+        # Each card lays out its own share of the arenas (run.cards), so the count is per card.
+        cards = max(1, self.run.cards)
+        games = round(self.env.num_arenas // cards * x.share)
+        needed = self.env.groups * x.keep
+        if games < needed:
+            where = f" on each of the {cards} cards (env.num_arenas / run.cards)" if cards > 1 else ""
+            found.append(
+                (
+                    "exploiters.share",
+                    f"gives {games} games to exploiters{where} but {needed} are needed (env.groups x "
+                    "exploiters.keep, so every exploiter plays in every group); raise share or "
+                    "env.num_arenas, or lower keep",
+                )
+            )
+        total = x.share + (self.selfplay.past_share if self.selfplay.enabled else 0.0)
+        if total > 0.95:  # the share alone is 0.9 at most
+            found.append(
+                (
+                    "exploiters.share",
+                    f"with selfplay.past_share they take {total:.0%} of the games (0.95 at most)",
                 )
             )
         return found
@@ -1548,6 +1715,7 @@ class NitroConfig:
         if self.selfplay.enabled and not self.env.opponents:
             found.append(("selfplay.enabled", "needs an opposing team (env.opponents = true)"))
         found += self._mixed_size_problems()
+        found += self._exploiter_problems()
         if self.selfplay.enabled:
             past = round(self.env.num_arenas * self.selfplay.past_share)
             needed = self.env.groups * self.selfplay.active_opponents

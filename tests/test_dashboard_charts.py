@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from browser import open_bot, open_chromium, playwright_or_skip
-from nitro import replay_mix
+from nitro import exploiter_folders, replay_mix
 from nitro.config.schema import PPOConfig
 from nitro.dashboard import bots, charts
 from nitro.dashboard.api import Api
@@ -71,6 +71,10 @@ def every_column() -> list[str]:
         *EVEN_START_COLUMNS,
         *(f"{name}_{label}" for label in ("kickoff", "random", "ball_touch") for name in SETTER_COLUMNS),
         *KICKOFF_COLUMNS,
+        # With exploiters: the bot's games against them (retire_share on), and an exploiter's against the bot.
+        "exploiter_games", "exploiter_goal_share", "exploiters_retired",
+        *exploiter_folders.score_columns(1), *exploiter_folders.score_columns(12),
+        "vs_main_games", "vs_main_goal_share", *exploiter_folders.RECENT_COLUMNS,
     ]  # fmt: skip
 
 
@@ -95,6 +99,9 @@ def test_every_column_training_writes_has_a_folder_and_a_new_one_lands_in_other(
     )
     assert by_id["goal_share_ball_touch"].title == "Ball touch starts: goals"
     assert by_id["grad_norm_shared"].title == "Gradient size: shared trunk"
+    assert by_id["exploiter_12_low"].title == "Exploiter 12: goal share, low end"
+    exploiter_columns = [c for c in columns if c.startswith(("exploiter", "vs_main"))]
+    assert {by_id[c].folder for c in exploiter_columns} == {"exploiters"}, "in their own folder"
     order = [c.folder for c in found]
     assert order == sorted(order, key=charts.FOLDER_IDS.index), "in the folders' order"
     for chart in found:

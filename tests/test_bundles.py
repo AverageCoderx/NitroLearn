@@ -278,7 +278,8 @@ def _release_folder(folder: Path, version: str) -> Path:
     wheel.write_bytes(b"core")
     programs = folder / f"nitrolearn-programs-{version}-{platform}.tar.gz"
     with tarfile.open(programs, "w:gz") as tar:
-        for name, data in (("nitro_bot", b"bot"), ("prebuilt.json", b"{}")):
+        programs_in = [("nitro_bot", b"bot"), ("nitro-replicar", b"conv"), ("replicar", b"conv")]
+        for name, data in (*programs_in, ("prebuilt.json", b"{}")):
             info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
@@ -491,3 +492,82 @@ def test_the_recordings_come_from_a_folder_of_the_release_files_first(
     assert [p.read_bytes() for p in paths] == list(files.values())
     assert fetched == [rec.URL + "rec_4.rlpr.zst"], "only the one the copy had wrong comes from RocketSim"
     assert sorted(p.name for p in folder.iterdir()) == sorted(files)
+
+
+@pytest.mark.skipif(steps.platform_tag() != "linux-x64", reason="the stand-in release is for Linux x86-64")
+def test_an_update_downloads_and_installs_only_what_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release's copy of the packages and its ready-made core are fingerprinted (their SHA-256, the
+    versions installed, the core placed): an install whose copy is the very same file skips downloading
+    and installing it, and running the installer again for the same version installs nothing again. A
+    changed copy, or a package no longer at its pinned version, is installed as before."""
+    root = tmp_path / "NitroLearn"
+    (root / "python" / "nitro").mkdir(parents=True)
+    served = tmp_path / "served"
+    _release_folder(served / "1.2.0", "1.2.0")
+    base = served.as_uri() + "/{version}/"
+    site = tmp_path / "site-packages"
+    recorder = Recorder(site)
+    versions = {"numpy": "2.4.6", "nitrolearn": "1.2.0"}
+    fetched: list[str] = []
+    real_fetch = steps.fetch
+
+    def fetch(url: str, attempts: int = 4) -> bytes:
+        fetched.append(url.rsplit("/", 1)[-1])
+        return bytes(real_fetch(url, attempts=1))
+
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv("CARGO_HOME", str(root / ".tools" / "cargo"))
+    monkeypatch.setattr(steps, "run", recorder)
+    monkeypatch.setattr(steps, "run_output", recorder.output)
+    monkeypatch.setattr(steps, "site_packages", lambda: site)
+    monkeypatch.setattr(
+        steps, "installed_version", lambda name: recorder.torch if name == "torch" else versions.get(name)
+    )
+    monkeypatch.setattr(steps, "core_matches_code", lambda: True)
+    monkeypatch.setattr(steps, "fetch", fetch)
+    args = steps.parse(["--uv", "uv", "--cpu"])
+    wheels_1 = bundles.wheels_asset("1.2.0", "linux-x64")
+
+    def install(version: str) -> list[list[str]]:
+        (root / "Cargo.toml").write_text(f'[workspace.package]\nversion = "{version}"\n', encoding="utf-8")
+        recorder.commands.clear()
+        fetched.clear()
+        steps.setup(args, root, base, lambda: None)
+        return [c for c in recorder.commands if c[1:3] == ["pip", "install"]]
+
+    first = install("1.2.0")
+    assert wheels_1 in fetched and any("--require-hashes" in c for c in first)
+    assert json.loads((root / steps.PACKAGES_RECORD).read_text(encoding="utf-8"))["pins"] == {
+        "numpy": "2.4.6"
+    }
+
+    # The installer again, same version: nothing downloaded or installed again but the list of files.
+    again = install("1.2.0")
+    assert fetched == ["SHA256SUMS.txt"] and again == [], again
+
+    # The next version, its copy of the packages the very same file: only its core and programs come.
+    folder = served / "1.3.0"
+    _release_folder(folder, "1.3.0")
+    (folder / bundles.wheels_asset("1.3.0", "linux-x64")).write_bytes(
+        (served / "1.2.0" / wheels_1).read_bytes()
+    )
+    sums = [
+        f"{_sha(p)}  {p.name}" for p in sorted(folder.iterdir()) if p.is_file() and p.name != "SHA256SUMS.txt"
+    ]
+    (folder / "SHA256SUMS.txt").write_text("\n".join(sums) + "\n", encoding="utf-8")
+    versions["nitrolearn"] = "1.2.0"  # until it is installed
+    update = install("1.3.0")
+    assert bundles.wheels_asset("1.3.0", "linux-x64") not in fetched
+    assert [c for c in update if "--require-hashes" in c] == []
+    core = [c for c in update if any(part.startswith("nitrolearn[") for part in c)]
+    assert len(core) == 1 and "--no-deps" in core[0] and "--no-index" not in core[0]
+
+    # A package no longer at its pinned version: the copy is installed again.
+    versions["numpy"] = "2.0.0"
+    versions["nitrolearn"] = "1.3.0"
+    repaired = install("1.3.0")
+    assert any("--require-hashes" in c for c in repaired)

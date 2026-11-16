@@ -50,12 +50,25 @@ function updateHTML() {
   }
   const later = r.installer === "later";
   const said = later ? `Updated the code from ${r.old} to ${r.new}. NitroLearn closes to finish the update: the installer runs in its own window, then the dashboard opens again.`
-    : `Updated from ${r.old} to ${r.new}. Restart the dashboard to use it.`;
-  const replaced = (r.replaced || []).length ? `<div class="upd-replaced"><b>Files of NitroLearn's that you had changed were replaced.</b> Your copies are kept in <span class="mono">${esc(r.backup)}</span>:<ul>${r.replaced.map(f => `<li class="mono">${esc(f)}</li>`).join("")}</ul></div>` : "";
+    : `Updated from ${r.old} to ${r.new}. ${restartsItself(r) ? "The dashboard opens again to use it." : "Restart the dashboard to use it."}`;
+  const replaced = replacedHTML(r);
   const removed = (r.removed || []).length ? `<details class="upd-removed" id="upd-removed"><summary><b>${r.removed.length} ${r.removed.length === 1 ? "file" : "files"} the new version no longer has ${r.removed.length === 1 ? "was" : "were"} removed</b> (NitroLearn's own, none of yours)</summary><ul>${r.removed.map(f => `<li class="mono">${esc(f)}</li>`).join("")}</ul></details>` : "";
   const button = u.manual ? `<span class="muted" id="upd-manual">${esc(u.manual)}</span>`
     : `<button type="button" class="btn primary" id="upd-restart" data-act="upd-restart" ${u.closing ? "disabled" : ""}>${u.closing ? "Closing…" : later ? "Close and finish" : "Restart"}</button>`;
-  return `<div class="banner" role="status" id="upd-said"><span class="tag good">Updated</span><span>${esc(said)}</span></div>${replaced}${removed}<div class="row"><span class="grow"></span>${button}</div>${consoleBox}`;
+  // The button comes before the lists, so it is in sight however long they are.
+  return `<div class="banner" role="status" id="upd-said"><span class="tag good">Updated</span><span>${esc(said)}</span></div><div class="row"><span class="grow"></span>${button}</div>${replaced}${removed}${consoleBox}`;
+}
+// Once the update is done the dashboard closes and opens again by itself (Windows: to run the installer; Linux:
+// the installer ran while it was open and may have removed packages it uses), unless files the user had
+// changed were replaced: their list stays on screen until they press the button.
+const restartsItself = r => (r.installer === "later" || r.installer === "done") && !(r.replaced || []).length;
+// The files the user had changed: how many, where their copies are, and the first few by name.
+const UPD_LISTED = 10;
+function replacedHTML(r) {
+  const files = r.replaced || [], n = files.length, more = n - UPD_LISTED;
+  if (!n) return "";
+  const names = files.slice(0, UPD_LISTED).map(f => `<li class="mono">${esc(f)}</li>`).join("") + (more > 0 ? `<li class="muted" id="upd-replaced-more">and ${more} more</li>` : "");
+  return `<div class="upd-replaced" id="upd-replaced"><b>${n} ${n === 1 ? "file" : "files"} of NitroLearn's that you had changed ${n === 1 ? "was" : "were"} replaced.</b> Your copies are kept in <span class="mono">${esc(r.backup)}</span>:<ul>${names}</ul></div>`;
 }
 function drawUpdate() {
   const box = $("#upd-box");
@@ -77,7 +90,7 @@ ACTIONS["upd-confirm"] = () => {
     : "NitroLearn's own files are replaced by the new version's, and files the new version no longer has are removed; nothing of yours is. A file of NitroLearn's that you changed is copied to .tmp/update/replaced first.";
   modal(`<h2 class="display">Update to NitroLearn ${esc(c.release.version)}?</h2>
     <div><b>Kept:</b> your bots, their settings, replays and saves, and every other file of yours in this folder.</div>
-    <div>${how} Then the installer runs again for the parts the new version needs (a few minutes, longer when PyTorch changes).${c.finish_on_close ? " To finish, NitroLearn closes and opens again." : ""}</div>
+    <div>${how} Then the installer runs again for the parts the new version needs (a few minutes, longer when PyTorch changes).${c.finish_on_close ? " To finish, NitroLearn closes and opens again." : " Afterwards the dashboard closes and opens again."}</div>
     <div class="muted" style="font-size:13px;">Training must be stopped first. Bots keep working: an update never breaks a bot.</div>
     <div class="foot"><button type="button" class="btn" data-close="1">Cancel</button><button type="button" class="btn primary" id="upd-go" data-act="upd-go">Update now</button></div>`);
 };
@@ -99,6 +112,9 @@ async function pollUpdate() {
     toast(out.state === "done" ? "NitroLearn is updated." : "The update stopped; App settings says why.", out.state !== "done");
   }
   drawUpdate();
+  const next = u.phase === "done" && $("#upd-restart");
+  if (next) next.scrollIntoView({ block: "nearest" });
+  if (u.phase === "done" && restartsItself(u.result)) ACTIONS["upd-restart"]();
 }
 // An update whose installer was still to run when the window closed (Windows) is offered again at start.
 async function askUnfinishedUpdate() {

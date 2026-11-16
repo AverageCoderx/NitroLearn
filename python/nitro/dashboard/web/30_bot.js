@@ -133,6 +133,7 @@ function headHTML(b) {
     ${b.start && !b.start.done && b.start.kind === "from" ? `<div class="muted" data-start-line style="font-size:13px;">${esc(b.start.line)}</div>` : ""}
     ${b.applying ? `<div class="banner">${esc(b.applying)}…</div>` : ""}
     ${b.restart_problem ? `<div class="banner">${esc(b.restart_problem)}.</div>` : ""}
+    ${b.exploiters ? `<div class="banner" data-exploiters><span>${esc(b.exploiters)}</span></div>` : ""}
     ${note ? `<div class="banner ${note.bad ? "bad" : "warn"}" role="status"><div class="grow">${esc(note.text)}</div><button type="button" class="btn small" data-tool="${esc(note.kind)}">${note.bad ? "See why" : "See the result"}</button><button type="button" class="btn small ghost" data-act="note-close">Close</button></div>` : ""}
     ${S.failed && S.failed.bot === b.name ? `<div class="banner bad" role="alert"><div class="grow"><b>${esc(S.failed.what)} did not work.</b> Its last lines:<pre>${esc(S.failed.why)}</pre></div><button type="button" class="btn small" data-act="failed-close">Close</button></div>` : ""}
     ${b.problem ? `<div class="banner bad"><pre>${esc(b.problem)}</pre><button type="button" class="btn small" data-act="open-settings">Open the settings file</button></div>` : ""}

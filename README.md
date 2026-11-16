@@ -40,6 +40,20 @@ use them to cheat online. See [LICENSE](LICENSE) and [BOTS-LICENSE.md](BOTS-LICE
 Questions, bugs, or a bot to share: NitroLearn is supported in the Vanta Discord server,
 <https://discord.gg/bYP3kYtryg>. The dashboard's **Help** page (in its top band) has the link too.
 
+## What's new in 1.0.3
+- **Exploiters (new, off by default):** every so often NitroLearn trains a separate bot whose only job is to
+  beat yours, then mixes games against it into your bot's training, so your bot learns to fix its weak spots.
+  Each exploiter stops being played once your bot clearly beats it (a share of goals you choose). See
+  "Training against its own exploiters" below and the Exploiters settings group.
+- **Updates clean up after themselves:** an update now removes what the new version no longer needs (old
+  packages, older Python copies, leftover downloads and caches), skips steps that are already done, and
+  finishes with one click. Your bots, saves, settings and replays, and Python packages you added yourself,
+  are never touched. (The update to 1.0.3 itself still runs the older version's updater, so it can still ask
+  for one more click and list files as changed; those are only backups. The new behaviour starts with the
+  next update.)
+- **Fixes:** updates no longer list every NitroLearn file as one you changed (from the next update on); the update notice shows plain
+  text; resuming a bot that trains against its past versions now carries on exactly as if it had not stopped.
+
 ## What's new in 1.0.2
 - **NitroLearn tells you when an update is out.** When the dashboard opens (at most once a day) it asks GitHub
   for the newest version; when there is one, the Garage says so, with what is new and an **Update now**
@@ -177,6 +191,14 @@ Everything of yours stays: your bots and their saves (`runs`), exported and pack
 version are removed; nothing of yours is. A file of NitroLearn's that you changed is replaced, but first
 copied to `.tmp\update\replaced\<old version>`. A folder made with `git clone` is moved to the release
 with git instead, and only while you have no changes to its code.
+
+An update from a version up to 1.0.2 installed with NitroLearn-Setup may list nearly all of NitroLearn's
+files as changed by you (only their line endings differ): the files listed are just backup copies, and if
+you never edited NitroLearn's own files you can ignore the list.
+
+Every update cleans up after itself: what the old version installed that the new one no longer needs (Python
+packages, an older Python, old downloads and caches) is removed, so you never have to uninstall first.
+Python packages you installed yourself stay.
 
 Installed with NitroLearn-Setup? Running a newer NitroLearn-Setup into the same folder updates it too.
 
@@ -552,8 +574,8 @@ ball_prediction = [0.5, 1, 2, 3]    # seconds ahead; each time adds 12 numbers t
 The prediction follows the ball alone (bounces off the floor, walls and ceiling included): it cannot know that
 a car is about to hit the ball. Each time is rounded to a whole decision, and `nitro check-settings` shows the
 rounded times. Choose it before the first start: it is fixed for a run, like the observation. It costs some
-training speed, as every game also works out the ball's path; how much, and whether it helps the bot learn,
-is not measured yet. Copying replays and replays in training work with it. An exported bot reads RLBot's own
+training speed, as every game also works out the ball's path (about 15% on one test PC); whether it helps the
+bot learn is not measured yet. Copying replays and replays in training work with it. An exported bot reads RLBot's own
 ball prediction at the same times; its README says how to let it predict the ball itself when RLBot sends
 none.
 
@@ -562,6 +584,41 @@ five is played against a saved earlier version of the bot (a copy joins the pool
 pool lives in `runs\my-first-bot\pool\`). The report then shows the bot's rating against its past
 selves and how even the matches are. It is off in the presets: only full games could show whether it helps.
 It is standard practice in self-play training.
+
+## Training against its own exploiters
+A bot that mostly plays itself can keep a weak spot nobody ever uses against it. Exploiters look for those
+spots (the idea is the "main exploiters" of DeepMind's AlphaStar). Switch it on in the dashboard's Settings
+tab (**Exploiters**), or in the settings file:
+```toml
+[exploiters]
+enabled = true
+every_steps = 5_000_000_000   # every 5 billion of the bot's steps...
+min_steps = 200_000_000       # ...a copy of it trains at least 200 million steps to beat it,
+max_steps = 1_500_000_000     # at most 1.5 billion,
+target_share = 0.6            # ending early once it clearly takes 60% of the goals against the bot
+min_share = 0.55              # (at max_steps it is kept with at least 55%, else discarded)
+window_games = 1000           # measured over its latest 1,000 games against the bot
+share = 0.15                  # then about one game in seven is against its newest exploiters
+keep = 3                      # the newest 3 keep playing, the share split between them
+```
+What happens: when the bot reaches the next multiple of `every_steps`, it saves and waits. A copy of it (an
+exploiter) then plays every game against the bot as it was at that save, and only the copy learns, so it
+learns whatever beats the bot. It keeps the bot's rewards, learning rates and every other setting; only its
+opponent differs. Its turn ends once it clearly beats the bot, or at `max_steps`. Then the bot carries on
+from its save, now with `share` of its games against its newest exploiters, so it learns to stop what beat
+it. While an exploiter trains, the bot itself does not learn.
+
+The console, the bot's report and its page in the dashboard say which phase it is in and how each exploiter
+did, for example "Exploiter 2 took 63% of the goals against the bot (59-67%) in its last 1,000 games". Each
+exploiter has a folder of its own, `runs\my-bot\exploiters\1\` and so on, with its own `metrics.csv` and
+`report.html`; the dashboard's charts have an **Exploiters** folder. Stopping (Stop, Ctrl+C or `--steps`)
+is safe at any time: it saves, and the next start carries on exactly where it was.
+
+A few more settings, each explained under **See more** in the Settings tab: `every_multiple` spaces the turns
+by how long the last exploiter took instead of every `every_steps`; `retire_share` stops the bot playing an
+exploiter it now clearly beats; `reward = "goals"` pays the exploiter for goals only; `policy_lr` and
+`value_lr` give the exploiter learning rates of its own. Off by default and not measured yet: only full games
+could show whether it makes a better bot. The presets carry the block, commented out.
 
 ## Starting from something you already have
 **Starting from a bot you already trained (transfer learning):** in the dashboard, **New bot from this one**

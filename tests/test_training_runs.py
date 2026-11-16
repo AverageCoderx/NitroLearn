@@ -17,7 +17,7 @@ import torch
 
 from nitro import training
 from nitro.config.loader import parse_toml
-from nitro.config.schema import NitroConfig, StartFromConfig
+from nitro.config.schema import NitroConfig, SelfPlayConfig, StartFromConfig
 from nitro.runs import RunFolder
 from nitro.surgery import widen_run, widened_config
 from nitro.training import (
@@ -149,6 +149,37 @@ def test_a_resumed_run_continues_exactly_as_if_it_never_stopped(
 
     assert rows(straight.folder) == rows(folder)
     assert set(KICKOFF_COLUMNS) <= set(rows(folder)[0]), "a kickoff setter is listed"
+
+
+def test_a_run_against_past_versions_resumes_exactly(tmp_path: Path) -> None:
+    """A resumed run builds its past versions' networks after restoring its random numbers; building them
+    draws none (before, on the CPU, the resumed run went on with other numbers than a straight run)."""
+    selfplay = SelfPlayConfig(enabled=True, past_share=0.5, active_opponents=2, snapshot_steps=320)
+    settings, file = dataclasses.replace(config("cpu"), selfplay=selfplay), tmp_path / "settings.toml"
+    file.write_text(SETTINGS, encoding="utf-8")
+    straight = TrainingRun(settings, RunFolder.create(tmp_path, "straight", file))
+    for _ in range(2):
+        straight.iteration()
+    straight.checkpoint()
+    assert straight.selfplay.active == [320, 640], "both past versions play"
+    for _ in range(2):
+        straight.iteration()
+    straight.metrics.close()
+    straight.selfplay.close()
+    folder = RunFolder.create(tmp_path, "stopped", file)
+    stopped = TrainingRun(settings, folder)
+    for _ in range(2):
+        stopped.iteration()
+    stopped.checkpoint(continue_after=False)
+    stopped.metrics.close()
+    stopped.selfplay.close()
+    resumed = TrainingRun(settings, folder, folder.load_latest())
+    for _ in range(2):
+        resumed.iteration()
+    resumed.metrics.close()
+    resumed.selfplay.close()
+    for name, weights in straight.model.state_dict().items():
+        assert torch.equal(weights, resumed.model.state_dict()[name]), f"{name} differs after resuming"
 
 
 def test_each_rewards_pay_is_logged_and_a_switched_off_reward_is_not(tmp_path: Path) -> None:

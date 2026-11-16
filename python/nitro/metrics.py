@@ -92,6 +92,20 @@ CHARTS: dict[str, tuple[str, str]] = {
         "Samples the learning steps run on",
         "share of all samples: the kept ones plus ppo.advantage_keep_rest's random share of the others",
     ),
+    "exploiter_goal_share": (
+        "Goals against its exploiters",
+        "share of the goals the bot scored in its games against its exploiters",
+    ),
+    "vs_main_goal_share": (
+        "Goals against the bot",
+        "share of the goals this exploiter scored against the frozen bot: how beatable the bot was",
+    ),
+    "vs_main_recent_share": (
+        "Recent goals against the bot",
+        "this exploiter's share of the goals in its last exploiters.window_games games against the frozen "
+        "bot; its phase ends early once the low end of its 95% range (vs_main_recent_low) reaches "
+        "exploiters.target_share",
+    ),
     "replay_mix_loss": ("Copying replays: loss", "the copy loss on converted replays (lower is closer)"),
     "replay_mix_agreement": (
         "Copying replays: agreement",

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from nitro import exploiter_folders as exploiters  # no PyTorch
 from nitro.config.loader import ConfigError
 from nitro.config.schema import NitroConfig, StartFromConfig
 from nitro.dashboard import livery
@@ -442,6 +443,25 @@ def _row(line: bytes) -> list[str]:
     return next(csv.reader([text]), [])
 
 
+def newest_rows(folder: RunFolder, rows: int) -> list[list[str]]:
+    """The newest `rows` rows of the bot's metrics file of the header's width, oldest first, read from its
+    end only (about `rows` times the newest row's length)."""
+    found = ends(folder)
+    if not found.last:
+        return []
+    size = min(found.end - found.start, (found.end - found.last_at) * rows * 5 // 4 + 64)
+    try:
+        with folder.metrics.open("rb") as handle:
+            data = _read_at(handle, found.end - size, size)
+    except OSError:
+        return [found.last]
+    lines = data.split(b"\n")[:-1]
+    if found.end - size > found.start:
+        lines = lines[1:]  # the read began inside a line
+    picked = [row for row in map(_row, lines) if len(row) == len(found.header)]
+    return picked[-rows:]
+
+
 def whole_rows(folder: RunFolder) -> list[list[str]]:
     """Every row of the bot's metrics file of the header's width, read whole (for a short file only)."""
     found = ends(folder)
@@ -800,6 +820,10 @@ def summary(folder: RunFolder) -> dict[str, Any]:
         "warmup": warmup(config, start, agent_steps) if own else None,
         "parameters": network_size(folder) if saves else None,
         "livery": livery.read(folder.root),  # its race number and colours: {number, main, contrast, ink}
+        # Which exploiter phase it is in; empty with exploiters off.
+        "exploiters": exploiter_line(folder.root, config, int(saves[-1].name) if saves else 0)
+        if config
+        else "",
     }
     if state:
         out["running_since"] = state.get("started", 0)
@@ -856,3 +880,81 @@ def wandb_url(folder: RunFolder) -> str:
         return ""
     url = note.get("url", "")
     return url if isinstance(url, str) and url.startswith("https://") else ""
+
+
+def _goal_share(folder: RunFolder, column: str, rows: int = 100) -> float | None:
+    """The share of the goals the training side scored in its last `rows` iterations' games against `column`
+    ("exploiter" or "vs_main"), or None without any."""
+    header = ends(folder).header
+    names = (f"{column}_games", f"{column}_goal_share")
+    places = [header.index(c) if c in header else -1 for c in names]
+    if min(places) < 0:
+        return None
+    games = wins = 0.0
+    for row in newest_rows(folder, rows):
+        n, share = (number(row[i]) for i in places)
+        if n and share is not None:
+            games, wins = games + n, wins + n * share
+    return wins / games if games else None
+
+
+def exploiter_line(bot: Path, config: NitroConfig, saved_steps: int) -> str:
+    """Which exploiter phase the bot (run folder `bot`, newest save at `saved_steps`) is in, for its page;
+    empty with exploiters off."""
+    x = config.exploiters
+    if not x.enabled:
+        return ""
+    try:
+        current = exploiters.pending(bot, saved_steps)
+    except exploiters.ExploiterError as err:
+        return f"Exploiters: {err}."
+    if current is not None:
+        row = newest(current.folder)
+        done = max(0, int(row.get("agent_steps", current.paused_at)) - current.paused_at)
+        games, share, low, high = (row.get(c) for c in exploiters.RECENT_COLUMNS)
+        scores = (
+            f"; it takes {share:.0%} of the goals against the bot in its last {games:,.0f} games "
+            f"({low:.0%}-{high:.0%}) and stops early at {x.target_share:.0%}"
+            if games and share is not None and low is not None and high is not None
+            else ""
+        )
+        return (
+            f"Exploiter phase: exploiter {current.number} is learning to beat the bot as it was at "
+            f"{_short(current.paused_at)} steps ({_short(done)} steps done, at least {_short(x.min_steps)}, "
+            f"at most {_short(x.max_steps)}{scores}). The bot itself waits till then."
+        )
+    retiring = x.retire_share > 0
+    try:
+        playing = exploiters.playing(bot, saved_steps, x.keep, retiring)
+        finished = [e for e in exploiters.exploiters(bot) if e.finished and e.paused_at <= saved_steps]
+    except exploiters.ExploiterError as err:
+        return f"Exploiters: {err}."
+    at = exploiters.read_next(bot)
+    last = f" Last: {exploiters.result_text(finished[-1])}." if finished else ""
+    stand = _standings(bot, finished, playing, saved_steps) if retiring else ""
+    if not playing:
+        phase = "the first phase" if not finished else "the next phase"
+        when = f"begins at {_short(at)} steps" if at is not None else "is set when the bot next starts"
+        none = "none yet" if not finished else "none playing"
+        return f"Exploiters: {none}; {phase} {when}.{last}{stand}"
+    share = _goal_share(RunFolder(bot), exploiters.MAIN_COLUMN)
+    scores = f" (lately it scores {share:.0%} of the goals against them)" if share is not None else ""
+    when = f" The next exploiter phase begins at {_short(at)} steps." if at is not None else ""
+    who = "its exploiter plays" if len(playing) == 1 else f"its newest {len(playing)} exploiters play"
+    return f"Main phase: {who} {x.share:.0%} of its games{scores}.{when}{last}{stand}"
+
+
+def _standings(
+    bot: Path, finished: list[exploiters.Exploiter], playing: list[exploiters.Exploiter], saved_steps: int
+) -> str:
+    """With exploiters.retire_share: each exploiter that plays, with the bot's share against it in the newest
+    metrics row, and the newest 3 retired."""
+    row = newest(RunFolder(bot))
+    lines = []
+    for e in playing:
+        games, share, low = (row.get(c) for c in exploiters.score_columns(e.number))
+        recent = (int(games), share, low) if games and share is not None and low is not None else None
+        lines.append(exploiters.standing_text(e, True, recent))
+    gone = [e for e in finished if e.plays and e.retired_by(saved_steps)]
+    lines += [exploiters.standing_text(e, False) for e in gone[-3:]]
+    return "".join(f" {line}." for line in lines)

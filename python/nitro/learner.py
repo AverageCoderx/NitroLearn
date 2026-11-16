@@ -889,6 +889,35 @@ class Learner:
         log.info("The twin critics (vdag1, vdag2) start again from fresh weights at %d steps.", agent_steps)
         return True
 
+    def restart_critic(self, seed: int) -> None:
+        """The value network starts afresh for other rewards (an exploiter paid for goals only): its weights
+        drawn as a new network's from `seed` (not the run's random numbers), its optimizer state dropped,
+        and the value and reward scaling started anew. The policy, any shared trunk and their optimizer state
+        are kept."""
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(seed)
+            fresh = self.model.fresh_copy().state_dict()
+        own = self.model.state_dict()
+        with torch.no_grad():
+            for key, value in fresh.items():
+                if key.startswith(("value.", "value_heads.")):
+                    own[key].copy_(value)
+        for parameter in self.groups["value"]:
+            self.optimizer.state.pop(parameter, None)
+        moments = self.reward_scaler.moments
+        self.reward_scaler.load_state_dict(
+            {name: torch.zeros_like(getattr(moments, name)) for name in ("count", "mean", "m2")}
+        )
+        if isinstance(self.value_norm, PopArt):
+            norm = self.value_norm
+            norm.load_state_dict(
+                {
+                    "mean": torch.zeros_like(norm.mean),
+                    "mean_sq": torch.ones_like(norm.mean_sq),
+                    "initialised": torch.tensor(False),
+                }
+            )
+
     def _pieces(self, flat: torch.Tensor) -> dict[int, torch.Tensor]:
         """`flat` (a number per parameter value, in `model.parameters()` order) cut into each parameter's
         piece, by the parameter's id."""

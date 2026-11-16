@@ -141,6 +141,34 @@ pool_size = 64              # Past versions kept (and at most pool_disk_mb of di
 matchmaking = "variance"    # "variance" = even matches, "uniform" = any, "hardest" = the ones it loses to;
                             # "squared" and "linear_capped" lean harder on them.
 
+# Exploiters (the "main exploiters" of DeepMind's AlphaStar). Now and then the bot saves and pauses, and a
+# copy of it trains against the bot as it was, frozen: only the copy learns, so it learns to beat the bot
+# (an exploiter); it keeps the bot's rewards, learning rates and every other setting. Then the bot carries on,
+# with a share of its games against its newest exploiters, to close the holes they found. Works with
+# self-play on or off. Each exploiter's numbers are in the bot's folder under exploiters (vs_main_goal_share:
+# how often it scored against the bot). Off here because only full games could show whether it helps. To try
+# it, remove the # in front of these lines.
+# [exploiters]
+# enabled = true
+# every_steps = 5_000_000_000 # A phase every 5B of the bot's agent steps (the first at the next 5B).
+# every_multiple = 0          # Above 0: the next phase comes this many times the last one's steps later.
+# min_steps = 200_000_000     # Each exploiter trains at least this long (the bot itself waits meanwhile)...
+# max_steps = 1_500_000_000   # ...and at most this long.
+# target_share = 0.6          # Its phase ends early once it clearly takes 60% of the goals against the bot
+                              # (the low end of the 95% range over its last window_games games).
+# min_share = 0.55            # Still short of that at max_steps: kept with at least 55%, else discarded
+                              # (a discarded exploiter never plays against the bot).
+# window_games = 1000         # Its latest games against the bot that its share is measured over.
+# retire_share = 0            # Above 0 (0.5 to 1): an exploiter retires once the bot clearly takes this share
+                              # of the goals against it; its games go to the other exploiters.
+# share = 0.15                # Then about one game in seven is against its exploiters (counted with
+                              # selfplay.past_share: 0.95 at most together).
+# keep = 3                    # Its newest 3 exploiters keep playing, the share split between them;
+                              # older ones' saves are deleted (their policy and charts stay).
+# reward = "same"             # "same" = the bot's own rewards; "goals" = only goals scored and conceded.
+# policy_lr = 0               # 0 = the bot's own learning rate; e.g. 2e-4 for a faster exploiter.
+# value_lr = 0                # Likewise for the value network.
+
 # Copy the players in your own Rocket League replays before training: uncomment these lines
 # and start a new run as usual. The run converts the replays of its team size (the first time only; converting
 # takes a while, kept in the project's replays folder), learns to choose as the players did, saves that copy

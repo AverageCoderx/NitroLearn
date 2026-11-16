@@ -279,6 +279,51 @@ def test_the_licence_page_puts_fair_play_and_the_short_terms_first(tmp_path: Pat
     assert "**" not in rtf and "](" not in rtf
 
 
+def test_the_setups_files_have_the_line_endings_of_the_releases_source_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Git set up as on a Windows machine (CRLF everywhere) still gives the files as GitHub's source archive
+    of the release has them, which an update compares the folder with: LF, CRLF only where .gitattributes
+    asks for it (*.cmd, *.ps1), and binary files as they are."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitattributes").write_bytes((PROJECT / ".gitattributes").read_bytes())
+    files = {
+        "README.md": b"# NitroLearn\nline two\n",
+        "python/nitro/a.py": b"A = 1\n",
+        "install.sh": b"#!/bin/bash\necho hi\n",
+        "Install NitroLearn.cmd": b"@echo off\r\nexit /b 0\r\n",
+        "install.ps1": b"Write-Host hi\r\n",
+        "docs/plate.png": b"\x89PNG\r\n\x1a\n\0\0data\n",
+    }
+    for name, data in files.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_bytes(data)
+    git = [
+        "git",
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "core.autocrlf=false",
+    ]
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "files"]):
+        subprocess.run([*git, *args], cwd=repo, check=True, capture_output=True)
+    windows = {"core.autocrlf": "true", "core.eol": "crlf"}
+    monkeypatch.setenv("GIT_CONFIG_COUNT", str(len(windows)))
+    for i, (key, value) in enumerate(windows.items()):
+        monkeypatch.setenv(f"GIT_CONFIG_KEY_{i}", key)
+        monkeypatch.setenv(f"GIT_CONFIG_VALUE_{i}", value)
+    plain = subprocess.run(
+        ["git", "archive", "--format=tar", "HEAD", "README.md"], cwd=repo, capture_output=True
+    )
+    assert b"NitroLearn\r\n" in plain.stdout, "git set up as on Windows"
+    wizard.app_tree(tmp_path / "app", repo)
+    for name, data in files.items():
+        assert (tmp_path / "app" / name).read_bytes() == data, name
+
+
 def test_uv_comes_from_its_pinned_wheel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wheel = tmp_path / "uv.whl"
     with zipfile.ZipFile(wheel, "w") as out:

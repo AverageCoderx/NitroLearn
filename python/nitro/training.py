@@ -22,6 +22,8 @@ from nitro import (
     __version__,
     cards_run,
     console,
+    exploiter_folders,
+    exploiters,
     fp16_sums,
     multigpu,
     pretrain,
@@ -48,7 +50,7 @@ from nitro.runs import (
     numbered,
     setting_changes,
 )
-from nitro.selfplay import SelfPlay
+from nitro.selfplay import Frozen, SelfPlay
 from nitro.trainer import Envs, StageTimes, Trainer, release_memory
 
 log = logging.getLogger("nitro")
@@ -238,11 +240,13 @@ def build(
     state: dict[str, Any] | None = None,
     pool_folder: Path | None = None,
     start: transfer.Source | None = None,
+    frozen: Frozen | None = None,
 ) -> TrainingSetup:
     """A ready-to-train setup; from `state` (a checkpoint) it continues exactly where that left off.
 
     Self-play against past versions needs `pool_folder` (the run's `pool/`); without one it stays off. A new
-    run (no `state`) starts from `start`'s networks when given (transfer learning).
+    run (no `state`) starts from `start`'s networks when given (transfer learning). `frozen`: frozen networks
+    with games of their own (exploiters).
     """
     device = resolve_device(config.run)
     fp16 = config.run.precision == "fp16" and device.type == "cuda"
@@ -295,6 +299,7 @@ def build(
         envs.num_groups,
         [size * sides for size in envs.arena_team_sizes],
         [tensors.reward.numel() for tensors in envs.groups],
+        frozen,
     )
     trainer = Trainer(
         games,
@@ -305,7 +310,7 @@ def build(
         fp16,
         cuda_graphs=device.type == "cuda",
         on_problem=config.run.on_training_problem,
-        selfplay=selfplay if selfplay.enabled else None,
+        selfplay=selfplay if selfplay.in_use else None,
         pipelined=config.env.pipelined_inference,
         concurrent=config.env.concurrent_passes,
         card_starts=config.env.card_starts_games,
@@ -507,7 +512,9 @@ class TrainingRun:
             log.warning(
                 "pretrain.value_warmup_steps acts only with pretrain.enabled = true; it does nothing here."
             )
-        setup = build(config, state, folder.root / "pool", source)
+        steps = state["agent_steps"] if state else 0
+        frozen = exploiters.frozen_for(config, folder.root, steps)
+        setup = build(config, state, folder.root / "pool", source, frozen)
         self.trainer = setup.trainer
         self.envs = setup.envs
         self.model = setup.model
@@ -525,6 +532,15 @@ class TrainingRun:
         self.agent_steps = state["agent_steps"] if state else 0
         self.iterations = state["iterations"] if state else 0
         self.trainer.iterations = self.iterations  # train.log numbers iterations as metrics.csv does
+        # The agent step the bot's next exploiter phase begins at (None: off, or an exploiter's run).
+        self.exploiter_next = exploiters.next_phase(config, state, self.agent_steps, folder.root)
+        if self.exploiter_next is not None:
+            exploiter_folders.write_next(folder.root, self.exploiter_next)
+        # An exploiter's run: its recent games against the bot, which end its phase.
+        self.exploiter_tally = exploiters.tally_for(config, folder.root, state)
+        # The bot's recent games against each exploiter it plays, which retire it (retire_share).
+        self.exploiter_scores = exploiters.scores_for(config, folder.root, state, self.selfplay.frozen)
+        self.exploiters_retired = exploiters.retired_count(config, folder.root, self.agent_steps)
         if state and "selfplay" in state:
             self.selfplay.load_state_dict(state["selfplay"])  # ratings, games and the pool as they were
             self.selfplay.truncate_log(self.agent_steps)  # games recorded after the save are replayed
@@ -583,6 +599,7 @@ class TrainingRun:
             *(MIX_COLUMNS if self.replay_mix is not None else []),
             *(MIX_KICKOFF_COLUMNS if self.replay_mix is not None and self.replay_mix.kickoff_only else []),
             *(SELFPLAY_COLUMNS if self.selfplay.enabled else []),
+            *exploiters.columns(config, folder.root, self.selfplay.frozen),
             *(EVEN_START_COLUMNS if self.even_starts is not None else []),
             *(f"{name}_{label}" for label in setter_labels(config) for name in SETTER_COLUMNS),
             *(KICKOFF_COLUMNS if kickoff_columns_on(config) else []),
@@ -610,7 +627,12 @@ class TrainingRun:
                 for settings in (state["all_settings"], all_settings(self.written, folder.root))
             )
             moved = "unpacked" in json.loads(folder.info.read_text(encoding="utf-8"))
-            for key, before, after in setting_changes(saved, now, moved):
+            # A setting newer than the save, left at its default, changes nothing the save knew.
+            defaults = all_settings(NitroConfig(), folder.root)
+            newer = {k for k in now.keys() - saved.keys() if now[k] == defaults.get(k)}
+            for key, before, after in setting_changes(
+                saved, {k: v for k, v in now.items() if k not in newer}, moved
+            ):
                 if applied:
                     _shown(f"Applied: {key} changed from {before} to {after}.")
                 else:
@@ -761,6 +783,20 @@ class TrainingRun:
             row["start_edge"] = start_edge(
                 matches, self.selfplay.slot_of_arena, self.selfplay.active, self.even_starts
             )
+        if self.exploiter_tally is not None:
+            self.exploiter_tally.add(scored for _, scored in self.selfplay.take_frozen_results())
+            row |= self.exploiter_tally.columns()
+        if self.exploiter_scores is not None:
+            frozen = self.selfplay.frozen
+            assert frozen is not None
+            self.exploiter_scores.add(
+                (frozen.numbers[slot], s) for slot, s in self.selfplay.take_frozen_results()
+            )
+            row |= self.exploiter_scores.columns()
+        if self.exploiters_retired is not None:  # counted with this iteration's retirements
+            beaten = len(self.exploiter_scores.beaten()) if self.exploiter_scores is not None else 0
+            row[exploiter_folders.RETIRED_COLUMN] = self.exploiters_retired + beaten
+        row |= self.selfplay.frozen_metrics()  # exploiters' games, or an exploiter's against the bot
         # Agent steps since the last row over the wall clock: all of the time between iterations counted too.
         now = time.perf_counter()
         row["wall_steps_per_second"] = ""
@@ -847,6 +883,13 @@ class TrainingRun:
             "started_from": self.started_from,
             "started_from_replays": self.from_replays,
         }
+        if self.exploiter_next is not None:  # when the next exploiter phase begins
+            every = self.config.exploiters.every_steps
+            state[exploiter_folders.SAVED] = {"next_at": self.exploiter_next, "every": every}
+        if self.exploiter_tally is not None:
+            state[exploiter_folders.TALLY] = self.exploiter_tally.state_dict()
+        if self.exploiter_scores is not None:
+            state[exploiter_folders.SCORES] = self.exploiter_scores.state_dict()
         mix = self.replay_mix.state_dict() if self.replay_mix is not None else self.replay_mix_state
         if mix is not None:
             state["replay_mix"] = mix  # the copy steps' optimizer and place in the replays
@@ -885,10 +928,22 @@ class TrainingRun:
                 else []
             ),
             *(f"When resumed: {note}" for note in self.missing_notes),  # what the save expected
+            *([f"Phase: {phase}"] if (phase := exploiters.phase_text(self)) else []),
+            *exploiters.results(self),
             "Every save restarts all games from a kickoff (so a resumed run continues exactly), which shows "
             "as a small blip in some charts at each save.",
         ]
         self.metrics.write_report(self.folder.report, self.folder.root.name, notes, self.recent_warnings)
+
+    @property
+    def exploiter_due(self) -> bool:
+        """Whether the bot has reached its next exploiter phase or clearly beats an exploiter it plays, or an
+        exploiter's phase is over: it saves and stops."""
+        if self.exploiter_tally is not None:
+            return self.exploiter_tally.done(self.agent_steps)
+        if self.exploiter_scores is not None and self.exploiter_scores.beaten():
+            return True
+        return self.exploiter_next is not None and self.agent_steps >= self.exploiter_next
 
     def _save_due(self, since_save: float) -> bool:
         """Every run.checkpoint_steps agent steps when set (a save whenever a multiple is passed), else
@@ -909,9 +964,11 @@ class TrainingRun:
     def _console(self, rows: list[dict[str, Any]], speed: float, running: float, since_save: float) -> str:
         """The console's line or report (run.console) for the iterations since the last one."""
         row = rows[-1]
+        phase = exploiters.phase_text(self)
         if self.config.run.console == "line":
             return (
-                f"{self.agent_steps / 1e6:,.1f}M steps | {speed:,.0f} steps/s | "
+                (f"{phase[0].upper()}{phase[1:]} | " if phase else "")
+                + f"{self.agent_steps / 1e6:,.1f}M steps | {speed:,.0f} steps/s | "
                 f"reward per step {row['reward_per_step']:.4f} | entropy {row['entropy']:.2f} | "
                 f"value prediction {row['explained_variance']:.2f}"
             )
@@ -927,6 +984,7 @@ class TrainingRun:
             transfer=bool(self.started_from) and not self.from_replays,
             next_save=self._next_save(since_save),
             warnings=self.console_warnings,
+            phase=phase,
         )
         return "\n".join(console.iteration_report(console.averaged(rows), facts))
 
@@ -943,7 +1001,11 @@ class TrainingRun:
             self.setter_labels,
         )
         try:
-            while not stop.is_set() and (until_steps is None or self.agent_steps < until_steps):
+            while (
+                not stop.is_set()
+                and (until_steps is None or self.agent_steps < until_steps)
+                and not self.exploiter_due  # it saves and stops for a phase, a phase's end or a retirement
+            ):
                 row = self.iteration()
                 tracker.log(row)
                 since_print.append(row)

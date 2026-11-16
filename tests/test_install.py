@@ -1793,3 +1793,312 @@ def test_the_setup_wizard_shows_the_notes_and_names_a_card_without_a_driver() ->
     assert "RedirectStandardError = $true" in ps1 and 'Fail "$What failed: $reason. $hint"' in ps1
     assert "see above" not in ps1
     assert "'cu128'" not in ps1 and "'cu132'" in ps1
+
+
+def _package(site: Path, name: str, version: str, requires: tuple[str, ...] = ()) -> None:
+    info = site / f"{name}-{version}.dist-info"
+    info.mkdir(parents=True)
+    lines = [f"Name: {name}", f"Version: {version}", *(f"Requires-Dist: {line}" for line in requires)]
+    (info / "METADATA").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (info / "INSTALLER").write_text("uv\n", encoding="utf-8")
+
+
+def test_every_install_tidies_up_what_an_older_version_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The installer's last step before its check (so on every way to a newer version): the packages
+    the installer put there that nothing needs any more leave .venv with `uv pip uninstall`, the
+    installer's leftovers go, the user's folders and packages stay, and it says so in one line."""
+    root = _project(tmp_path)
+    site = root / ".venv" / "site-packages"
+    _package(site, "nitrolearn", "1.2.0", ("torch>=2.8", "numpy>=2"))
+    _package(site, "torch", "2.14.1+cpu", ("filelock",))
+    for name in ("numpy", "filelock", "pip", "maturin"):
+        _package(site, name, "1.0")
+    _package(site, "old_helper", "0.1")  # an older version's: its record names it
+    _package(site, "rich", "14.0")  # the user's, installed with uv
+    record = root / ".tools" / "installed-packages.json"
+    record.parent.mkdir(parents=True)
+    record.write_text('["old-helper", "nitrolearn"]', encoding="utf-8")
+    (root / ".cache" / "pip").mkdir(parents=True)
+    (root / ".cache" / "pip" / "old.whl").write_bytes(b"x")
+    (root / "runs" / "bot").mkdir(parents=True)
+    (root / "runs" / "bot" / "save.pt").write_bytes(b"mine")
+    monkeypatch.setattr(steps, "site_packages", lambda: site)
+    monkeypatch.setattr(steps, "own_venv", lambda folder: folder == root)
+    _, recorder = _setup_with(root, monkeypatch, [""])
+    uninstall = [c for c in recorder.commands if c[1:3] == ["pip", "uninstall"]]
+    assert uninstall == [["uv", "pip", "uninstall", "--python", sys.executable, "old_helper"]]
+    assert recorder.commands.index(uninstall[0]) < recorder.commands.index(
+        [sys.executable, "-m", "nitro", "doctor"]
+    )
+    said = capsys.readouterr().out
+    assert (
+        "==> Tidying up what an older version left" in said and "Not removed: packages still in .venv" in said
+    )
+    assert (
+        not (root / ".cache" / "pip").exists() and (root / "runs" / "bot" / "save.pt").read_bytes() == b"mine"
+    )
+    kept = set(json.loads(record.read_text(encoding="utf-8")))
+    assert {"nitrolearn", "torch", "numpy", "filelock", "maturin"} <= kept and "rich" not in kept
+    assert "old-helper" in kept, "uv did not remove it (a stand-in): the next install tries again"
+
+
+def test_an_older_folder_gets_its_record_before_anything_is_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A folder an older installer set up keeps no record: one is made from what its NitroLearn requires
+    before the install changes anything, so a package outside it (the user's) is never removed."""
+    root = _project(tmp_path)
+    site = root / ".venv" / "site-packages"
+    _package(site, "nitrolearn", "1.0.2", ("torch>=2.8", "numpy>=2", "old_helper"))
+    _package(site, "torch", "2.14.1+cpu", ("filelock",))
+    for name in ("numpy", "filelock", "pip", "maturin", "old_helper", "rich"):
+        _package(site, name, "1.0")
+    monkeypatch.setattr(steps, "site_packages", lambda: site)
+    monkeypatch.setattr(steps, "own_venv", lambda folder: folder == root)
+    record = root / ".tools" / "installed-packages.json"
+
+    def installed(uv: Path, variant: str) -> None:
+        """Once the newer version is installed: its NitroLearn no longer requires old_helper."""
+        assert "old-helper" in json.loads(record.read_text(encoding="utf-8")), "made before the install"
+        shutil.rmtree(site / "nitrolearn-1.0.2.dist-info")
+        _package(site, "nitrolearn", "1.2.0", ("torch>=2.8", "numpy>=2"))
+
+    monkeypatch.setattr(steps, "keep_torch", installed)
+    _, recorder = _setup_with(root, monkeypatch, [""])
+    uninstall = [c for c in recorder.commands if c[1:3] == ["pip", "uninstall"]]
+    assert uninstall == [["uv", "pip", "uninstall", "--python", sys.executable, "old_helper"]]
+    assert "Kept, installed by hand (not by the installer): rich." in capsys.readouterr().out
+
+
+def test_a_package_the_release_copy_pins_stays_when_that_copy_is_installed_already(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release's copy of the packages unchanged (not unpacked again): the packages it pins, as last
+    recorded, are still this version's, even one nothing requires."""
+    root = _project(tmp_path)
+    site = root / ".venv" / "site-packages"
+    _package(site, "nitrolearn", "1.2.0", ("numpy>=2",))
+    for name in ("numpy", "tqdm", "old_helper"):
+        _package(site, name, "1.0")
+    (root / ".tools").mkdir()
+    (root / ".tools" / "installed-packages.json").write_text('["tqdm", "old-helper"]', encoding="utf-8")
+    pins = {"numpy": "1.0", "tqdm": "1.0"}
+    (root / steps.PACKAGES_RECORD).write_text(json.dumps({"sha256": "a", "pins": pins}), encoding="utf-8")
+    monkeypatch.setattr(steps, "site_packages", lambda: site)
+    monkeypatch.setattr(steps, "own_venv", lambda folder: folder == root)
+    monkeypatch.setattr(steps, "wheels_in_place", lambda folder, release: True)
+    monkeypatch.setattr(steps, "unpack_wheels", lambda *a: pytest.fail("the copy is installed already"))
+    _, recorder = _setup_with(root, monkeypatch, [""])
+    uninstall = [c for c in recorder.commands if c[1:3] == ["pip", "uninstall"]]
+    assert uninstall == [["uv", "pip", "uninstall", "--python", sys.executable, "old_helper"]]
+
+
+def test_the_record_is_made_when_the_install_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _project(tmp_path)
+    site = root / ".venv" / "site-packages"
+    _package(site, "nitrolearn", "1.0.2", ("numpy>=2",))
+    for name in ("numpy", "rich"):
+        _package(site, name, "1.0")
+    monkeypatch.setattr(steps, "site_packages", lambda: site)
+    steps.seed_package_record(root)
+    assert not (root / ".tools" / "installed-packages.json").exists(), "only the folder's own .venv"
+    monkeypatch.setattr(steps, "own_venv", lambda folder: folder == root)
+    steps.seed_package_record(root)
+    record = json.loads((root / ".tools" / "installed-packages.json").read_text(encoding="utf-8"))
+    assert record == ["nitrolearn", "numpy"]
+
+
+def test_a_tidy_that_removed_packages_says_to_restart_the_dashboard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """install.sh runs while the dashboard may be open: once packages were removed, it says to restart it."""
+    root = _project(tmp_path)
+    site = root / ".venv" / "site-packages"
+    _package(site, "nitrolearn", "1.2.0", ("numpy>=2",))
+    for name in ("numpy", "old_helper"):
+        _package(site, name, "1.0")
+    (root / ".tools").mkdir()
+    (root / ".tools" / "installed-packages.json").write_text('["old-helper"]', encoding="utf-8")
+    monkeypatch.setattr(steps, "site_packages", lambda: site)
+    monkeypatch.setattr(steps, "own_venv", lambda folder: folder == root)
+
+    def uv(command: Any, check: bool = True, **_: Any) -> int:
+        if command[1:3] == ["pip", "uninstall"]:
+            for name in command[5:]:
+                shutil.rmtree(site / f"{name}-1.0.dist-info")
+        return 0
+
+    monkeypatch.setattr(steps, "run", uv)
+    restart = "Packages were removed: if NitroLearn's dashboard is open, close it and open it again."
+    steps.tidy_up(Path("uv"), root, {"nitrolearn": []}, {})
+    said = capsys.readouterr().out
+    assert "1 package (old_helper)" in said and (restart in said) == (not steps.WINDOWS)
+    steps.tidy_up(Path("uv"), root, {"nitrolearn": []}, {})
+    assert restart not in capsys.readouterr().out, "nothing removed: nothing to restart for"
+
+
+def test_a_tidy_that_fails_never_stops_the_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def broken() -> Any:
+        raise RuntimeError("a stand-in failure")
+
+    monkeypatch.setattr(steps, "tidy_module", broken)
+    done, recorder = _setup_with(_project(tmp_path), monkeypatch, [""])
+    assert done.code == 0 and [sys.executable, "-m", "nitro", "doctor"] in recorder.commands
+    assert "Tidying up stopped early (a stand-in failure). NitroLearn is installed" in capsys.readouterr().out
+
+
+def test_the_packages_this_version_installs_are_what_the_tidy_keeps(tmp_path: Path) -> None:
+    wanted = steps.wanted_packages("wandb,replays,dashboard", None)
+    assert wanted["nitrolearn"] == ["wandb", "replays", "dashboard"]
+    assert wanted["torch"] == [] and wanted["maturin"] == []
+    assert ("pywebview" in wanted) == sys.platform.startswith("linux")
+    (tmp_path / "requirements.txt").write_text(
+        "numpy==2.4.6 --hash=sha256:aa\nPy-Socks==1.7 --hash=sha256:bb\n", encoding="utf-8"
+    )
+    assert {"numpy", "Py-Socks"} <= set(steps.wanted_packages("dev", tmp_path))
+    # The release's copy installed already (not unpacked this time): its pins as last recorded.
+    assert steps.recorded_pins(tmp_path) == []
+    (tmp_path / ".tools").mkdir()
+    (tmp_path / steps.PACKAGES_RECORD).write_text(
+        json.dumps({"sha256": "a", "pins": {"tqdm": "4.67"}}), "utf-8"
+    )
+    assert steps.recorded_pins(tmp_path) == ["tqdm"]
+    assert "tqdm" in steps.wanted_packages(steps.EXTRAS, None, steps.recorded_pins(tmp_path))
+    # Only the folder's own .venv is ever tidied: never the Python that runs these tests.
+    assert not steps.own_venv(tmp_path) and steps.package_versions(tmp_path) == {}
+
+
+def test_the_ready_made_core_is_installed_again_only_when_something_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    release = steps.Release("1.2.0", "u", None, {"w.whl": "1" * 64, "p.tar.gz": "2" * 64})
+    found = steps.ReadyMade(release, "w.whl", "p.tar.gz")
+    core = root / "python" / "nitro" / "_core.abi3.so"
+    core.write_bytes(b"ready-made core")
+    prebuilt = root / ".tools" / "prebuilt"
+    prebuilt.mkdir(parents=True)
+    (prebuilt / "prebuilt.json").write_text("{}", encoding="utf-8")
+    programs = [prebuilt / (f"{name}.exe" if steps.WINDOWS else name) for name in steps.PROGRAMS]
+    for program in programs:
+        program.write_bytes(b"program")
+    versions = {"nitrolearn": "1.2.0"}
+    monkeypatch.setattr(steps, "installed_version", versions.get)
+    monkeypatch.setattr(steps, "core_matches_code", lambda: True)
+    record = steps.ready_made_record(root, found) | {"extras": "wandb"}
+    (root / steps.READY_RECORD).write_text(json.dumps(record), encoding="utf-8")
+    assert steps.ready_made_in_place(root, found, "wandb")
+    assert not steps.ready_made_in_place(root, found, "dev"), "other extras"
+    versions["nitrolearn"] = "1.1.0"
+    assert not steps.ready_made_in_place(root, found, "wandb"), "another version in .venv"
+    versions["nitrolearn"] = "1.2.0"
+    core.write_bytes(b"built again with your own rewards")
+    assert not steps.ready_made_in_place(root, found, "wandb"), "a core built since"
+    core.write_bytes(b"ready-made core")
+    (root / ".tools" / "prebuilt" / "prebuilt.json").unlink()
+    assert not steps.ready_made_in_place(root, found, "wandb"), "the programs are missing"
+    (root / ".tools" / "prebuilt" / "prebuilt.json").write_text("{}", encoding="utf-8")
+    # Antivirus took a program away, or left it empty: running the installer again puts it back.
+    for program in programs:
+        program.unlink()
+        assert not steps.ready_made_in_place(root, found, "wandb"), f"{program.name} is missing"
+        program.write_bytes(b"")
+        assert not steps.ready_made_in_place(root, found, "wandb"), f"{program.name} is empty"
+        program.write_bytes(b"program")
+    assert steps.ready_made_in_place(root, found, "wandb")
+    newer = steps.ReadyMade(
+        steps.Release("1.2.0", "u", None, {"w.whl": "3" * 64, "p.tar.gz": "2" * 64}), "w.whl", "p.tar.gz"
+    )
+    assert not steps.ready_made_in_place(root, newer, "wandb"), "other release files"
+    monkeypatch.setattr(steps, "core_matches_code", lambda: False)
+    assert not steps.ready_made_in_place(root, found, "wandb"), "the code changed since"
+
+
+@pytest.mark.skipif(steps.platform_tag() is None, reason="no ready-made files for this kind of computer")
+def test_the_release_copy_of_the_packages_is_skipped_only_when_proven_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    names = steps.bundles()
+    platform = steps.platform_tag()
+    asset = str(names.wheels_asset("1.2.0", platform))
+    release = steps.Release("1.2.0", "u", None, {asset: "a" * 64})
+    versions = {"numpy": "2.4.6"}
+    monkeypatch.setattr(steps, "installed_version", versions.get)
+    assert not steps.wheels_in_place(root, release), "nothing recorded yet"
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    (wheels / "requirements.txt").write_text(
+        "numpy==2.4.6 --hash=sha256:" + "b" * 64 + "\n", encoding="utf-8"
+    )
+    steps.record_wheels(root, release, wheels)
+    assert steps.wheels_in_place(root, release)
+    assert not steps.wheels_in_place(
+        root, steps.Release("1.2.1", "u", None, {asset.replace("1.2.0", "1.2.1"): "c" * 64})
+    )
+    versions["numpy"] = "2.0.0"
+    assert not steps.wheels_in_place(root, release), "a package not at its pinned version"
+    versions["numpy"] = "2.4.6"
+    local = tmp_path / "release-files"
+    local.mkdir()
+    (local / asset).write_bytes(b"zip")
+    assert not steps.wheels_in_place(root, steps.Release("1.2.0", "u", local, {asset: "a" * 64})), (
+        "a local copy"
+    )
+    assert not steps.wheels_in_place(root, None)
+
+
+@bash
+def test_install_sh_makes_the_venv_again_for_another_python(tmp_path: Path) -> None:
+    """A .venv from an older version that runs another Python than the pinned one is made again (its
+    Python is removed afterwards by the tidy)."""
+    root = tmp_path / "NitroLearn"
+    (root / "tools").mkdir(parents=True)
+    shutil.copy(INSTALL_SH, root / "install.sh")
+    shutil.copy(PROJECT / "tools" / "env.sh", root / "tools" / "env.sh")
+    (root / "tools" / "install_steps.py").write_text("print('steps ran')\n", encoding="utf-8")
+    uv = _stub(
+        tmp_path / "uv",
+        f"""case "$1" in
+  --version) echo "uv 0.11.32 (stand-in)" ;;
+  venv) mkdir -p .venv/bin && ln -s "{sys.executable}" .venv/bin/python
+        echo "home = $UV_PYTHON_INSTALL_DIR/cpython-3.11/bin" > .venv/pyvenv.cfg ;;
+esac
+""",
+    )
+    (root / ".venv" / "bin").mkdir(parents=True)
+    (root / ".venv" / "pyvenv.cfg").write_text(
+        f"home = {root}/.tools/python/cpython-3.10/bin\n", encoding="utf-8"
+    )
+    _stub(  # a Python 3.10: runs what it is given with its own version
+        root / ".venv" / "bin" / "python",
+        f'exec "{sys.executable}" -c "import sys; sys.version_info = (3, 10, 14); exec(sys.argv[1])" "$2"\n',
+    )
+    env = {
+        "HOME": str(tmp_path),
+        "PATH": os.environ["PATH"],
+        "NITRO_UV": str(uv),
+        "NITRO_RELEASES": NO_RELEASE,
+    }
+    done = subprocess.run(
+        ["bash", str(root / "install.sh")], env=env, capture_output=True, text=True, timeout=120, check=False
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "or not Python 3.11: making it again" in done.stdout and "steps ran" in done.stdout
+    assert (root / ".venv" / "bin" / "python").is_symlink(), "the stand-in uv made it again"
+    # Run again: the new .venv runs Python 3.11, so it is kept.
+    done = subprocess.run(
+        ["bash", str(root / "install.sh")], env=env, capture_output=True, text=True, timeout=120, check=False
+    )
+    assert done.returncode == 0 and "making it again" not in done.stdout
+
+
+def test_install_ps1_makes_the_venv_again_for_another_python() -> None:
+    text = (PROJECT / "install.ps1").read_text(encoding="utf-8")
+    assert "sys.exit('%d.%d' % sys.version_info[:2] != '$PythonVersion')" in text
+    assert "or not Python ${PythonVersion}: making it again" in text
+    assert '"cpython-$PythonVersion.*"' in text and "cpython-3.11*" not in text

@@ -102,7 +102,7 @@ def test_every_commented_example_loads_once_uncommented(preset: Path, tmp_path: 
     lines = preset.read_text(encoding="utf-8").splitlines()
     blocks = commented_blocks(lines)
     sections = {lines[b[0]].split("]")[0].strip("# [") for b in blocks if lines[b[0]].startswith("# [")}
-    assert {"pretrain", "replay_mix", "start_from", "wandb"} <= sections
+    assert {"pretrain", "replay_mix", "start_from", "wandb", "exploiters"} <= sections
     assert not {"actions", "opponents", "selector", "reference"} & sections
     tried = 0
     for block in blocks:

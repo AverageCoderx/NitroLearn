@@ -584,7 +584,8 @@ def _run_until_stopped(
     then_train: bool,
     applied: bool = False,
 ) -> int:
-    from nitro import _core, pretrain
+    from nitro import _core, exploiters, pretrain
+    from nitro.exploiter_folders import ExploiterError
     from nitro.health import TrainingProblem
     from nitro.runs import resume_command
     from nitro.tracking import TrackingError
@@ -633,15 +634,16 @@ def _run_until_stopped(
             + ("" if dashboard else f" Progress: {folder.report} (open it in a browser). Ctrl+C stops.")
         )
     try:
-        training = TrainingRun(config, folder, state, applied=applied)
         if copy_only:
-            return _save_copy(training, folder)
-        print(f"Networks run on {training.device_note}.")
-        training.run(stop, until_steps=steps)
+            return _save_copy(TrainingRun(config, folder, state, applied=applied), folder)
+        # The bot's training, and with [exploiters] its exploiters' phases in turn.
+        exploiters.train(
+            config, folder, state, stop, steps, lambda line: print(line, flush=True), applied=applied
+        )
     except TrackingError as err:
         print(f"\nCannot start: {err}", file=sys.stderr)
         return 1
-    except (TransferError, pretrain.PretrainError) as err:
+    except (TransferError, pretrain.PretrainError, ExploiterError) as err:
         print(f"\nCannot start: {err}", file=sys.stderr)
         if not folder.complete_checkpoints():
             print(_before_first_save(folder), file=sys.stderr)

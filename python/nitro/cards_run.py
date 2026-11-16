@@ -210,7 +210,7 @@ def helper_main(rank: int, config: NitroConfig, root: Path, start: str, store: s
 class Helper:
     def __init__(self, rank: int, whole: NitroConfig, root: Path, start: str, store: str) -> None:
         """`whole`: the run's settings as card 0 runs them, before they are shared out."""
-        from nitro import training
+        from nitro import exploiters, training
 
         if whole.run.cards_pin_threads:  # before the games' threads start: they keep this share
             multigpu.pin_threads(multigpu.card_cpus(rank, whole.run.cards, _cpus()))
@@ -231,7 +231,8 @@ class Helper:
             if self.cards.device.type == "cuda"
             else torch.empty(0, dtype=torch.uint8)
         )
-        setup = training.build(config, state, root / "pool")
+        frozen = exploiters.frozen_for(config, root, int(state["agent_steps"]))  # as card 0's
+        setup = training.build(config, state, root / "pool", frozen=frozen)
         self.setup = setup
         self.envs = setup.envs
         self.trainer = setup.trainer

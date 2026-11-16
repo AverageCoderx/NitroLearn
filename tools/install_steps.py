@@ -48,7 +48,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -1072,6 +1072,58 @@ def install_wheels(uv: Path, wheels: Path) -> None:
     run([*command, "--require-hashes", "-r", requirements], minutes=PACKAGES_MINUTES)
 
 
+PACKAGES_RECORD = Path(".tools") / "release-packages.json"  # the release's copy last installed: hash, pins
+
+
+def pinned_versions(requirements: str) -> dict[str, str]:
+    """name -> version for each `name==version` line of the release copy's requirements.txt."""
+    return dict(re.findall(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;]+)", requirements, re.MULTILINE))
+
+
+def record_wheels(root: Path, release: Release, wheels: Path) -> None:
+    """After the release's copy was installed: its hash and the versions it pins, so a later install (the
+    next version's update, when its copy is the very same file) need not download it again."""
+    platform = platform_tag()
+    name = str(bundles().wheels_asset(release.version, platform)) if platform else ""
+    try:
+        pins = pinned_versions((wheels / str(bundles().REQUIREMENTS)).read_text(encoding="utf-8"))
+        record = {"sha256": release.hashes[name], "pins": pins}
+        (root / PACKAGES_RECORD).parent.mkdir(parents=True, exist_ok=True)
+        (root / PACKAGES_RECORD).write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
+    except (OSError, KeyError):
+        (root / PACKAGES_RECORD).unlink(missing_ok=True)
+
+
+def recorded_pins(root: Path) -> list[str]:
+    """The packages the release's copy last installed pins (PACKAGES_RECORD), by name; none without it."""
+    try:
+        record = json.loads((root / PACKAGES_RECORD).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    pins = record.get("pins") if isinstance(record, dict) else None
+    return [str(name) for name in pins] if isinstance(pins, dict) else []
+
+
+def wheels_in_place(root: Path, release: Release | None) -> bool:
+    """Whether the release's copy of the packages is installed already: the release lists the same file
+    (same SHA-256) as the copy last installed, and every package it pins is in .venv at its pinned version.
+    Only for a copy that would be downloaded: a folder of the release's files is installed from as always."""
+    platform = platform_tag()
+    if release is None or platform is None:
+        return False
+    name = str(bundles().wheels_asset(release.version, platform))
+    if name not in release.hashes or (release.folder is not None and (release.folder / name).is_file()):
+        return False
+    try:
+        record = json.loads((root / PACKAGES_RECORD).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    pins = record.get("pins") if isinstance(record, dict) else None
+    if record.get("sha256") != release.hashes[name] or not isinstance(pins, dict) or not pins:
+        return False
+    return all(installed_version(str(package)) == version for package, version in pins.items())
+
+
 VENDOR_STAMP = ".from-release"  # in .tools/vendor: the hash of the crates archive it was unpacked from
 
 
@@ -1126,10 +1178,59 @@ def use_vendored_crates(root: Path, release: Release | None) -> bool:
     return True
 
 
+READY_RECORD = Path(".tools") / "ready-made.json"  # the release's core and programs last installed
+
+
+def ready_made_record(root: Path, found: ReadyMade) -> dict[str, str]:
+    """What install_ready_made records once it has installed `found`: the release files' hashes, and the
+    hash of the core it placed (a core built again since, with one's own Rust rewards, no longer matches)."""
+    cores = sorted(
+        path for path in (root / "python" / "nitro").glob("_core.*") if path.suffix in (".pyd", ".so")
+    )
+    return {
+        "wheel": found.release.hashes[found.wheel],
+        "archive": found.release.hashes[found.archive],
+        "core": sha256_of(cores[0]) if len(cores) == 1 else "",
+    }
+
+
+def programs_in_place(root: Path) -> bool:
+    """Whether every one of the release's programs is in .tools/prebuilt, none of them empty, with
+    prebuilt.json (antivirus may have taken one away since)."""
+    folder = root / ".tools" / "prebuilt"
+    names = [f"{name}.exe" if WINDOWS else name for name in PROGRAMS] + ["prebuilt.json"]
+    try:
+        return all((folder / name).is_file() and (folder / name).stat().st_size > 0 for name in names)
+    except OSError:
+        return False
+
+
+def ready_made_in_place(root: Path, found: ReadyMade, extras: str) -> bool:
+    """Whether `found` is installed already, so nothing need be downloaded or installed again (running the
+    installer again for the same version): the same release files as last time, NitroLearn of that
+    version with the same extras in .venv, every one of its programs, and the very core placed then, built
+    from this folder's code."""
+    try:
+        record = json.loads((root / READY_RECORD).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(record, dict) or record.get("extras") != extras:
+        return False
+    if {key: record.get(key) for key in ("wheel", "archive", "core")} != ready_made_record(root, found):
+        return False
+    there = programs_in_place(root)
+    return there and installed_version("nitrolearn") == found.release.version and core_matches_code()
+
+
 def install_ready_made(
-    uv: Path, root: Path, found: ReadyMade, extras: str, wheels: Path | None = None
+    uv: Path, root: Path, found: ReadyMade, extras: str, wheels: Path | None = None, no_deps: bool = False
 ) -> bool:
-    """The release's core and programs; False (and why) when the core is for other code than this folder's."""
+    """The release's core and programs; False (and why) when the core is for other code than this folder's.
+    `no_deps`: the packages it needs are installed already (wheels_in_place), so only NitroLearn is."""
+    if ready_made_in_place(root, found, extras):
+        note(f"NitroLearn {found.release.version}'s ready-made core and programs are installed already.")
+        return True
+    (root / READY_RECORD).unlink(missing_ok=True)
     say(f"NitroLearn {found.release.version}'s ready-made core and programs")
     downloads = root / ".tmp" / "release"
     wheel = found.release.get(found.wheel, downloads / found.wheel)
@@ -1142,6 +1243,7 @@ def install_ready_made(
             "--python",
             sys.executable,
             *from_wheels(wheels),
+            *(["--no-deps"] if no_deps else []),
             "--reinstall-package",
             "nitrolearn",
             f"nitrolearn[{extras}] @ {wheel.resolve().as_uri()}",
@@ -1155,6 +1257,9 @@ def install_ready_made(
     if not core_matches_code():
         note("The ready-made core is for other code than this folder's (a changed or newer copy).")
         return False
+    with contextlib.suppress(OSError, KeyError):
+        record = ready_made_record(root, found) | {"extras": extras}
+        (root / READY_RECORD).write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
     return True
 
 
@@ -1832,6 +1937,98 @@ def torch_choice(root: Path, asked: str) -> str | None:
     return text if text in TORCH_VARIANTS else None
 
 
+# ---------- tidying up after an older version ----------
+
+
+def tidy_module() -> ModuleType:
+    """tools/install_tidy.py: removes what an older version installed that this one no longer uses."""
+    module = _load(ROOT / "tools" / "install_tidy.py", "nitro_install_tidy_for_installer")
+    if module is None:
+        raise Stop("tools/install_tidy.py is missing: this folder is not a complete NitroLearn")
+    return module
+
+
+def own_venv(root: Path) -> bool:
+    """Whether this Python is the folder's own .venv: the only environment whose packages are tidied."""
+    try:
+        return os.path.samefile(sys.prefix, root / ".venv")
+    except OSError:
+        return False
+
+
+def package_versions(root: Path) -> dict[str, str]:
+    """The packages in .venv now (name -> version), to tell afterwards which were replaced."""
+    if not own_venv(root):
+        return {}
+    try:
+        found = tidy_module().installed([site_packages()])
+    except Exception:  # only used to tidy up: never stops an install
+        return {}
+    return {name: str(dist.version) for name, dist in found.items()}
+
+
+def seed_package_record(root: Path) -> None:
+    """Before anything is installed: the record of the installer's packages for a folder an older
+    installer set up (install_tidy.seed_record), so the tidy afterwards removes only what NitroLearn put
+    there. Never stops the install."""
+    if not own_venv(root):
+        return
+    with contextlib.suppress(Exception):  # only used to tidy up
+        tidy_module().seed_record(root, [site_packages()], pinned=recorded_pins(root))
+
+
+def wanted_packages(extras: str, wheels: Path | None, pinned: Iterable[str] = ()) -> dict[str, list[str]]:
+    """What this version installs into .venv (name -> extras), whose requirements are kept with them:
+    NitroLearn with its extras, PyTorch, maturin (`nitro rebuild`), the dashboard's Qt window on Linux
+    (kept whether or not this install has a desktop to show it on), and every package the release's copy
+    pins: from its requirements in `wheels`, or `pinned` (recorded_pins) when that copy was installed
+    already."""
+    wanted: dict[str, list[str]] = {
+        "nitrolearn": extras.split(","),
+        "torch": [],
+        "maturin": [],
+    }
+    if sys.platform.startswith("linux"):
+        wanted["pywebview"] = ["qt"]
+    names = list(pinned)
+    if wheels is not None:
+        with contextlib.suppress(OSError):
+            listed = (wheels / str(bundles().REQUIREMENTS)).read_text(encoding="utf-8")
+            names += re.findall(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==", listed, re.MULTILINE)
+    for name in names:
+        wanted.setdefault(name, [])
+    return wanted
+
+
+def tidy_up(uv: Path, root: Path, wanted: Mapping[str, Sequence[str]], before: Mapping[str, str]) -> None:
+    """Removes what an older version installed in the folder that this one no longer uses
+    (tools/install_tidy.py), and says in one line what went and the room it freed. Never stops the
+    install: what could not be removed is said, and the next install tries again."""
+    say("Tidying up what an older version left that this one no longer uses")
+    try:
+        tidy = tidy_module()
+        places = [site_packages()] if own_venv(root) else []
+        rust = rust_pin()[0] if folder_rust(root) else None
+        found = tidy.plan(root, places, wanted, before, rust=rust)
+        if found.packages.by_hand:
+            note(f"Kept, installed by hand (not by the installer): {', '.join(found.packages.by_hand)}.")
+        free_before = free_gb(root)
+
+        def uv_run(arguments: list[str]) -> int:
+            return run([uv, *arguments], check=False)
+
+        done = tidy.carry_out(found, root, uv_run, places)
+        free_after = free_gb(root)
+        freed = None if free_before is None or free_after is None else free_after - free_before
+        note(tidy.summary(done, freed))
+        if done.packages and not WINDOWS:
+            note("Packages were removed: if NitroLearn's dashboard is open, close it and open it again.")
+        for problem in done.problems:
+            note(f"Not removed: {problem}. The next install tries again.")
+    except Exception as err:  # tidying up never stops an install
+        note(f"Tidying up stopped early ({err}). NitroLearn is installed; the next install tries again.")
+
+
 UPDATE_BACKUPS = Path("update") / "replaced"  # in .tmp: an update's copies of files the user had changed
 
 
@@ -1899,6 +2096,8 @@ def setup(
         ready_made = find_ready_made(release)
     found = look_around(root, WINDOWS, person, card, plan.no_card, ready_made is not None, args.from_source)
     choices = decide(found, read_record(root), switched(args), ask)
+    before = package_versions(root)
+    seed_package_record(root)
 
     variant = gpu_builds[0] if choices["gpu"] else "cpu"
     check_space(
@@ -1926,14 +2125,24 @@ def setup(
 
     step("core", "start")
     extras = "dev" if choices["dev"] else EXTRAS
-    # The release's copy of the packages (not for a developer install: its tools come from PyPI).
-    wheels = None if choices["dev"] else unpack_wheels(root, release)
-    if wheels is not None:
-        install_wheels(args.uv, wheels)
+    # The release's copy of the packages (not for a developer install: its tools come from PyPI); not
+    # downloaded again when the very same copy is installed already.
+    wheels, packaged = None, False
+    if not choices["dev"] and ready_made is not None and wheels_in_place(root, release):
+        note("NitroLearn's Python packages are installed already (the release's copy is unchanged).")
+        packaged = True
+    elif not choices["dev"]:
+        wheels = unpack_wheels(root, release)
+        if wheels is not None and release is not None:
+            install_wheels(args.uv, wheels)
+            record_wheels(root, release, wheels)
+            packaged = True
     ready = False
     if ready_made is not None and not choices["dev"]:
-        ready = install_ready_made(args.uv, root, ready_made, extras, wheels)
+        ready = install_ready_made(args.uv, root, ready_made, extras, wheels, packaged and wheels is None)
     if not ready:
+        if packaged and wheels is None:  # the build takes its build tools from the release's copy
+            wheels = unpack_wheels(root, release)
         install_from_code(args.uv, root, extras, release, wheels)
     elif choices["rust"]:
         problem = compiler_problem()
@@ -1947,7 +2156,7 @@ def setup(
         add_dev_components()
     keep_torch(args.uv, variant)
     # maturin: `nitro rebuild` (own Rust rewards) builds the core in place with it (in the release's copy).
-    if wheels is None:
+    if not packaged:
         run(
             [args.uv, "pip", "install", "--python", sys.executable, "maturin>=1.15,<2"],
             minutes=PACKAGES_MINUTES,
@@ -1955,7 +2164,7 @@ def setup(
     if sys.platform.startswith("linux") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         # The dashboard's window on a Linux desktop: Qt is GPL/LGPL software, so it always comes from PyPI.
         qt = [args.uv, "pip", "install", "--python", sys.executable, "pywebview[qt]>=5.3"]
-        if run(qt, check=wheels is None, minutes=PACKAGES_MINUTES) != 0:
+        if run(qt, check=not packaged, minutes=PACKAGES_MINUTES) != 0:
             note(
                 "The dashboard's window (pywebview's Qt part) could not be installed from PyPI: run the "
                 "installer again once online."
@@ -1987,6 +2196,9 @@ def setup(
             recordings.remove_downloaded(root / "rocketsim_recordings")
             note("RocketSim's game recordings were removed (switched off): they download again when needed.")
 
+    # The release's copy installed already (not unpacked this time): its pins as last recorded.
+    pinned = recorded_pins(root) if packaged and wheels is None else []
+    tidy_up(args.uv, root, wanted_packages(extras, wheels, pinned), before)
     clear_temporary(root / ".tmp")
     step("check", "start")
     say('Checking everything with "nitro doctor"')

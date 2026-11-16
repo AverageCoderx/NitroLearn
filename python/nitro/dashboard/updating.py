@@ -81,7 +81,8 @@ def kept_release(data: object) -> update.Release | None:
     if len(texts) != len(values) or not texts[0]:
         return None
     version, tag, date, notes, page = texts
-    return update.Release(version, tag, date, notes, page if page.startswith("https://github.com/") else "")
+    page = page if page.startswith("https://github.com/") else ""
+    return update.Release(version, tag, date, update.first_lines(notes), page)  # plain, whoever kept it
 
 
 class Updating:

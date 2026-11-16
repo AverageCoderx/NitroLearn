@@ -87,6 +87,7 @@ def check(
         config = dataclasses.replace(
             config,
             selfplay=dataclasses.replace(config.selfplay, enabled=False),  # the bot plays itself
+            exploiters=dataclasses.replace(config.exploiters, enabled=False),
             wandb=dataclasses.replace(config.wandb, enabled=False),
         )
         state = {key: value for key, value in state.items() if key != "selfplay"}

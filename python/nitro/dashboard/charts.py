@@ -39,6 +39,7 @@ FOLDERS = (
     ("value", "Value and critic", 4, "How well the bot predicts what a situation is worth."),
     ("speed", "Speed and hardware", 5, "How fast it trains, and where each round's time goes."),
     ("selfplay", "Self-play", 6, "Games against saved past versions of the bot, and its skill rating."),
+    ("exploiters", "Exploiters", 6, "Games against copies trained to beat the bot (Exploiters)."),
     ("replays", "Learning from replays", 7, "Copying replays while it trains (Replays in training)."),
     ("other", "Other", 0, "Numbers this list has no folder for, under their names in metrics.csv."),
 )
@@ -672,6 +673,80 @@ _FIXED: dict[str, tuple[str, str, str, str, float, str]] = {
         100,
         "",
     ),
+    "exploiter_games": (
+        "exploiters",
+        "Games against its exploiters",
+        "Games against its exploiters that ended in a goal, each round.",
+        "",
+        1,
+        "",
+    ),
+    "exploiter_goal_share": (
+        "exploiters",
+        "Goals against its exploiters",
+        "Its share of the goals in those games. Over 50% means it beats them.",
+        "%",
+        100,
+        "",
+    ),
+    "exploiters_retired": (
+        "exploiters",
+        "Exploiters retired",
+        "How many of its exploiters it beat clearly enough to stop playing them (exploiters.retire_share).",
+        "",
+        1,
+        "",
+    ),
+    "vs_main_games": (
+        "exploiters",
+        "Games against the bot",
+        "An exploiter's games against the frozen bot that ended in a goal, each round.",
+        "",
+        1,
+        "",
+    ),
+    "vs_main_goal_share": (
+        "exploiters",
+        "Goals against the bot",
+        "The exploiter's share of the goals against the frozen bot: high means the bot was easy to beat.",
+        "%",
+        100,
+        "",
+    ),
+    "vs_main_recent_games": (
+        "exploiters",
+        "Games in its window",
+        "How many of its latest games against the bot its recent share is measured over "
+        "(exploiters.window_games at most).",
+        "",
+        1,
+        "",
+    ),
+    "vs_main_recent_share": (
+        "exploiters",
+        "Recent goals against the bot",
+        "The exploiter's share of the goals in its latest games against the bot.",
+        "%",
+        100,
+        "",
+    ),
+    "vs_main_recent_low": (
+        "exploiters",
+        "Recent goals against the bot, low end",
+        "The low end of the 95% range of that share: its phase ends early once this reaches "
+        "exploiters.target_share.",
+        "%",
+        100,
+        "Wilson's 95% score interval of the share over the window.",
+    ),
+    "vs_main_recent_high": (
+        "exploiters",
+        "Recent goals against the bot, high end",
+        "The high end of the 95% range of that share.",
+        "%",
+        100,
+        "Wilson's 95% score interval of the share over the window.",
+    ),
     "replay_mix_steps": (
         "replays",
         "Copying steps",
@@ -747,6 +822,19 @@ _SIZES = {
     "aerial_touches_per_minute": ("aerial touches", "Touches in the air a minute per car.", "/min", 1.0),
 }
 _SIZE = re.compile(r"^(\d+)v\1_(.+)$")
+# The bot's games against each exploiter it plays (`exploiter_<n>_<part>`, with exploiters.retire_share).
+_EXPLOITER = re.compile(r"^exploiter_(\d+)_(games|share|low)$")
+_EXPLOITER_PARTS = {
+    "games": ("games", "Its latest games against this exploiter (exploiters.window_games at most).", "", 1.0),
+    "share": ("goal share", "Its share of the goals in those games.", "%", 100.0),
+    "low": (
+        "goal share, low end",
+        "The low end of the 95% range of that share: the exploiter retires once it reaches "
+        "exploiters.retire_share.",
+        "%",
+        100.0,
+    ),
+}
 # Per reward (`<prefix><label>`): (prefix, folder, title after the reward's name, what it means, unit).
 _REWARD = (
     (
@@ -856,6 +944,10 @@ def _chart(column: str, labels: set[str], per_minute: float) -> Chart:
         if column.startswith(prefix) and net:
             name = _NETWORK_NAMES.get(net, describe.label(net).lower())
             return Chart(column, "network", f"{words}: {name}", about.format(net=name), "", 1.0, column)
+    mine = _EXPLOITER.match(column)
+    if mine is not None:
+        words, about, unit, scale = _EXPLOITER_PARTS[mine.group(2)]
+        return Chart(column, "exploiters", f"Exploiter {mine.group(1)}: {words}", about, unit, scale, column)
     size = _SIZE.match(column)
     if size is not None and size.group(2) in _SIZES:
         words, about, unit, scale = _SIZES[size.group(2)]

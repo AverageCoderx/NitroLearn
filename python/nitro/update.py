@@ -9,7 +9,8 @@ of the project, tagged v<version>. Two ways to the new version:
   what is the user's (the bots, settings, replays, saves and tool folders, read from .gitignore with a fixed
   minimum). A file of the installed release that the new one no longer has is removed (only when the
   installed release's own archive could be read to tell). A file of NitroLearn's that the user changed is
-  copied to .tmp/update/replaced/<old version>/ before it is overwritten or removed.
+  copied to .tmp/update/replaced/<old version>/ before it is overwritten or removed; text files are compared
+  without regard to line endings.
 
 Then the installer runs again (install.sh, or install.ps1 on Windows). The compiled core is never in the
 code: the installer replaces it. On Windows a running NitroLearn keeps its core locked, so there the
@@ -53,6 +54,8 @@ WORK = Path(".tmp") / "update"
 REPLACED = WORK / "replaced"
 NOTE_LINES = 8
 NOTE_CHARS = 700
+ESCAPED = 0xE000  # where release notes' escaped marks wait while the others are taken out (private use)
+LISTED = 10  # the files the user had changed, named one by one; the rest are counted (all are in the backup)
 # Never written by an update, whatever .gitignore says: what the user makes and what the installer keeps.
 KEPT = (
     "/runs/",
@@ -203,15 +206,57 @@ def _date(text: object) -> str:
     return f"{day.day} {MONTHS[day.month - 1]} {day.year}"
 
 
+def _plain_span(text: str) -> str:
+    """Markdown's inline marks taken out of `text` (no code in it): links and pictures as their words, bold
+    and italic marks, and backslash escapes."""
+    # An escaped mark is no mark: it is set aside first (as a private-use character), then put back plain.
+    text = re.sub(r"\\([\\`*_{}\[\]()#+\-.!<>])", lambda m: chr(ESCAPED + ord(m[1])), text)
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"<(https?://[^>\s]+)>", r"\1", text)
+    text = re.sub(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", r"\1", text)
+    text = re.sub(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)", r"\1", text)
+    text = re.sub(r"(?<![\w*])\*(?=\S)([^*]+?)(?<=\S)\*(?![\w*])", r"\1", text)
+    text = re.sub(r"(?<!\w)_(?=\S)([^_]+?)(?<=\S)_(?!\w)", r"\1", text)  # never a snake_case name
+    return re.sub(f"[{chr(ESCAPED)}-{chr(ESCAPED + 127)}]", lambda m: chr(ord(m[0]) - ESCAPED), text)
+
+
+def plain_text(markdown: str) -> str:
+    """One line of markdown as plain text; what is inside `backticks` is kept as it is written."""
+    parts = re.split(r"(`+)(.+?)\1", markdown)
+    out = []
+    for i in range(0, len(parts), 3):
+        out.append(_plain_span(parts[i]))
+        if i + 2 < len(parts):
+            out.append(parts[i + 2].strip())
+    return "".join(out)
+
+
 def first_lines(body: object, lines: int = NOTE_LINES, chars: int = NOTE_CHARS) -> str:
-    """The first lines of release notes, plain: headings' marks and empty lines left out."""
+    """The first lines of release notes as plain text: headings' marks and empty lines left out, each list
+    item (or paragraph) on one line, list items starting with "- ", and markdown's marks taken out."""
     kept: list[str] = []
+    joins = False  # the line before was text that a wrapped line goes on
     for line in str(body or "").replace("\r\n", "\n").split("\n"):
-        text = line.strip().lstrip("#").strip()
-        if text:
-            kept.append(re.sub(r"^[*+] ", "- ", text))
+        text = line.strip()
+        if not text:
+            joins = False
+            continue
+        heading = text.startswith("#")
+        item = re.match(r"([-*+]|\d+[.)]) +", text)
+        if joins and not heading and not item:
+            kept[-1] += " " + plain_text(text)
+            continue
         if len(kept) == lines:
             break
+        if heading:
+            if not text.lstrip("#").strip():
+                continue
+            kept.append(plain_text(text.lstrip("#").strip()))
+        elif item and item[1] in "-*+":
+            kept.append("- " + plain_text(text[item.end() :]))
+        else:
+            kept.append(plain_text(text))
+        joins = not heading
     out = "\n".join(kept)
     return out if len(out) <= chars else out[: chars - 1].rstrip() + "…"
 
@@ -458,6 +503,22 @@ def unpack(data: bytes, target: Path) -> Path:
     return target
 
 
+def is_text(data: bytes) -> bool:
+    """Whether a file is text, as git tells it when it converts line endings: no NUL byte in it. Every binary
+    file NitroLearn ships (pictures, fonts, recordings, compiled programs) has NUL bytes."""
+    return b"\0" not in data
+
+
+def same_content(one: bytes, other: bytes) -> bool:
+    """Whether two copies of a file hold the same: binary files byte for byte, text files whatever their line
+    endings (a checkout or archive made on Windows has CRLF where the release's archive has LF)."""
+    if one == other:
+        return True
+    if not (is_text(one) and is_text(other)):
+        return False
+    return one.replace(b"\r\n", b"\n") == other.replace(b"\r\n", b"\n")
+
+
 def _write(target: Path, source: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     part = target.with_name(target.name + ".update-part")
@@ -471,7 +532,8 @@ def copy_release(root: Path, new: Path, old: Path | None, backup: Path, say: Say
     """Copies the release's files (`new`) over `root`, and removes the old release's (`old`) files that the
     new one no longer has. The user's paths (`Kept`) are left alone. A file that differs from the old
     release (or from the new one when the old one is not at hand) is the user's change: it is copied into
-    `backup` first. Without `old` nothing is removed."""
+    `backup` first. Text files are compared without regard to line endings (`same_content`), and one that
+    differs from the new release only in them is left as it is. Without `old` nothing is removed."""
     kept = Kept.read(root / ".gitignore", new / ".gitignore")
     out = Copied(backup=str(backup))
     for file in sorted(path for path in new.rglob("*") if path.is_file()):
@@ -485,10 +547,10 @@ def copy_release(root: Path, new: Path, old: Path | None, backup: Path, say: Say
             continue
         if target.is_file():
             current = target.read_bytes()
-            if current == file.read_bytes():
+            if same_content(current, file.read_bytes()):
                 continue
             base = None if old is None else old / rel
-            if base is None or not base.is_file() or base.read_bytes() != current:
+            if base is None or not base.is_file() or not same_content(base.read_bytes(), current):
                 saved = backup / rel
                 saved.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(target, saved)
@@ -515,7 +577,7 @@ def remove_dropped(root: Path, new: Path, old: Path, kept: Kept, backup: Path, o
         if rel.lower() in shipped or kept.covers(rel) or target.is_symlink() or not target.is_file():
             continue
         try:
-            if target.read_bytes() != file.read_bytes():
+            if not same_content(target.read_bytes(), file.read_bytes()):
                 saved = backup / rel
                 saved.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(target, saved)
@@ -739,13 +801,16 @@ def apply(root: Path, found: Check, get: Fetch = fetch, say: Say = print) -> Don
     else:
         copied = update_files(root, found.release, found.installed, get, say)
         done = Done(found.installed, installed_version(root), "files", copied)
-    if done.copied.replaced:
+    if replaced := done.copied.replaced:
+        files = "1 file" if len(replaced) == 1 else f"{len(replaced)} files"
         say(
-            f"Files of NitroLearn's that you had changed (kept in {done.copied.backup} before they were "
+            f"{files} of NitroLearn's that you had changed (kept in {done.copied.backup} before they were "
             "replaced):"
         )
-        for rel in done.copied.replaced:
+        for rel in replaced[:LISTED]:
             say(f"  {rel}")
+        if len(replaced) > LISTED:
+            say(f"  and {len(replaced) - LISTED} more")
     return done
 
 

@@ -2,7 +2,8 @@
 
     python tools/setup_wizard.py [--uv-wheel FILE]
 
-    installer/build/app/          NitroLearn's files as the release ships them (`git archive HEAD`)
+    installer/build/app/          NitroLearn's files as the release ships them (`git archive HEAD`, with the
+                                  line endings of the release's source archive)
     installer/build/uv/           uv.exe and its two licences, from the pinned uv wheel (tools/bundles.py),
                                   checked against its hash: the setup carries uv, everything else downloads
     installer/build/license.rtf   the licence page: fair play, the licence and "your bots are yours" in short,
@@ -114,10 +115,20 @@ def licence_rtf(root: Path = ROOT) -> str:
     return "".join(parts)
 
 
+# The line endings of GitHub's source archive of a release: LF, except where .gitattributes asks for CRLF
+# (*.cmd, *.ps1). Without these, git on Windows writes CRLF everywhere, and an update (which compares the
+# folder with the archive) would take every file for one the user changed.
+ARCHIVE_ENDINGS = ("-c", "core.autocrlf=false", "-c", "core.eol=lf")
+
+
 def app_tree(target: Path, root: Path = ROOT) -> None:
-    """NitroLearn's files as shipped: what `git archive` gives for the commit checked out."""
+    """NitroLearn's files as shipped: what `git archive` gives for the commit checked out, with the line
+    endings of the release's source archive on any system."""
     archive = subprocess.run(
-        ["git", "archive", "--format=tar", "HEAD"], cwd=root, capture_output=True, check=True
+        ["git", *ARCHIVE_ENDINGS, "archive", "--format=tar", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        check=True,
     )
     with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
         tar.extractall(target, filter="data")

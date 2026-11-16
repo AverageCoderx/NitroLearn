@@ -1186,6 +1186,160 @@ MORE: dict[str, str] = {
         "\n"
         "Measured: not measured."
     ),
+    "exploiters.enabled": (
+        'What it does: now and then the bot pauses, and a copy of it (an exploiter) trains to beat it: every game against the bot as it was at the pause, frozen, and only the copy learns. The copy keeps the bot\'s rewards (with reward = "same"), learning rates (unless policy_lr or value_lr are set) and every other setting; only its opponent and random seed differ. Its phase ends once it clearly beats the bot (target_share) or at max_steps, where one short of min_share is discarded. Then the bot carries on from its save with a share of its games against its newest exploiters, to stop what beat it. The idea is the "main exploiters" of DeepMind\'s AlphaStar.\n'
+        "\n"
+        "When to change it: on a long run whose bot may have holes its own self-play never finds. A tool to try, not a known gain.\n"
+        "\n"
+        "How to use it: switch it on and keep the defaults (a phase every 5 billion steps, 200 million to 1.5 billion long, 15% of the games against the newest 3 exploiters). It needs an opposing team (env.opponents = true); self-play may be on or off. Each exploiter has its own folder (metrics.csv, report.html) under the bot's exploiters folder. When a phase ends, the console, its report and the bot's page say how much it beat the bot, e.g. \"Exploiter 2 took 63% of the goals against the bot (59-67%)\".\n"
+        "\n"
+        "Watch out for: the bot does not learn while an exploiter trains. Stop and --steps are safe in either phase: the next start carries on exactly. Switching exploiters off during a phase leaves that exploiter unfinished; each start says so.\n"
+        "\n"
+        "Measured: not measured. Tests check the phases, who learns, the early end, the cap, the discard, the exact resume and the metrics; whether it makes a better bot is not measured yet: only full games could show it."
+    ),
+    "exploiters.every_steps": (
+        "What it does: sets how many of the bot's own agent steps pass between one exploiter phase and the next. The first phase comes at the first multiple of this after exploiters are switched on: switched on at 7.3 billion steps with 5 billion, the first phase is at 10 billion, then 15, 20 and so on.\n"
+        "\n"
+        "When to change it: lower it for exploiters more often, so holes are found sooner; raise it to spend less time paused. With the default 5 billion and 200 million to 1.5 billion per exploiter, between a twenty-fifth and a quarter of the training time goes to exploiters.\n"
+        "\n"
+        "How to use it: whole agent steps, 1 million at least. Changing it on a bot that trains already moves its next phase to the first multiple of the new value after where the bot is now.\n"
+        "\n"
+        "Watch out for: the bot's step count does not move while an exploiter trains, so the phases follow the bot's own training, not the clock. If max_steps is not shorter than this, training warns that the bot may spend half its time or more paused.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "exploiters.every_multiple": (
+        "What it does: paces the exploiter phases by how hard the bot was to beat. Above 0, the next phase begins this many times the last exploiter's own training steps after that exploiter's pause: with 5, an exploiter that beat the bot in 300 million steps is followed 1.5 billion steps later, and one that ran to max_steps (1 billion) is followed 5 billion steps later. 0 keeps fixed phases every every_steps.\n"
+        "\n"
+        "When to change it: use it when exploiters that win fast mean the bot has holes worth finding often, and slow ones mean it is hard to beat and can be left longer. With 5, the bot is paused about a sixth of the time at most.\n"
+        "\n"
+        "How to use it: 0 (off), or 1 and above. every_steps still sets when the first phase comes. Switched on for a bot that is already past its last exploiter's pause plus this many times its steps, the next phase begins at once.\n"
+        "\n"
+        "Watch out for: a discarded or capped exploiter counts with its full max_steps, so the next phase waits the longest.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "exploiters.min_steps": (
+        "What it does: sets the least an exploiter trains before its phase may end early, in agent steps counted as the bot's are: every car in its games, the frozen bot's cars too. In 1v1 that means the exploiter itself learns from half of them, as the bot learns only from its own cars in games against past versions.\n"
+        "\n"
+        "When to change it: raise it so every exploiter gets a fair start even if it beats the bot quickly; lower it to let an easy win end the phase sooner. The default is 200 million.\n"
+        "\n"
+        "How to use it: whole agent steps, 1 million at least and not above max_steps. The exploiter's own step count starts at the bot's count at the pause, so everything that follows the step count carries on from where the bot's was.\n"
+        "\n"
+        "Watch out for: a change while an exploiter trains applies to that exploiter too, once it is started again. Each update of the exploiter holds about half as many of its own samples as the bot's do (the other half are the frozen bot's), with the same learning settings.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "exploiters.max_steps": (
+        "What it does: sets the most an exploiter trains (agent steps, counted as min_steps). An exploiter that has not clearly beaten the bot by then stops here: it is kept if its share of the goals over its last window_games games is at least min_share, and discarded otherwise.\n"
+        "\n"
+        "When to change it: higher gives a hard-to-beat bot's exploiter more time to find a hole; lower caps how long the bot waits. The default is 1.5 billion.\n"
+        "\n"
+        "How to use it: whole agent steps, at least min_steps. Keep it well below every_steps, or the bot spends much of its time paused (the settings check warns when it is not shorter).\n"
+        "\n"
+        "Watch out for: an exploiter that never beats the bot uses all of max_steps, so a strong bot's phases are the longest.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "exploiters.target_share": (
+        "What it does: ends an exploiter's phase early, once it clearly beats the bot. Each goal ends one of its games against the bot; over its last window_games games, its share of the goals has a 95% range (Wilson's interval: the range the true share lies in, 19 times in 20). After min_steps, once the low end of that range reaches target_share, the phase ends, checked after every iteration.\n"
+        "\n"
+        "When to change it: higher asks for a more one-sided exploiter (longer phases, clearer holes); lower ends the phase as soon as the exploiter is somewhat better. 0.6 means about 3 goals for every 2 it concedes, and with the low end of the range it must be clear, not luck.\n"
+        "\n"
+        "How to use it: 0 to 1, not below min_share. The window must be full (window_games games) before it can end the phase.\n"
+        "\n"
+        "Watch out for: with run.cards the games are counted on the first card, about 1/run.cards of them, so a window takes longer to fill.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "exploiters.min_share": (
+        "What it does: decides at max_steps whether an exploiter that never reached target_share is kept. If its share of the goals over its last window_games games is at least this, it plays against the bot like any other; below it, it is discarded: it never plays against the bot, its saves are deleted (its policy.pt, metrics and report stay) and the bot carries on.\n"
+        "\n"
+        "When to change it: raise it to keep only exploiters that really beat the bot; lower it to keep almost all of them. 0.55 keeps one that wins a little more than it loses.\n"
+        "\n"
+        "How to use it: 0 to 1, not above target_share. This uses the share itself, not the low end of its range.\n"
+        "\n"
+        "Watch out for: an exploiter with no games ending in a goal has no share and is discarded.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "exploiters.window_games": (
+        "What it does: sets how many of the exploiter's latest games against the bot its goal share is measured over, for target_share and min_share, and the bot's own share against each exploiter for retire_share. Each goal ends one game. The exploiter's share and its 95% range over this window are in its metrics.csv every iteration (vs_main_recent_share, vs_main_recent_low, vs_main_recent_high) and in the console.\n"
+        "\n"
+        "When to change it: more games give a narrower range (1,000 games about +-3 points, 4,000 about +-1.5) but follow the exploiter's progress more slowly; fewer react faster but end phases on less evidence.\n"
+        "\n"
+        "How to use it: 50 to 100,000. A full window is needed before the phase can end early.\n"
+        "\n"
+        "Watch out for: the range treats games as independent; games of the same networks are alike, so it is a guide, not a guarantee.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "exploiters.retire_share": (
+        "What it does: retires an exploiter once the bot clearly beats it. While the bot plays its exploiters, it keeps its own share of the goals against each one over their last window_games games. Once the lower end of the 95% range of that share reaches this number, that exploiter stops playing against the bot: its games go to the other exploiters (with none left, back to the bot's usual games until the next exploiter). The console, the report and the bot's page say when and at what share. 0 (the default) is off: exploiters play until newer ones replace them.\n"
+        "\n"
+        "When to change it: switch it on so the bot stops spending games on exploiters it already beats; they go to the ones that still trouble it. 0.6 retires one once the bot clearly takes about 3 goals for every 2 it concedes against it.\n"
+        "\n"
+        "How to use it: 0 (off), or 0.5 to 1. Values between 0 and 0.5 are refused: the bot would retire exploiters that still beat it. 0.5 retires one as soon as the bot is clearly ahead of it. A retired exploiter does not count toward exploiters.keep: an older one that still has its policy plays again in its place (its count starts afresh). Its saves are deleted like any exploiter's that no longer plays; its policy.pt, metrics and report stay. metrics.csv gets the bot's games, share and low end against each exploiter (exploiter_<number>_games, _share, _low) and exploiters_retired.\n"
+        "\n"
+        "Watch out for: a full window_games of games against that exploiter is needed first; with several exploiters sharing exploiters.share, that can take a while. Each retirement saves the bot and starts it again (seconds to a minute). Going back to a save from before a retirement brings that exploiter back until the bot beats it again. Switching this off brings every retired exploiter back into the newest keep.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "exploiters.share": (
+        "What it does: sets the share of the bot's games played against its exploiters once it has any: 0.15 is about one game in seven. The games are split evenly between the newest exploiters (exploiters.keep). An exploiter drives the Orange cars of its games and is never trained; the bot drives the Blue ones and learns from them as usual.\n"
+        "\n"
+        "When to change it: raise it to make the bot work harder on its holes; lower it to keep more of its data as normal self-play. There is no measured best value.\n"
+        "\n"
+        "How to use it: 0.01 to 0.9. It adds up with selfplay.past_share, 0.95 at most together. Every exploiter needs a game in every processing group, so share x env.num_arenas (rounded) must be at least env.groups x exploiters.keep.\n"
+        "\n"
+        "Watch out for: the games against exploiters are counted in metrics.csv (exploiter_games and exploiter_goal_share, the bot's share of the goals in them) but never change the bot's self-play rating. Before the first exploiter is finished there are no such games and those columns stay empty.\n"
+        "\n"
+        "Measured: not measured as a learning setting."
+    ),
+    "exploiters.keep": (
+        "What it does: sets how many of the newest finished exploiters keep playing against the bot. With 3, after the fourth exploiter the first stops playing; its saves are then deleted to free the disk (a save of a big bot can take hundreds of megabytes), while its policy.pt, metrics.csv and report.html stay, so it can play again if keep is raised or the bot goes back to an older save. With retire_share on, retired exploiters do not count: keep is how many play.\n"
+        "\n"
+        "When to change it: more keeps older weak spots in practice; fewer gives the newest exploiter more of the games (exploiters.share is split between them).\n"
+        "\n"
+        "How to use it: 1 to 16. Each one needs a game in every processing group: share x env.num_arenas must be at least env.groups x keep, and the settings check says so when it is not.\n"
+        "\n"
+        "Watch out for: each playing exploiter is one more network pass over its games while the bot plays, as a past version is.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "exploiters.reward": (
+        'What it does: chooses what an exploiter is paid for while it learns to beat the bot. "same" gives it the bot\'s own rewards. "goals" pays only goals: 1 for a goal scored, -1 for a goal conceded.\n'
+        "\n"
+        'When to change it: "same" makes an exploiter that plays the bot\'s game better than the bot, which suits rewards that already aim at winning. "goals" makes one that cares only about scoring, whatever style gets there, which is closer to how AlphaStar\'s exploiters were paid (winning).\n'
+        "\n"
+        'How to use it: with "same" the exploiter starts as an exact copy of the bot\'s learning (its networks, its optimizer and its scaling). With "goals" it keeps the bot\'s policy and its optimizer state, but its value network, the value scaling and the reward scaling start afresh, since they predicted other rewards.\n'
+        "\n"
+        'Watch out for: with "goals" the fresh value network knows nothing at first, so the exploiter\'s first updates learn from rough guesses; goals are rare, so it learns slowly from them.\n'
+        "\n"
+        "Measured: not measured; which works better is not known."
+    ),
+    "exploiters.policy_lr": (
+        "What it does: sets the exploiter's own policy learning rate. 0, the default, means the bot's own (ppo.policy_lr). Only the exploiter uses it, during its phase; when the bot carries on, it learns at its own rate as before.\n"
+        "\n"
+        "When to change it: a faster rate than the bot's lets the exploiter find the bot's holes sooner, so its phase can end earlier. Too fast can make its learning unsteady (its policy jumps around instead of improving), so raise it a step at a time.\n"
+        "\n"
+        "How to use it: a number such as 2e-4; 0 to use the bot's rate. A change while an exploiter trains applies to that exploiter once it is started again.\n"
+        "\n"
+        "Watch out for: a faster exploiter is a harder test for the bot, but its goal share then says less about how the bot compares with a copy learning at its own pace. The exploiter's metrics.csv shows its rate in policy_lr; the bot's keeps the bot's.\n"
+        "\n"
+        "Measured: not measured; which rate finds holes fastest is not known."
+    ),
+    "exploiters.value_lr": (
+        "What it does: sets the exploiter's own value-network learning rate. 0, the default, means the bot's own (ppo.value_lr). Only the exploiter uses it.\n"
+        "\n"
+        'When to change it: usually together with policy_lr, so the exploiter\'s value network keeps up with a faster-moving policy. With reward = "goals" its value network starts afresh and a faster rate helps it catch up sooner.\n'
+        "\n"
+        "How to use it: a number such as 2e-4; 0 to use the bot's rate. A change while an exploiter trains applies to that exploiter once it is started again.\n"
+        "\n"
+        "Watch out for: too fast a rate makes the value network's guesses jumpy, which makes the policy's learning noisier.\n"
+        "\n"
+        "Measured: not measured."
+    ),
     "pretrain.enabled": (
         "What it does: before training, a new bot learns to copy the players in your own replays (behaviour cloning). The replays of the run's team size are converted once and kept in the project's replays folder. The policy is then taught to choose what the players chose, and the copy is saved as the bot's first save, at 0 agent steps. Then it stops.\n"
         "\n"
@@ -2875,6 +3029,113 @@ NERD: dict[str, str] = {
         "flat_rating_steps = 1_000_000_000\n"
         "```"
     ),
+    "exploiters.enabled": (
+        "The bot trains until its agent steps reach the next phase, saves (the pause) and stops. The exploiter's folder, runs/<bot>/exploiters/<n>/, gets opponent.pt (the bot's policy at the pause) and a first save: the bot's save with its whole learner (networks, optimizer, scaling) and its step count, so every schedule reads where the bot's did. The exploiter then trains as a run of its own: the frozen bot drives the Orange cars of every arena inside the same inference pass, and only the Blue rows are learned from. At its phase's end its policy.pt is kept, and the bot resumes from the pause with its newest exploiters driving Orange in exploiters.share of its arenas. Those goals are counted (exploiter_games, exploiter_goal_share), never rated.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "enabled = true\n"
+        "```"
+    ),
+    "exploiters.every_steps": (
+        "The next phase is the first multiple of every_steps above the bot's agent steps when exploiters are switched on; it is kept in the bot's saves with the value it was made with, so a changed every_steps re-places it at the first multiple of the new value. Back at a pause whose exploiter finished, the next multiple after it.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "enabled = true\n"
+        "every_steps = 2_000_000_000\n"
+        "```"
+    ),
+    "exploiters.every_multiple": (
+        "With m above 0 and a finished exploiter paused at S that trained T steps (to its early end, or max_steps when capped or discarded), the next phase is at S + m x T. Before the first exploiter finishes, every_steps sets it. The bot is then paused at most T / (T + m x T) = 1 / (1 + m) of the time.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "enabled = true\n"
+        "every_multiple = 5\n"
+        "```"
+    ),
+    "exploiters.min_steps": (
+        "Counted on the bot's scale: the exploiter's agent steps start at the pause S, and the phase may end early only once they pass S + min_steps.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "min_steps = 100_000_000\n"
+        "```"
+    ),
+    "exploiters.max_steps": (
+        'The phase ends at S + max_steps whatever happened; the outcome is then "capped" (window share >= min_share: it plays) or "discarded" (it never plays).\n'
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "max_steps = 1_000_000_000\n"
+        "```"
+    ),
+    "exploiters.target_share": (
+        "With n games in the window and the exploiter scoring k of them, p = k / n and z = 1.96, Wilson's interval is (p + z^2/2n +- z sqrt(p(1-p)/n + z^2/4n^2)) / (1 + z^2/n). The phase ends early when n = window_games, min_steps have passed and the lower end is at least target_share.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "target_share = 0.65\n"
+        "```"
+    ),
+    "exploiters.min_share": (
+        "At max_steps: kept when k / n >= min_share over the window (the share itself, not its lower end), else discarded. min_share may not be above target_share.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "min_share = 0.5\n"
+        "```"
+    ),
+    "exploiters.window_games": (
+        "A sliding window of the last window_games results (1 = the exploiter scored, 0 = the bot did), kept in the exploiter's saves so a resume continues it exactly. The 95% range's half-width is about 1 / sqrt(window_games) near a share of one half.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "window_games = 2000\n"
+        "```"
+    ),
+    "exploiters.retire_share": (
+        "The bot keeps one window of its own results against each exploiter it plays (1 = the bot scored), saved in its saves. When a window is full and its Wilson lower end reaches retire_share, the bot saves, the exploiter's exploiter.json records when and how (retired = {at, games, scored, low, high, share}), and the bot starts again from that save without it. A save from before the retirement still plays it; starting from such a save clears the later retirements.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "retire_share = 0.6\n"
+        "```"
+    ),
+    "exploiters.share": (
+        "Arenas against exploiters = round(num_arenas x share), placed just before the past versions' arenas and split evenly between the playing exploiters. Each exploiter's network runs on its rows in the same inference pass as the bot's, and a per-row choice puts its action on the Orange cars.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "share = 0.2\n"
+        "```"
+    ),
+    "exploiters.keep": (
+        "The newest keep finished exploiters that were not discarded (and, with retire_share, not retired) and were paused at or before the bot's steps play. Those that no longer play lose their saves and opponent.pt; policy.pt stays.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "keep = 2\n"
+        "```"
+    ),
+    "exploiters.reward": (
+        "\"goals\" replaces the exploiter's rewards with one goal reward (1 scored, -1 conceded). Its value network (critic trunk and every value head) is drawn afresh from the exploiter's own seed, its optimizer state is dropped, and the value and reward scaling start as a new run's; the policy, any shared trunk and their optimizer state are the bot's.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        'reward = "goals"\n'
+        "```"
+    ),
+    "exploiters.policy_lr": (
+        "The exploiter's settings are derived from the bot's at every start of its phase, with ppo.policy_lr replaced by this when it is above 0. The bot is always rebuilt from its own settings, so it never sees this rate.\n"
+        "\n"
+        "```toml\n"
+        "[exploiters]\n"
+        "policy_lr = 2e-4\n"
+        "```"
+    ),
+    "exploiters.value_lr": ("As policy_lr, for ppo.value_lr.\n\n```toml\n[exploiters]\nvalue_lr = 2e-4\n```"),
     "pretrain.enabled": (
         "Behaviour cloning: each replay is turned into the observations the bot would have seen and the action (of the 90) closest to what the player pressed. The policy then learns to give those actions high probability by lowering the cross-entropy loss -ln p(a_player | s). The result is saved as the bot's first save; the next start trains from it with a fresh value network.\n"
         "\n"

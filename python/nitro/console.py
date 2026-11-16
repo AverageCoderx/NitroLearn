@@ -1,7 +1,7 @@
 """The console report (`run.console = "report"`): every `run.console_seconds` a training run
 prints a block of what it is doing: speed and where the time goes, the rewards
-and each reward's part, how the policy and value learn, how the bots play, self-play, the bot it started
-from and the next save; the replay copy prints one each round. Plain ASCII, so a Windows
+and each reward's part, how the policy and value learn, how the bots play, self-play and exploiters, the bot
+it started from and the next save; the replay copy prints one each round. Plain ASCII, so a Windows
 console or a job's captured output never fails on a character. Training is the same either way."""
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ class Facts:
     transfer: bool = False  # started from another run, not from a copy of replays
     next_save: str = ""
     warnings: Sequence[str] = field(default_factory=list)  # new since the last block
+    phase: str = ""  # with exploiters: the bot's phase, or which exploiter trains
 
 
 def averaged(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -79,6 +80,8 @@ def iteration_report(row: Mapping[str, Any], facts: Facts) -> list[str]:
         speed += (
             f" | an iteration: playing {facts.collect_seconds:.2f} s, learning {facts.learn_seconds:.2f} s"
         )
+    if facts.phase:
+        lines.append(_item("Phase", facts.phase))
     lines.append(_item("Speed", speed))
     rewards = [f"{_fixed(row.get('reward_per_step'), 4)} a step"]
     if (episode := _number(row.get("episode_seconds"))) is not None:
@@ -137,6 +140,9 @@ def iteration_report(row: Mapping[str, Any], facts: Facts) -> list[str]:
         if (pool := _number(row.get("pool_size"))) is not None:
             selfplay.append(f"{pool:.0f} past versions")
         lines.append(_item("Self-play", " | ".join(selfplay)))
+    for column, against in (("exploiter", "its exploiters"), ("vs_main", "the bot")):
+        if (share := _number(row.get(f"{column}_goal_share"))) is not None:
+            lines.append(_item("Exploiters", f"{share:.0%} of the goals against {against}"))
     if facts.started_from:
         start = facts.started_from + (" (transfer learning)" if facts.transfer else "")
         lines.append(_item("Started", f"from {start}"))

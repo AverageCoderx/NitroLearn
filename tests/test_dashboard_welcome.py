@@ -269,6 +269,10 @@ def test_the_update_section_checks_only_when_asked_and_shows_each_answer(tmp_pat
                 == "UpdatedUpdated from 1.0.0 to 1.1.0. Restart the dashboard to use it."
             )
             assert "configs/presets/starter.toml" in tab.text_content(".upd-replaced")
+            assert "1 file of NitroLearn's that you had changed was replaced." in tab.text_content(
+                ".upd-replaced"
+            )
+            assert tab.locator("#upd-replaced-more").count() == 0
             removed = tab.text_content("#upd-removed")
             assert (
                 "1 file the new version no longer has was removed" in removed
@@ -278,6 +282,24 @@ def test_the_update_section_checks_only_when_asked_and_shows_each_answer(tmp_pat
             assert tab.text_content("#upd-restart") == "Restart"
             tab.click("#upd-restart")
             tab.wait_for_selector("#upd-manual >> text=Close NitroLearn and open it again")
+
+            # Linux: the installer ran while the dashboard was open (and may have removed packages it
+            # uses), so with no files of the user's replaced it closes and opens again by itself.
+            fake.states = [done_state()]
+            fake.restart = {"closing": True}
+            calls = len(fake.calls)
+            mine = opened(browser, api, errors)
+            mine.click(".nav [data-go=prefs]")
+            mine.click("#upd-check")
+            mine.click("#upd-now")
+            assert "Afterwards the dashboard closes and opens again." in mine.text_content(".modal")
+            mine.click("#upd-go")
+            mine.wait_for_selector("#upd-restart[disabled] >> text=Closing…", timeout=10000)
+            assert (
+                mine.text_content("#upd-said")
+                == "UpdatedUpdated from 1.0.0 to 1.1.0. The dashboard opens again to use it."
+            )
+            assert fake.calls[calls:].count("restart") == 1
         finally:
             browser.close()
     assert errors == []
@@ -300,12 +322,39 @@ def test_on_windows_the_update_closes_the_dashboard_to_finish(tmp_path: Path) ->
             tab.click("#upd-now")
             assert "To finish, NitroLearn closes and opens again." in tab.text_content(".modal")
             tab.click("#upd-go")
-            tab.wait_for_selector("#upd-restart")
+            # No second click: the code is in place, so it closes to finish by itself.
+            tab.wait_for_selector("#upd-restart[disabled] >> text=Closing…", timeout=10000)
             assert "NitroLearn closes to finish the update" in tab.text_content("#upd-said")
-            assert tab.text_content("#upd-restart") == "Close and finish"
-            tab.click("#upd-restart")
-            tab.wait_for_selector("#upd-restart[disabled] >> text=Closing…")
             assert fake.calls[-1] == "restart"
+
+            # Files the user had changed were replaced: their list stays until Close and finish is pressed.
+            # A long one is counted, with only its first files named, and the button stays above it.
+            changed = [f"python/nitro/part_{i:03}.py" for i in range(470)]
+            fake.states = [done_state(installer="later", replaced=changed)]
+            calls = len(fake.calls)
+            mine = opened(browser, api, errors)
+            mine.click(".nav [data-go=prefs]")
+            mine.click("#upd-check")
+            mine.click("#upd-now")
+            mine.click("#upd-go")
+            mine.wait_for_selector(".upd-replaced", timeout=10000)
+            assert mine.text_content("#upd-restart") == "Close and finish"
+            assert "restart" not in fake.calls[calls:]
+            listed = mine.text_content("#upd-replaced")
+            assert "470 files of NitroLearn's that you had changed were replaced." in listed
+            assert "/n/.tmp/update/replaced/1.0.0" in listed
+            assert mine.locator("#upd-replaced li.mono").count() == 10
+            assert mine.text_content("#upd-replaced-more") == "and 460 more"
+            assert "part_009.py" in listed and "part_010.py" not in listed
+            follows = "$('#upd-restart').compareDocumentPosition($('#upd-replaced'))"
+            assert mine.evaluate(f"!!({follows} & Node.DOCUMENT_POSITION_FOLLOWING)"), (
+                "the button comes first"
+            )
+            box, size = mine.locator("#upd-restart").bounding_box(), mine.viewport_size
+            assert box is not None and size is not None
+            assert box["y"] >= 0 and box["y"] + box["height"] <= size["height"], "in sight"
+            mine.click("#upd-restart")
+            mine.wait_for_selector("#upd-restart[disabled] >> text=Closing…")
 
             # Closed without finishing: the next start offers it again.
             fake.states = [{**done_state(installer="later"), "text": "", "unfinished": True}]

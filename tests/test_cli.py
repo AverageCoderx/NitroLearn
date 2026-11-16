@@ -255,6 +255,8 @@ def test_a_run_started_by_the_dashboard_says_nothing_of_ctrl_c(
 
     class Stopped:
         device_note = "cpu (FP32)"
+        agent_steps = 0
+        exploiter_next = exploiter_scores = None  # exploiters off
 
         def __init__(self, *args: object, **kwargs: object) -> None:
             pass

@@ -170,7 +170,7 @@ get_uv() {
 # python-build-standalone's releases, and checks it against the hash built into uv. Without a copy, uv
 # downloads it from python-build-standalone itself.
 python_mirror() {
-    compgen -G "$UV_PYTHON_INSTALL_DIR/cpython-3.11*" > /dev/null && return 0
+    compgen -G "$UV_PYTHON_INSTALL_DIR/cpython-$PYTHON_VERSION.*" > /dev/null && return 0
     local mirror="$root/.tmp/python-mirror"
     mkdir -p "$mirror/$(dirname "$PYTHON_MIRROR_PATH")"
     if get_pinned "$PYTHON_ASSET" "$PYTHON_SHA256" "$mirror/$PYTHON_MIRROR_PATH"; then
@@ -184,7 +184,10 @@ venv_is_ours() {
     local base
     base=$(sed -n 's/^home *= *//p' .venv/pyvenv.cfg 2> /dev/null | head -n 1)
     case "$base" in
-        "$UV_PYTHON_INSTALL_DIR"/*) .venv/bin/python -c 'import sys' > /dev/null 2>&1 ;;
+        "$UV_PYTHON_INSTALL_DIR"/*)
+            .venv/bin/python -c "import sys; sys.exit('%d.%d' % sys.version_info[:2] != '$PYTHON_VERSION')" \
+                > /dev/null 2>&1
+            ;;
         *) return 1 ;;
     esac
 }
@@ -204,10 +207,11 @@ main() {
     limited 15 "Installing Python $PYTHON_VERSION" "$uv" python install "$PYTHON_VERSION"
     unset UV_PYTHON_INSTALL_MIRROR
     rm -rf "$root/.tmp/python-mirror"
-    # A .venv that no longer runs (for example after the folder was moved), or that was made from a Python
-    # outside this folder, is made again.
+    # A .venv that no longer runs (for example after the folder was moved), that was made from a Python
+    # outside this folder, or that runs another Python than this version's (an older NitroLearn's), is made
+    # again; the older Python itself is removed at the end of the install (tools/install_tidy.py).
     if [ -e .venv ] && ! venv_is_ours; then
-        say "The private environment .venv does not work here, or uses a Python outside this folder: making it again"
+        say "The private environment .venv does not work here, uses a Python outside this folder, or not Python $PYTHON_VERSION: making it again"
         rm -rf .venv
     fi
     if [ ! -e .venv ]; then

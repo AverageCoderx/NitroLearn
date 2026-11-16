@@ -291,7 +291,7 @@ Step "Python $PythonVersion (kept in .tools\python)"
 # python-build-standalone's releases, and checks it against the hash built into uv. Without a copy, uv
 # downloads it from python-build-standalone itself.
 $mirror = Join-Path $PSScriptRoot '.tmp\python-mirror'
-if (-not (Test-Path (Join-Path $env:UV_PYTHON_INSTALL_DIR 'cpython-3.11*'))) {
+if (-not (Test-Path (Join-Path $env:UV_PYTHON_INSTALL_DIR "cpython-$PythonVersion.*"))) {
     $copy = Join-Path $mirror ($PythonMirrorPath.Replace('/', '\'))
     New-Item -ItemType Directory -Force (Split-Path $copy -Parent) -ErrorAction Stop | Out-Null
     if ((Get-Pinned $PythonAsset $PythonSha256 $copy '') -eq 'ok') {
@@ -302,8 +302,9 @@ Invoke-Uv 15 "Installing Python $PythonVersion" @('python', 'install', $PythonVe
 Remove-Item Env:\UV_PYTHON_INSTALL_MIRROR -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $mirror -ErrorAction SilentlyContinue
 
-# A .venv that no longer runs (for example after the folder was moved), or that was made from a Python
-# outside this folder, is made again.
+# A .venv that no longer runs (for example after the folder was moved), that was made from a Python outside
+# this folder, or that runs another Python than this version's (an older NitroLearn's), is made again; the
+# older Python itself is removed at the end of the install (tools\install_tidy.py).
 $venvPython = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 if (Test-Path (Join-Path $PSScriptRoot '.venv')) {
     $works = $false
@@ -312,11 +313,11 @@ if (Test-Path (Join-Path $PSScriptRoot '.venv')) {
         # UTF-8, as uv writes it: Windows PowerShell would read it in the ANSI code page, which alters a folder
         # name with other letters, and the .venv would be made again on every run.
         $base = (Get-Content -Encoding UTF8 -LiteralPath $config | Where-Object { $_ -match '^home\s*=' } | Select-Object -First 1) -replace '^home\s*=\s*', ''
-        & $venvPython -c 'import sys' 2>$null
+        & $venvPython -c "import sys; sys.exit('%d.%d' % sys.version_info[:2] != '$PythonVersion')" 2>$null
         $works = ($LASTEXITCODE -eq 0) -and "$base".Trim().StartsWith($env:UV_PYTHON_INSTALL_DIR, [StringComparison]::OrdinalIgnoreCase)
     }
     if (-not $works) {
-        Step 'The private environment .venv does not work here, or uses a Python outside this folder: making it again'
+        Step "The private environment .venv does not work here, uses a Python outside this folder, or not Python ${PythonVersion}: making it again"
         Remove-Item -Recurse -Force (Join-Path $PSScriptRoot '.venv') -ErrorAction Stop
     }
 }

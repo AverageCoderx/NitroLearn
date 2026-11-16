@@ -11,6 +11,10 @@ game between the learner and that snapshot (`nitro.ratings`); the ratings pick t
 
 With several game sizes in one run an arena's rows are its own car count, and a block mixes sizes:
 the past versions drive Orange in every size, and one rating covers them all.
+
+Frozen networks with games of their own (`Frozen`: the bot's exploiters, or in an exploiter's run the bot it
+learns to beat; `nitro.exploiters`) drive the Orange cars of their arenas the same way, with or without
+self-play; their games are counted, never rated.
 """
 
 from __future__ import annotations
@@ -82,6 +86,37 @@ class OpponentBlock:
     rows: slice
     select: torch.Tensor  # bool [rows]; True where the snapshot's action replaces the learner's
     model: ActorCritic
+
+
+@dataclass(frozen=True)
+class Frozen:
+    """Frozen networks given the arenas [start, stop), split evenly between them. Their games' columns are
+    `<column>_games` and `<column>_goal_share` (the learner's share of the goals)."""
+
+    column: str
+    start: int
+    stop: int
+    weights: tuple[dict[str, torch.Tensor], ...]  # each one's policy (and shared trunk) weights
+    numbers: tuple[int, ...] = ()  # the bot's exploiters: each network's exploiter number
+
+    def blocks(self) -> list[tuple[Block, dict[str, torch.Tensor]]]:
+        """Each network's arenas with its weights; a network left without an arena (fewer arenas than
+        networks, as on a card's share of them) is left out."""
+        size, parts = self.stop - self.start, len(self.weights)
+        bounds = [self.start + size * i // parts for i in range(parts + 1)]
+        return [
+            (Block(i, bounds[i], bounds[i + 1]), self.weights[i])
+            for i in range(parts)
+            if bounds[i + 1] > bounds[i]
+        ]
+
+
+@dataclass
+class Score:
+    """Games counted against frozen networks (never rated): how many, and the learner's goals in them."""
+
+    games: int = 0
+    wins: int = 0
 
 
 @dataclass(frozen=True)
@@ -168,10 +203,15 @@ class SelfPlay:
         groups: int,
         cars_per_env: int | Sequence[int],
         group_agents: list[int],
+        frozen: Frozen | None = None,
     ) -> None:
-        """`cars_per_env`: every arena's car count, or one count for all."""
+        """`cars_per_env`: every arena's car count, or one count for all. `frozen`: frozen networks with
+        games of their own (exploiters)."""
         self.config = config.selfplay
         self.enabled = self.config.enabled and pool_folder is not None
+        self.frozen = frozen if frozen is not None and frozen.weights else None
+        # Whether others than the learner drive any rows (past versions, frozen networks).
+        self.in_use = self.enabled or self.frozen is not None
         self.seed = config.run.seed
         self.device = device
         self.model = model
@@ -208,8 +248,32 @@ class SelfPlay:
         self.resume_notes: list[str] = []
         self.resume_info: list[str] = []
         self.unreadable: set[int] = set()  # snapshots that did not read: said once, never picked again
+        # Frozen networks: each block with its network (loaded once, never swapped), and their Orange rows.
+        self.frozen_blocks: list[tuple[Block, ActorCritic]] = []
+        for block, weights in self.frozen.blocks() if self.frozen is not None else []:
+            model = self._frozen_copy()
+            model.load_policy_state_dict(weights)
+            self.frozen_blocks.append((block, model))
+        self._frozen_selects: dict[tuple[int, int], torch.Tensor] = {}
+        for group in range(groups):
+            for block, _ in self.frozen_blocks:
+                rows = group_rows(block, groups, group, self.arena_cars)
+                # Cars alternate Blue, Orange in every arena and each arena has an even count.
+                orange = torch.arange(rows.start, rows.stop, device=device) % 2 == 1
+                self._frozen_selects[group, block.slot] = orange
+        self.frozen_score = Score()
+        # This iteration's games against them: (the network's slot, 1 if the learner scored).
+        self.frozen_results: list[tuple[int, int]] = []
+        if self.frozen_blocks:
+            self._apply_active()  # rows others drive are never the learner's, from the first step
 
     def _frozen_copy(self) -> ActorCritic:
+        # A fresh network draws its starting weights: kept off the run's random numbers, which a resumed run
+        # restores before building these, so a resume continues exactly as the straight run.
+        with torch.random.fork_rng(devices=[]):
+            return self._new_frozen_copy()
+
+    def _new_frozen_copy(self) -> ActorCritic:
         if self.fp16:  # weights held in FP16 as autocast would cast them each step: the same answers
             return fp16_inference_copy(self.model)
         copy = self.model.fresh_copy().to(self.device)
@@ -222,7 +286,7 @@ class SelfPlay:
     # --- what the trainer and the inference graphs need -------------------------------------------
 
     def group_opponents(self, group: int) -> list[OpponentBlock]:
-        return [
+        past = [
             OpponentBlock(
                 group_rows(block, self.groups, group, self.arena_cars),
                 self._selects[group, block.slot],
@@ -230,11 +294,23 @@ class SelfPlay:
             )
             for block in self.blocks
         ]
+        frozen = [
+            OpponentBlock(rows, self._frozen_selects[group, block.slot], model)
+            for block, model in self.frozen_blocks
+            if (rows := group_rows(block, self.groups, group, self.arena_cars)).stop > rows.start
+        ]
+        return past + frozen
+
+    def frozen_block_of_arena(self, arena: int) -> int | None:
+        for block, _ in self.frozen_blocks:
+            if block.start <= arena < block.stop:
+                return block.slot
+        return None
 
     @property
     def learner_rows(self) -> torch.Tensor | None:
         """Bool [all agents]: rows the learner drives (None when every row is the learner's)."""
-        return self._learner_rows if self.enabled else None
+        return self._learner_rows if self.in_use else None
 
     def slot_of_arena(self, arena: int) -> int | None:
         for block in self.blocks:
@@ -275,6 +351,10 @@ class SelfPlay:
                 driven = orange & (self.active[block.slot] is not None)
                 self._selects[group, block.slot].copy_(driven)
                 self._learner_rows[offset + rows.start : offset + rows.stop] &= ~driven
+            for block, _ in self.frozen_blocks:  # frozen networks drive their games' Orange cars
+                rows = group_rows(block, self.groups, group, self.arena_cars)
+                selected = self._frozen_selects[group, block.slot]
+                self._learner_rows[offset + rows.start : offset + rows.stop] &= ~selected
             offset += self.group_agents[group]
 
     def _read(self, steps: int) -> dict[str, torch.Tensor] | None:
@@ -305,6 +385,9 @@ class SelfPlay:
                 cars = self.arena_cars[arena]
                 empty = self.active[block.slot] is None
                 counted[arena] = [empty or car % 2 == 0 for car in range(cars)]
+        for block, _ in self.frozen_blocks:
+            for arena in range(block.start, block.stop):
+                counted[arena] = [car % 2 == 0 for car in range(self.arena_cars[arena])]
         return counted
 
     def record(
@@ -313,14 +396,21 @@ class SelfPlay:
         """Rates every goal in an active slot's arenas as one game (Blue = the learner); `agent_steps` is
         the run's step count, written with each game so a resume can drop games recorded after its save.
         `even`: per setter, whether it starts every car alike; those games are also counted apart (a
-        setter past its end counts as uneven). Ratings and games.csv are the same either way."""
-        if not self.enabled:
+        setter past its end counts as uneven). Ratings and games.csv are the same either way. A goal in a
+        frozen network's arenas is counted as a game against it, never rated."""
+        if not self.in_use:
             return GameStats(0, 0, math.nan)
         rows: list[tuple[int, int]] = []
         evenness = []
         even_games = even_wins = 0
         for record in episodes:
             if record.car != 0 or record.goal == 0:
+                continue
+            frozen = self.frozen_block_of_arena(record.env)
+            if frozen is not None:
+                self.frozen_score.games += 1
+                self.frozen_score.wins += int(record.goal > 0)
+                self.frozen_results.append((frozen, int(record.goal > 0)))
                 continue
             slot = self.slot_of_arena(record.env)
             if slot is None or (steps := self.active[slot]) is None:
@@ -399,6 +489,26 @@ class SelfPlay:
             "rating_sigma": self.learner.sigma,
             "pool_size": float(self._pool_size),
         }
+
+    def frozen_metrics(self) -> dict[str, Any]:
+        """This iteration's games against the frozen networks: how many, the learner's goal share."""
+        if self.frozen is None:
+            return {}
+        score, column = self.frozen_score, self.frozen.column
+        row = {
+            f"{column}_games": score.games,
+            f"{column}_goal_share": score.wins / score.games if score.games else "",
+        }
+        score.games = score.wins = 0
+        self.frozen_results.clear()
+        return row
+
+    def take_frozen_results(self) -> list[tuple[int, int]]:
+        """This iteration's games against the frozen networks, in order, as (the network's slot, 1 if the
+        learner scored), and clears them (an exploiter's tally of its recent games; the bot's against each
+        exploiter)."""
+        results, self.frozen_results = self.frozen_results, []
+        return results
 
     # --- checkpoints --------------------------------------------------------------------------------
 

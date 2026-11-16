@@ -26,7 +26,9 @@ DefaultDirName={localappdata}\Programs\NitroLearn
 PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
-DisableDirPage=auto
+; Always shown, filled in with the last install's folder, so an upgrade says which folder it updates and a
+; person with more than one install can pick the one to update.
+DisableDirPage=no
 ; The folder is checked by the script (NextButtonClick): one question at most, and none for a folder an
 ; uninstall left with the user's bots in it.
 DirExistsWarning=no

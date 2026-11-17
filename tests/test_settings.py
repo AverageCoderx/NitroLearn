@@ -143,7 +143,6 @@ fuzz_uu = 50
     [
         ('[ppo]\nlr_schedule = "kl_adaptive"\n', "ppo.lr_schedule"),
         ("[env]\ngpu_physics = true\n", "env.gpu_physics"),
-        ('[env]\naction_masks = "other"\n', "env.action_masks"),
         ("[terminals]\nair_sequence = true\n", "terminals.air_sequence"),
         ('[[rewards]]\nname = "touch_ball"\npaid_on_goal = 3\n', "rewards[0].paid_on_goal"),
         ('[[rewards]]\nname = "touch_ball"\nramp = { to = 2.0 }\n', "rewards[0].ramp"),

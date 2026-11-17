@@ -58,6 +58,11 @@ _SHOWN_NAME = re.compile(r'^[^"\\\x00-\x1f]{1,40}$')
 _HEADER = "\n$ nitro "  # jobs.spawn writes one before each command's output
 
 
+def _plain_name(text: str, fallback: str) -> str:
+    """`text` (a settings file's name) as part of a name `_NAME` takes: other characters become '-'."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", text).strip("-._") or fallback
+
+
 def _safe(method: Callable[..., Any]) -> Callable[..., Any]:
     """`nitro.dashboard.api._safe`, looked up when called: that module loads this one."""
 
@@ -360,7 +365,8 @@ class Tools:
         tasks = [task["name"] for task in _tasks()]
         if what != "speed" and what not in tasks:
             raise ValueError("pick what to compare them on: a practice task, or training speed")
-        title = str(options.get("name") or "").strip() or f"{labels[0]}-vs-{labels[1]}-{what}"
+        made = f"{_plain_name(labels[0], 'a')}-vs-{_plain_name(labels[1], 'b')}-{what}"[:64].rstrip("-.")
+        title = str(options.get("name") or "").strip() or made
         if not _NAME.match(title):
             raise ValueError("the comparison's name uses letters, digits, '-', '_' and '.'")
         args = ["ab", str(paths[0]), str(paths[1])]

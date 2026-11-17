@@ -16,6 +16,13 @@ pub enum ObsKind {
     /// The native observation plus the relative, goal-aware and scalar features strong bots use:
     /// 148 values in 1v1. A setting, unproven until compared.
     NitroV2,
+    /// GigaLearn's `AdvancedObs`, reproduced exactly (including its mirrored boost-pad timers).
+    GigalearnAdvanced,
+    /// GigaLearn's `DefaultObs`, reproduced exactly.
+    GigalearnDefault,
+    /// AdvancedObsPadderGGL, a community GigaLearn observation, reproduced exactly: places for
+    /// `obs_team_size` players a side (its `teamSize`; 0 = the game's), the empty ones all zeros.
+    GigalearnPadder,
 }
 
 /// Where each part of a native observation sits, so the network can treat other cars as a set.
@@ -50,6 +57,12 @@ const NATIVE_CAR: usize = 23;
 const NATIVE_SELF_EXTRA: usize = 9;
 const NATIVE_OTHER: usize = NATIVE_CAR + 6;
 const NATIVE_GLOBAL: usize = 9 + NUM_BOOST_PADS + 8;
+const GIGALEARN_PLAYER: usize = 29;
+const GIGALEARN_GLOBAL: usize = 9 + 8 + NUM_BOOST_PADS;
+const GIGALEARN_DEFAULT_PLAYER: usize = 19;
+// AdvancedObsPadderGGL: 26 numbers a car, and 6 more (relative to the own car) for every other car.
+const PADDER_PLAYER: usize = 26;
+const PADDER_OTHER: usize = PADDER_PLAYER + 6;
 // v2: ball 9 + speed 1 + on-floor flag 1 + to each goal (vector 3 + distance 1) × 2 + speed toward goal 1.
 const V2_BALL: usize = 20;
 // v2 car: pos, forward, up, vel, ang vel (15) + speed 1 + boost 1 + 7 flags + demo timer 1 + flip window 1.
@@ -65,10 +78,22 @@ impl ObsKind {
     /// Layout for `team_size` cars per team, with or without an opposing team. With `room` (players per
     /// team, at least `team_size`; 0 = none), there are places for `room - 1` teammates and `room`
     /// opponents whatever the game, each other-car block ends in a "car present" flag, and empty places
-    /// are zeros: one network fits every game up to `room` a side, the one-car practice tasks included
-    ///.
+    /// are zeros: one network fits every game up to `room` a side, the one-car practice tasks included.
+    /// GigaLearn's padder has `room` places its own way (unflagged); its other copies take no room.
     pub fn layout(self, team_size: usize, has_opponents: bool, room: usize) -> ObsLayout {
         let (self_part, base_other) = self.parts();
+        if self == Self::GigalearnPadder {
+            // Its places are always `teamSize - 1` teammates and `teamSize` opponents, unflagged.
+            let places = if room == 0 { team_size } else { room };
+            return ObsLayout {
+                size: self_part + base_other * (2 * places - 1),
+                self_part,
+                other_car: base_other,
+                teammates: places - 1,
+                opponents: places,
+                room,
+            };
+        }
         let (teammates, opponents, other_car) = if room == 0 {
             let opponents = if has_opponents { team_size } else { 0 };
             (team_size - 1, opponents, base_other)
@@ -90,11 +115,17 @@ impl ObsKind {
         match self {
             Self::Native => (NATIVE_GLOBAL + NATIVE_CAR + NATIVE_SELF_EXTRA, NATIVE_OTHER),
             Self::NitroV2 => (V2_GLOBAL + V2_CAR + V2_SELF_EXTRA, V2_CAR + V2_OTHER_EXTRA),
+            Self::GigalearnAdvanced => (GIGALEARN_GLOBAL + GIGALEARN_PLAYER, GIGALEARN_PLAYER),
+            Self::GigalearnDefault => (
+                GIGALEARN_GLOBAL + GIGALEARN_DEFAULT_PLAYER,
+                GIGALEARN_DEFAULT_PLAYER,
+            ),
+            Self::GigalearnPadder => (GIGALEARN_GLOBAL + PADDER_PLAYER, PADDER_OTHER),
         }
     }
 
     /// The layout with exactly `teammates` and `opponents` flagged car places and none empty (`build_cars`):
-    /// what an attention policy reads in a game bigger than its room.
+    /// what an attention policy reads in a game bigger than its room. Native and nitro_v2 only.
     pub fn cars_layout(self, teammates: usize, opponents: usize) -> ObsLayout {
         let (self_part, base_other) = self.parts();
         ObsLayout {
@@ -105,6 +136,18 @@ impl ObsKind {
             opponents,
             room: (teammates + 1).max(opponents),
         }
+    }
+
+    /// Whether this observation has NitroLearn's flagged car places, so it can be padded, shuffled, read by
+    /// an attention encoder or given the ball prediction (GigaLearn's exact copies cannot).
+    pub fn pads(self) -> bool {
+        matches!(self, Self::Native | Self::NitroV2)
+    }
+
+    /// Whether this observation takes `obs_team_size` (room for more players than the game has): NitroLearn's
+    /// padded ones and GigaLearn's padder (which pads its own way, without flags).
+    pub fn takes_room(self) -> bool {
+        self.pads() || self == Self::GigalearnPadder
     }
 
     /// `layout` for settings that may be wrong: the same rules as the core's settings check, and only
@@ -121,6 +164,12 @@ impl ObsKind {
         if room != 0 && (room < team_size || room * 2 > crate::snapshot::MAX_CARS) {
             return Err("obs_team_size must be 0 or from team_size to 4".to_owned());
         }
+        if room != 0 && !self.takes_room() {
+            return Err(
+                "obs_team_size needs the native, nitro_v2 or gigalearn_padder observation"
+                    .to_owned(),
+            );
+        }
         Ok(self.layout(team_size, has_opponents, room))
     }
 
@@ -129,7 +178,21 @@ impl ObsKind {
         match name {
             "native" => Some(Self::Native),
             "nitro_v2" => Some(Self::NitroV2),
+            "gigalearn_advanced" => Some(Self::GigalearnAdvanced),
+            "gigalearn_default" => Some(Self::GigalearnDefault),
+            "gigalearn_padder" => Some(Self::GigalearnPadder),
             _ => None,
+        }
+    }
+
+    /// The name a settings file gives this kind (`from_name`'s).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::NitroV2 => "nitro_v2",
+            Self::GigalearnAdvanced => "gigalearn_advanced",
+            Self::GigalearnDefault => "gigalearn_default",
+            Self::GigalearnPadder => "gigalearn_padder",
         }
     }
 
@@ -175,9 +238,10 @@ impl ObsKind {
         out: &mut [f32],
     ) {
         assert!(
-            slots.is_empty() || room > 0,
+            slots.is_empty() || (room > 0 && self.pads()),
             "slots need a padded observation"
         );
+        assert!(room == 0 || self.takes_room(), "{self:?} cannot be padded");
         self.write(
             snap,
             me,
@@ -201,6 +265,7 @@ impl ObsKind {
         prediction: &[Body],
         out: &mut Vec<f32>,
     ) -> (usize, usize) {
+        assert!(self.pads(), "{self:?} has no car places");
         let team = snap.cars[me].team;
         let teammates = snap.cars.iter().filter(|car| car.team == team).count() - 1;
         let opponents = snap.cars.len() - 1 - teammates;
@@ -232,11 +297,18 @@ impl ObsKind {
         prediction: &[Body],
         out: &mut [f32],
     ) {
+        assert!(
+            prediction.is_empty() || self.pads(),
+            "{self:?} has no ball prediction"
+        );
         let mut writer = Writer { out, len: 0 };
-        let places = (places, slots);
+        let slotted = (places, slots);
         match self {
-            Self::Native => native(snap, me, prev_action, places, prediction, &mut writer),
-            Self::NitroV2 => nitro_v2(snap, me, prev_action, places, prediction, &mut writer),
+            Self::Native => native(snap, me, prev_action, slotted, prediction, &mut writer),
+            Self::NitroV2 => nitro_v2(snap, me, prev_action, slotted, prediction, &mut writer),
+            Self::GigalearnAdvanced => gigalearn_advanced(snap, me, prev_action, &mut writer),
+            Self::GigalearnDefault => gigalearn_default(snap, me, prev_action, &mut writer),
+            Self::GigalearnPadder => gigalearn_padder(snap, me, prev_action, places, &mut writer),
         }
         assert_eq!(writer.len, writer.out.len(), "observation size mismatch");
     }
@@ -299,6 +371,18 @@ fn local(rot: Mat3A, v: Vec3A) -> Vec3A {
 /// The pad that sits where pad `i` would be after the 180° team flip (pads are ordered by y then x).
 const fn flipped_pad(i: usize) -> usize {
     NUM_BOOST_PADS - 1 - i
+}
+
+/// Snapshot index of the pad in slot `slot` of GigaLearn's (RLBot's) pad list. That list is ordered by
+/// y then x except at y = ∓1024, where the centre pad sits between the two pads at y = ∓1036.
+pub(crate) const fn gigalearn_pad(slot: usize) -> usize {
+    match slot {
+        13 => 14,
+        14 => 13,
+        19 => 20,
+        20 => 19,
+        other => other,
+    }
 }
 
 /// Pads sorted by y then x come in rows of equal y; mirroring the field left-right (x → −x) reverses each
@@ -591,20 +675,202 @@ fn v2_car(car: &CarSnapshot, body: Body, w: &mut Writer<'_>) {
     w.scalar(car.flip_time_left * s::FLIP_WINDOW);
 }
 
+mod gigalearn_scale {
+    pub const POS: f32 = 1.0 / 5000.0;
+    pub const VEL: f32 = 1.0 / 2300.0;
+    pub const ANG_VEL: f32 = 1.0 / 3.0;
+}
+
+fn gigalearn_advanced(snap: &GameSnapshot, me: usize, prev_action: Controls, w: &mut Writer<'_>) {
+    use gigalearn_scale as s;
+    let team = snap.cars[me].team;
+    let ball = team_view(snap.ball, team);
+    w.vec(ball.pos * s::POS);
+    w.vec(ball.vel * s::VEL);
+    w.vec(ball.ang_vel * s::ANG_VEL);
+    for value in prev_action.to_floats() {
+        w.scalar(value);
+    }
+    for slot in 0..NUM_BOOST_PADS {
+        // GigaLearn's GetBoostPadTimers returns the opposite team's list, so the timer comes from the
+        // mirrored pad. Reproduced on purpose.
+        let pad = gigalearn_pad(slot);
+        let (active_pad, timer_pad) = if team == Team::Blue {
+            (pad, flipped_pad(pad))
+        } else {
+            (flipped_pad(pad), pad)
+        };
+        w.scalar(pad_value(
+            snap.pads[active_pad].active,
+            snap.pads[timer_pad].cooldown,
+        ));
+    }
+    gigalearn_player(&snap.cars[me], team, ball, w);
+    for car in other_cars(snap, me) {
+        gigalearn_player(car, team, ball, w);
+    }
+}
+
+mod gigalearn_default_scale {
+    use rocketsim::Vec3A;
+    // Side wall, back wall and ceiling.
+    pub const POS: Vec3A = Vec3A::new(1.0 / 4096.0, 1.0 / 5120.0, 1.0 / 2044.0);
+    pub const VEL: f32 = 1.0 / 2300.0;
+    // The car's top angular speed.
+    pub const ANG_VEL: f32 = 1.0 / 5.5;
+}
+
+fn gigalearn_default(snap: &GameSnapshot, me: usize, prev_action: Controls, w: &mut Writer<'_>) {
+    use gigalearn_default_scale as s;
+    let team = snap.cars[me].team;
+    let ball = team_view(snap.ball, team);
+    w.vec(ball.pos * s::POS);
+    w.vec(ball.vel * s::VEL);
+    w.vec(ball.ang_vel * s::ANG_VEL);
+    for value in prev_action.to_floats() {
+        w.scalar(value);
+    }
+    for slot in 0..NUM_BOOST_PADS {
+        let pad = gigalearn_pad(slot);
+        let pad = if team == Team::Blue {
+            pad
+        } else {
+            flipped_pad(pad)
+        };
+        w.flag(snap.pads[pad].active);
+    }
+    gigalearn_default_player(&snap.cars[me], team, w);
+    for car in other_cars(snap, me) {
+        gigalearn_default_player(car, team, w);
+    }
+}
+
+fn gigalearn_default_player(car: &CarSnapshot, viewer: Team, w: &mut Writer<'_>) {
+    use gigalearn_default_scale as s;
+    let body = team_view(car.body, viewer);
+    w.vec(body.pos * s::POS);
+    w.vec(body.forward());
+    w.vec(body.up());
+    w.vec(body.vel * s::VEL);
+    w.vec(body.ang_vel * s::ANG_VEL);
+    w.scalar(car.boost / 100.0);
+    w.flag(car.on_ground);
+    w.flag(car.can_flip);
+    w.flag(car.is_demoed);
+}
+
+/// AdvancedObsPadderGGL, a community GigaLearn observation: positions and speeds over 2300, spins over pi;
+/// pads as gigalearn_default; the own car, then up to `teammates` teammates and `opponents` opponents in
+/// car order (more are left out, as there), each also relative to the own car, the missing places all
+/// zeros. `places` None: every other car (the game's size).
+fn gigalearn_padder(
+    snap: &GameSnapshot,
+    me: usize,
+    prev_action: Controls,
+    places: Places,
+    w: &mut Writer<'_>,
+) {
+    const SCALE: f32 = 1.0 / 2300.0;
+    let team = snap.cars[me].team;
+    let ball = team_view(snap.ball, team);
+    w.vec(ball.pos * SCALE);
+    w.vec(ball.vel * SCALE);
+    w.vec(ball.ang_vel / std::f32::consts::PI);
+    for value in prev_action.to_floats() {
+        w.scalar(value);
+    }
+    for slot in 0..NUM_BOOST_PADS {
+        let pad = gigalearn_pad(slot);
+        let pad = if team == Team::Blue {
+            pad
+        } else {
+            flipped_pad(pad)
+        };
+        w.flag(snap.pads[pad].active);
+    }
+    let player = |car: &CarSnapshot, w: &mut Writer<'_>| {
+        let body = team_view(car.body, team);
+        w.vec((ball.pos - body.pos) * SCALE);
+        w.vec((ball.vel - body.vel) * SCALE);
+        w.vec(body.pos * SCALE);
+        w.vec(body.forward());
+        w.vec(body.up());
+        w.vec(body.vel * SCALE);
+        w.vec(body.ang_vel / std::f32::consts::PI);
+        w.scalar(car.boost / 100.0);
+        w.flag(car.on_ground);
+        w.flag(car.can_flip);
+        w.flag(car.is_demoed);
+        w.scalar(0.0); // the source's placeholder
+        body
+    };
+    let mine = player(&snap.cars[me], w);
+    let others: Vec<&CarSnapshot> = other_cars(snap, me).collect();
+    let teammates = others.iter().filter(|car| car.team == team).count();
+    let (room_mates, room_opponents) = places.unwrap_or((teammates, others.len() - teammates));
+    for (own_side, room) in [(true, room_mates), (false, room_opponents)] {
+        let side = others.iter().filter(|car| (car.team == team) == own_side);
+        let mut written = 0;
+        for car in side.take(room) {
+            let body = player(car, w);
+            w.vec((body.pos - mine.pos) * SCALE);
+            w.vec((body.vel - mine.vel) * SCALE);
+            written += 1;
+        }
+        w.zeros((room - written) * PADDER_OTHER);
+    }
+}
+
+fn gigalearn_player(car: &CarSnapshot, viewer: Team, ball: Body, w: &mut Writer<'_>) {
+    use gigalearn_scale as s;
+    let body = team_view(car.body, viewer);
+    w.vec(body.pos * s::POS);
+    w.vec(body.forward());
+    w.vec(body.up());
+    w.vec(body.vel * s::VEL);
+    w.vec(body.ang_vel * s::ANG_VEL);
+    w.vec(local(body.rot, body.ang_vel) * s::ANG_VEL);
+    w.vec(local(body.rot, ball.pos - body.pos) * s::POS);
+    w.vec(local(body.rot, ball.vel - body.vel) * s::VEL);
+    w.scalar(car.boost / 100.0);
+    w.flag(car.on_ground);
+    w.flag(car.can_flip);
+    w.flag(car.is_demoed);
+    w.flag(car.has_jumped);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn a_kind_is_named_as_in_the_settings_and_its_layout_checked_alone() {
-        for name in ["native", "nitro_v2"] {
+        for name in [
+            "native",
+            "nitro_v2",
+            "gigalearn_advanced",
+            "gigalearn_default",
+            "gigalearn_padder",
+        ] {
             let parsed: ObsKind = serde_json::from_str(&format!("\"{name}\"")).unwrap();
             assert_eq!(ObsKind::from_name(name), Some(parsed));
+            assert_eq!(parsed.name(), name);
         }
         assert_eq!(ObsKind::from_name("nexto"), None);
         let padded = ObsKind::Native.checked_layout(2, true, 3).unwrap();
         assert_eq!(padded, ObsKind::Native.layout(2, true, 3));
         assert!(ObsKind::Native.checked_layout(3, true, 2).is_err());
+        assert!(
+            ObsKind::GigalearnAdvanced
+                .checked_layout(1, true, 1)
+                .is_err()
+        );
+        assert!(
+            ObsKind::GigalearnDefault
+                .checked_layout(1, true, 2)
+                .is_err()
+        );
+        assert!(ObsKind::GigalearnPadder.checked_layout(1, true, 3).is_ok());
         assert!(ObsKind::Native.checked_layout(0, true, 0).is_err());
     }
 
@@ -764,6 +1030,9 @@ mod tests {
 
     #[test]
     fn sizes() {
+        assert_eq!(ObsKind::GigalearnAdvanced.layout(1, true, 0).size, 109);
+        assert_eq!(ObsKind::GigalearnAdvanced.layout(2, true, 0).size, 167);
+        assert_eq!(ObsKind::GigalearnAdvanced.layout(1, false, 0).size, 80);
         assert_eq!(ObsKind::Native.layout(1, true, 0).size, 112);
         // Self part: ball 9 + pads 34 + previous action 8 + own car 23 + egocentric extras 9 = 83.
         assert_eq!(ObsKind::Native.layout(3, true, 0).size, 83 + 29 * 5);
@@ -891,6 +1160,71 @@ mod tests {
         let o = obs(ObsKind::Native, &snap, 0);
         let ball_rel = NATIVE_GLOBAL + NATIVE_CAR + 3;
         assert_eq!(&o[ball_rel..ball_rel + 3], &[1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn gigalearn_reads_pad_timers_from_the_mirrored_pad() {
+        let snap = snapshot(1);
+        let o = obs(ObsKind::GigalearnAdvanced, &snap, 0);
+        let pads = 9 + 8;
+        // Blue: pad 3 is taken and its timer is read from pad 30 (1.5 s); pad 30 is taken and read from pad 3.
+        assert_eq!(o[pads + 3], 1.0 / 2.5);
+        assert_eq!(o[pads + 30], 1.0 / 5.0);
+        let native = obs(ObsKind::Native, &snap, 0);
+        assert_eq!(native[9 + 3], 1.0 / 5.0);
+    }
+
+    #[test]
+    fn gigalearn_lists_the_centre_pads_in_rlbot_order() {
+        let mut snap = snapshot(1);
+        // Snapshot pad 14 is the one at (0, -1024); GigaLearn calls it slot 13. Its mirror is pad 19.
+        snap.pads[14] = PadSnapshot {
+            active: false,
+            cooldown: 4.0,
+        };
+        snap.pads[19] = PadSnapshot {
+            active: false,
+            cooldown: 1.5,
+        };
+        let o = obs(ObsKind::GigalearnAdvanced, &snap, 0);
+        let pads = 9 + 8;
+        assert_eq!(o[pads + 13], 1.0 / 2.5);
+        assert_eq!(o[pads + 14], 1.0);
+        assert_eq!(o[pads + 20], 1.0 / 5.0);
+    }
+
+    #[test]
+    fn gigalearn_default_is_defaultobs() {
+        // Ball 9 + previous action 8 + pads 34 + own car 19, then 19 per other car.
+        assert_eq!(ObsKind::GigalearnDefault.layout(1, true, 0).size, 89);
+        assert_eq!(
+            ObsKind::GigalearnDefault.layout(3, true, 0).size,
+            51 + 19 * 6
+        );
+        let mut snap = snapshot(1);
+        snap.cars[1].body.pos = Vec3A::new(4096.0, -5120.0, 1022.0);
+        snap.cars[1].body.vel = Vec3A::new(230.0, 0.0, 0.0);
+        snap.cars[1].body.ang_vel = Vec3A::new(0.0, 0.0, 5.5);
+        snap.cars[1].is_demoed = true;
+        let o = obs(ObsKind::GigalearnDefault, &snap, 1);
+        // Orange sees the field turned half a turn; positions over the walls and ceiling, speeds over the tops.
+        assert_eq!(&o[51..54], &[-1.0, 1.0, 0.5]);
+        assert_eq!(&o[60..63], &[-0.1, 0.0, 0.0]);
+        assert_eq!(o[65], 1.0);
+        assert_eq!(
+            &o[66..70],
+            &[0.1, 0.0, 1.0, 1.0],
+            "boost, on ground, can flip, demoed"
+        );
+        // Pads: active flags only, no timers; Orange's list is the turned one (pad 3 is its slot 30).
+        assert_eq!(o[17 + 30], 0.0);
+        assert_eq!(o[17 + 3], 0.0);
+        assert_eq!(o[17], 1.0);
+        assert_eq!(
+            &o[9..17],
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            "previous action"
+        );
     }
 
     #[test]
@@ -1044,6 +1378,181 @@ mod tests {
         assert_eq!(mirrored_pad(16), 17);
     }
 
+    /// One random game of the reference files, drawn from `rng` in a fixed order; `air_times` gets each car's
+    /// air time since its jump.
+    fn reference_game(
+        rng: &mut fastrand::Rng,
+        team_size: usize,
+        opponents: bool,
+        next_state: &mut usize,
+        air_times: &mut Vec<f32>,
+    ) -> (GameSnapshot, Controls) {
+        let cars = team_size * if opponents { 2 } else { 1 };
+        let mut snap = GameSnapshot::default();
+        let random_body = |rng: &mut fastrand::Rng, z_min: f32| Body {
+            pos: Vec3A::new(
+                (rng.f32() * 2.0 - 1.0) * 4000.0,
+                (rng.f32() * 2.0 - 1.0) * 5000.0,
+                z_min + rng.f32() * 1500.0,
+            ),
+            rot: Mat3A::from_rotation_z((rng.f32() * 2.0 - 1.0) * PI)
+                * Mat3A::from_rotation_y((rng.f32() * 2.0 - 1.0) * 1.5)
+                * Mat3A::from_rotation_x((rng.f32() * 2.0 - 1.0) * PI),
+            vel: Vec3A::new(
+                (rng.f32() * 2.0 - 1.0) * 2300.0,
+                (rng.f32() * 2.0 - 1.0) * 2300.0,
+                (rng.f32() * 2.0 - 1.0) * 1000.0,
+            ),
+            ang_vel: Vec3A::new(
+                (rng.f32() * 2.0 - 1.0) * 5.5,
+                (rng.f32() * 2.0 - 1.0) * 5.5,
+                (rng.f32() * 2.0 - 1.0) * 5.5,
+            ),
+        };
+        snap.ball = random_body(&mut *rng, 93.0);
+        air_times.clear();
+        for i in 0..cars {
+            let body = random_body(&mut *rng, 17.0);
+            // As in RocketSim: on the ground nothing is used up; in the air a car may have jumped, then
+            // flipped or double-jumped (not both), and keeps its flip only within the window. The cars
+            // take the six states in turn, so every one appears among the reference's 13 cars.
+            let state = *next_state % 6;
+            *next_state += 1;
+            let on_ground = state == 0;
+            let has_jumped = state >= 2;
+            let has_flipped = state == 4;
+            let has_double_jumped = state == 5;
+            let air_time = match state {
+                2 => rng.f32() * 1.2,       // jumped, flip still there
+                3 => 1.3 + rng.f32() * 0.7, // jumped, flip window over
+                4 | 5 => rng.f32() * 2.0,   // flipped or double-jumped
+                _ => 0.0,                   // on the ground, or drove off a wall
+            };
+            let can_flip = on_ground
+                || (!has_flipped
+                    && !has_double_jumped
+                    && (!has_jumped || air_time < crate::snapshot::FLIP_WINDOW_SECONDS));
+            let is_demoed = rng.usize(0..4) == 0;
+            air_times.push(air_time);
+            snap.cars.push(CarSnapshot {
+                team: if i % 2 == 0 || !opponents {
+                    Team::Blue
+                } else {
+                    Team::Orange
+                },
+                boost: rng.f32() * 100.0,
+                on_ground,
+                has_jumped,
+                has_double_jumped,
+                has_flipped,
+                can_flip,
+                is_demoed,
+                is_supersonic: body.vel.length() >= 2200.0,
+                demo_timer: if is_demoed { rng.f32() * 3.0 } else { 0.0 },
+                flip_time_left: CarSnapshot::flip_time_left_from(
+                    on_ground, has_jumped, can_flip, air_time,
+                ),
+                body,
+            });
+        }
+        for pad in &mut snap.pads {
+            *pad = PadSnapshot {
+                active: rng.bool(),
+                cooldown: rng.f32() * 10.0,
+            };
+            if pad.active {
+                pad.cooldown = 0.0;
+            }
+        }
+        let axis = |rng: &mut fastrand::Rng| [-1.0f32, 0.0, 1.0][rng.usize(0..3)];
+        let prev = Controls {
+            throttle: axis(&mut *rng),
+            steer: axis(&mut *rng),
+            pitch: axis(&mut *rng),
+            yaw: axis(&mut *rng),
+            roll: axis(&mut *rng),
+            jump: rng.bool(),
+            boost: rng.bool(),
+            handbrake: rng.bool(),
+        };
+        (snap, prev)
+    }
+
+    fn reference_floats(values: &[f32]) -> String {
+        values
+            .iter()
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The game's lines of a reference file: the case, ball, cars, pads and previous action.
+    fn write_reference_game(
+        text: &mut String,
+        team_size: usize,
+        opponents: bool,
+        snap: &GameSnapshot,
+        prev: Controls,
+        air_times: &[f32],
+    ) {
+        use std::fmt::Write as _;
+        let cars = snap.cars.len();
+        let _ = writeln!(
+            text,
+            "case team_size {team_size} opponents {} cars {cars}",
+            u8::from(opponents)
+        );
+        let body_floats = |b: &Body| {
+            let mut v = b.pos.to_array().to_vec();
+            v.extend(b.rot.x_axis.to_array());
+            v.extend(b.rot.y_axis.to_array());
+            v.extend(b.rot.z_axis.to_array());
+            v.extend(b.vel.to_array());
+            v.extend(b.ang_vel.to_array());
+            v
+        };
+        let ball = [
+            snap.ball.pos.to_array(),
+            snap.ball.vel.to_array(),
+            snap.ball.ang_vel.to_array(),
+        ]
+        .concat();
+        let _ = writeln!(text, "ball {}", reference_floats(&ball));
+        for (car, air_time) in snap.cars.iter().zip(air_times) {
+            let flags = [
+                car.on_ground,
+                car.has_jumped,
+                car.has_double_jumped,
+                car.has_flipped,
+                car.can_flip,
+                car.is_demoed,
+                car.is_supersonic,
+            ];
+            let _ = writeln!(
+                text,
+                "car {} {} {:?} {} {:?} {:?} {:?}",
+                car.team.index(),
+                reference_floats(&body_floats(&car.body)),
+                car.boost,
+                flags
+                    .iter()
+                    .map(|&f| u8::from(f).to_string())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                car.demo_timer,
+                car.flip_time_left,
+                air_time
+            );
+        }
+        let pads: Vec<String> = snap
+            .pads
+            .iter()
+            .map(|p| format!("{} {:?}", u8::from(p.active), p.cooldown))
+            .collect();
+        let _ = writeln!(text, "pads {}", pads.join(" "));
+        let _ = writeln!(text, "prev {}", reference_floats(&prev.to_floats()));
+    }
+
     /// Deterministic random games against a committed reference file, so any change to the v2 observation's
     /// values shows. Set NITRO_WRITE_REFERENCE=1 to rewrite the file after a deliberate change to the
     /// observation.
@@ -1058,160 +1567,25 @@ mod tests {
         let mut air_times = Vec::new();
         let mut next_state = 0usize;
         for (team_size, opponents) in [(1usize, true), (1, false), (2, true), (3, true)] {
-            let cars = team_size * if opponents { 2 } else { 1 };
-            let mut snap = GameSnapshot::default();
-            let random_body = |rng: &mut fastrand::Rng, z_min: f32| Body {
-                pos: Vec3A::new(
-                    (rng.f32() * 2.0 - 1.0) * 4000.0,
-                    (rng.f32() * 2.0 - 1.0) * 5000.0,
-                    z_min + rng.f32() * 1500.0,
-                ),
-                rot: Mat3A::from_rotation_z((rng.f32() * 2.0 - 1.0) * PI)
-                    * Mat3A::from_rotation_y((rng.f32() * 2.0 - 1.0) * 1.5)
-                    * Mat3A::from_rotation_x((rng.f32() * 2.0 - 1.0) * PI),
-                vel: Vec3A::new(
-                    (rng.f32() * 2.0 - 1.0) * 2300.0,
-                    (rng.f32() * 2.0 - 1.0) * 2300.0,
-                    (rng.f32() * 2.0 - 1.0) * 1000.0,
-                ),
-                ang_vel: Vec3A::new(
-                    (rng.f32() * 2.0 - 1.0) * 5.5,
-                    (rng.f32() * 2.0 - 1.0) * 5.5,
-                    (rng.f32() * 2.0 - 1.0) * 5.5,
-                ),
-            };
-            snap.ball = random_body(&mut rng, 93.0);
-            air_times.clear();
-            for i in 0..cars {
-                let body = random_body(&mut rng, 17.0);
-                // As in RocketSim: on the ground nothing is used up; in the air a car may have jumped, then
-                // flipped or double-jumped (not both), and keeps its flip only within the window. The cars
-                // take the six states in turn, so every one appears among the reference's 13 cars.
-                let state = next_state % 6;
-                next_state += 1;
-                let on_ground = state == 0;
-                let has_jumped = state >= 2;
-                let has_flipped = state == 4;
-                let has_double_jumped = state == 5;
-                let air_time = match state {
-                    2 => rng.f32() * 1.2,       // jumped, flip still there
-                    3 => 1.3 + rng.f32() * 0.7, // jumped, flip window over
-                    4 | 5 => rng.f32() * 2.0,   // flipped or double-jumped
-                    _ => 0.0,                   // on the ground, or drove off a wall
-                };
-                let can_flip = on_ground
-                    || (!has_flipped
-                        && !has_double_jumped
-                        && (!has_jumped || air_time < crate::snapshot::FLIP_WINDOW_SECONDS));
-                let is_demoed = rng.usize(0..4) == 0;
-                air_times.push(air_time);
-                snap.cars.push(CarSnapshot {
-                    team: if i % 2 == 0 || !opponents {
-                        Team::Blue
-                    } else {
-                        Team::Orange
-                    },
-                    boost: rng.f32() * 100.0,
-                    on_ground,
-                    has_jumped,
-                    has_double_jumped,
-                    has_flipped,
-                    can_flip,
-                    is_demoed,
-                    is_supersonic: body.vel.length() >= 2200.0,
-                    demo_timer: if is_demoed { rng.f32() * 3.0 } else { 0.0 },
-                    flip_time_left: CarSnapshot::flip_time_left_from(
-                        on_ground, has_jumped, can_flip, air_time,
-                    ),
-                    body,
-                });
-            }
-            for pad in &mut snap.pads {
-                *pad = PadSnapshot {
-                    active: rng.bool(),
-                    cooldown: rng.f32() * 10.0,
-                };
-                if pad.active {
-                    pad.cooldown = 0.0;
-                }
-            }
-            let axis = |rng: &mut fastrand::Rng| [-1.0f32, 0.0, 1.0][rng.usize(0..3)];
-            let prev = Controls {
-                throttle: axis(&mut rng),
-                steer: axis(&mut rng),
-                pitch: axis(&mut rng),
-                yaw: axis(&mut rng),
-                roll: axis(&mut rng),
-                jump: rng.bool(),
-                boost: rng.bool(),
-                handbrake: rng.bool(),
-            };
-            let _ = writeln!(
-                text,
-                "case team_size {team_size} opponents {} cars {cars}",
-                u8::from(opponents)
+            let (snap, prev) = reference_game(
+                &mut rng,
+                team_size,
+                opponents,
+                &mut next_state,
+                &mut air_times,
             );
-            let floats = |values: &[f32]| {
-                values
-                    .iter()
-                    .map(|v| format!("{v:?}"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            };
-            let body_floats = |b: &Body| {
-                let mut v = b.pos.to_array().to_vec();
-                v.extend(b.rot.x_axis.to_array());
-                v.extend(b.rot.y_axis.to_array());
-                v.extend(b.rot.z_axis.to_array());
-                v.extend(b.vel.to_array());
-                v.extend(b.ang_vel.to_array());
-                v
-            };
-            let ball = [
-                snap.ball.pos.to_array(),
-                snap.ball.vel.to_array(),
-                snap.ball.ang_vel.to_array(),
-            ]
-            .concat();
-            let _ = writeln!(text, "ball {}", floats(&ball));
-            for (car, air_time) in snap.cars.iter().zip(&air_times) {
-                let flags = [
-                    car.on_ground,
-                    car.has_jumped,
-                    car.has_double_jumped,
-                    car.has_flipped,
-                    car.can_flip,
-                    car.is_demoed,
-                    car.is_supersonic,
-                ];
-                let _ = writeln!(
-                    text,
-                    "car {} {} {:?} {} {:?} {:?} {:?}",
-                    car.team.index(),
-                    floats(&body_floats(&car.body)),
-                    car.boost,
-                    flags
-                        .iter()
-                        .map(|&f| u8::from(f).to_string())
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    car.demo_timer,
-                    car.flip_time_left,
-                    air_time
-                );
-            }
-            let pads: Vec<String> = snap
-                .pads
-                .iter()
-                .map(|p| format!("{} {:?}", u8::from(p.active), p.cooldown))
-                .collect();
-            let _ = writeln!(text, "pads {}", pads.join(" "));
-            let _ = writeln!(text, "prev {}", floats(&prev.to_floats()));
+            let cars = snap.cars.len();
+            write_reference_game(&mut text, team_size, opponents, &snap, prev, &air_times);
             let layout = ObsKind::NitroV2.layout(team_size, opponents, 0);
             for me in 0..cars {
                 let mut out = vec![0.0; layout.size];
                 ObsKind::NitroV2.build(&snap, me, prev, 0, &mut out);
-                let _ = writeln!(text, "obs car {me} size {} {}", layout.size, floats(&out));
+                let _ = writeln!(
+                    text,
+                    "obs car {me} size {} {}",
+                    layout.size,
+                    reference_floats(&out)
+                );
             }
         }
         let path = concat!(
@@ -1222,9 +1596,14 @@ mod tests {
             std::fs::write(path, &text).unwrap();
             return;
         }
-        let committed = std::fs::read_to_string(path).expect("testdata/nitro_v2_reference.txt");
-        // Token by token with a tolerance: Windows' sin/cos round the generated games' rotation matrices
-        // differently in the last digit, and git may check the file out with CRLF line ends.
+        check_reference(&text, path, "v2");
+    }
+
+    /// `text` against the committed reference file at `path`, token by token with a tolerance: Windows'
+    /// sin/cos round the generated games' rotation matrices differently in the last digit, and git may check
+    /// the file out with CRLF line ends.
+    fn check_reference(text: &str, path: &str, what: &str) {
+        let committed = std::fs::read_to_string(path).expect(path);
         let (mine, theirs): (Vec<&str>, Vec<&str>) = (
             text.split_whitespace().collect(),
             committed.split_whitespace().collect(),
@@ -1241,15 +1620,173 @@ mod tests {
             };
             assert!(
                 same,
-                "the v2 observation changed (token {index}: {a} vs {b}): rerun with NITRO_WRITE_REFERENCE=1 \
-                 if that was meant"
+                "the {what} observation changed (token {index}: {a} vs {b}): rerun with \
+                 NITRO_WRITE_REFERENCE=1 if that was meant"
             );
         }
     }
 
     #[test]
+    fn gigalearn_padder_layout_pads_with_zeros_and_leaves_extra_cars_out() {
+        // Own part 51 + 26, then 32 per place: teamSize - 1 teammates and teamSize opponents.
+        assert_eq!(ObsKind::GigalearnPadder.layout(1, true, 0).size, 109);
+        assert_eq!(ObsKind::GigalearnPadder.layout(1, true, 3).size, 237);
+        assert_eq!(ObsKind::GigalearnPadder.layout(2, true, 0).size, 173);
+        let snap = snapshot(1);
+        let room3 = {
+            let mut out = vec![0.0; 237];
+            let prev = Controls {
+                throttle: 1.0,
+                jump: true,
+                ..Controls::default()
+            };
+            ObsKind::GigalearnPadder.build(&snap, 0, prev, 3, &mut out);
+            out
+        };
+        let exact = obs(ObsKind::GigalearnPadder, &snap, 0);
+        // Two empty teammate places, then the one opponent, then two empty opponent places.
+        assert_eq!(&room3[..77], &exact[..77]);
+        assert!(room3[77..141].iter().all(|&v| v == 0.0));
+        assert_eq!(&room3[141..173], &exact[77..109]);
+        assert!(room3[173..].iter().all(|&v| v == 0.0));
+        assert_eq!(exact[76], 0.0, "the source's placeholder after demoed");
+    }
+
+    /// AdvancedObsPadderGGL's reference: its own C++ source, run on these games, wrote the same numbers.
+    /// Needs the meshes for the pads' positions (written in the file for the C++ side's pad order).
+    #[test]
+    fn padder_reference_cases_match_the_committed_file() {
+        use std::fmt::Write as _;
+        if !crate::testing::meshes_loaded() {
+            return;
+        }
+        let sim = crate::sim::Sim::new(1, true, 0);
+        let mut text = String::from("padder_reference 1\n");
+        let positions: Vec<f32> = sim
+            .pad_layout()
+            .iter()
+            .flat_map(|p| p[..3].to_vec())
+            .collect();
+        let _ = writeln!(text, "padpos {}", reference_floats(&positions));
+        let mut rng = fastrand::Rng::with_seed(20261116);
+        let (mut next_state, mut air_times) = (0usize, Vec::new());
+        for (team_size, room) in [(1usize, 0usize), (1, 3), (2, 0), (2, 3), (3, 3)] {
+            let (snap, prev) =
+                reference_game(&mut rng, team_size, true, &mut next_state, &mut air_times);
+            write_reference_game(&mut text, team_size, true, &snap, prev, &air_times);
+            let layout = ObsKind::GigalearnPadder.layout(team_size, true, room);
+            let places = if room == 0 { team_size } else { room };
+            for me in 0..snap.cars.len() {
+                let mut out = vec![0.0; layout.size];
+                ObsKind::GigalearnPadder.build(&snap, me, prev, room, &mut out);
+                let _ = writeln!(
+                    text,
+                    "obs car {me} teamsize {places} size {} {}",
+                    layout.size,
+                    reference_floats(&out)
+                );
+            }
+        }
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/gigalearn_padder_reference.txt"
+        );
+        if std::env::var_os("NITRO_WRITE_REFERENCE").is_some() {
+            std::fs::write(path, &text).unwrap();
+            return;
+        }
+        check_reference(&text, path, "gigalearn_padder");
+    }
+
+    /// GigaLearn's own observations and action masks on these games: integrations/gigalearn/ggl_check (main
+    /// line) runs GigaLearn's AdvancedObs.cpp, DefaultObs.cpp and DefaultAction.cpp, unchanged, on this file
+    /// and finds every number and mask the same. Games of 1v1 to 3v3 with every pad's state drawn, the six car
+    /// states, demolitions, empty tanks and turtled cars. Needs the meshes for the pads' positions (GigaLearn
+    /// orders pads by position, CommonValues::BOOST_LOCATIONS).
+    #[test]
+    fn gigalearn_reference_cases_match_the_committed_file() {
+        use crate::actions::{ActionTable, MaskRule};
+        use std::fmt::Write as _;
+        if !crate::testing::meshes_loaded() {
+            return;
+        }
+        let sim = crate::sim::Sim::new(1, true, 0);
+        let mut text = String::from("gigalearn_reference 1\n");
+        let positions: Vec<f32> = sim
+            .pad_layout()
+            .iter()
+            .flat_map(|p| p[..3].to_vec())
+            .collect();
+        let _ = writeln!(text, "padpos {}", reference_floats(&positions));
+        let table = ActionTable::new();
+        for action in 0..90 {
+            let _ = writeln!(
+                text,
+                "action {action} {}",
+                reference_floats(&table.controls(action).to_floats())
+            );
+        }
+        let mut rng = fastrand::Rng::with_seed(20261117);
+        let (mut next_state, mut air_times) = (0usize, Vec::new());
+        let mut drawn = 0usize;
+        for team_size in [1usize, 1, 2, 2, 3, 3] {
+            let (mut snap, prev) =
+                reference_game(&mut rng, team_size, true, &mut next_state, &mut air_times);
+            for car in &mut snap.cars {
+                drawn += 1;
+                if drawn % 5 == 1 {
+                    car.boost = 0.0;
+                }
+                if drawn % 7 == 3 {
+                    // Turtled: on its roof near the floor, not on its wheels.
+                    car.on_ground = false;
+                    car.body.pos.z = 40.0;
+                    car.body.rot =
+                        Mat3A::from_rotation_x(PI) * Mat3A::from_rotation_z(rng.f32() * 6.0);
+                }
+            }
+            write_reference_game(&mut text, team_size, true, &snap, prev, &air_times);
+            for me in 0..snap.cars.len() {
+                for kind in [ObsKind::GigalearnAdvanced, ObsKind::GigalearnDefault] {
+                    let mut out = vec![0.0; kind.layout(team_size, true, 0).size];
+                    kind.build(&snap, me, prev, 0, &mut out);
+                    let _ = writeln!(
+                        text,
+                        "obs {} car {me} {}",
+                        kind.name(),
+                        reference_floats(&out)
+                    );
+                }
+                let mut mask = vec![0u8; 90];
+                table.write_mask(MaskRule::GigaLearn, &snap.cars[me], &mut mask);
+                let _ = writeln!(
+                    text,
+                    "mask car {me} turtled {} {}",
+                    u8::from(snap.cars[me].is_turtled()),
+                    mask.iter().map(u8::to_string).collect::<Vec<_>>().join(" ")
+                );
+            }
+        }
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/gigalearn_reference.txt"
+        );
+        if std::env::var_os("NITRO_WRITE_REFERENCE").is_some() {
+            std::fs::write(path, &text).unwrap();
+            return;
+        }
+        check_reference(&text, path, "gigalearn");
+    }
+
+    #[test]
     fn observations_are_finite() {
-        for kind in [ObsKind::Native, ObsKind::NitroV2] {
+        for kind in [
+            ObsKind::Native,
+            ObsKind::NitroV2,
+            ObsKind::GigalearnAdvanced,
+            ObsKind::GigalearnDefault,
+            ObsKind::GigalearnPadder,
+        ] {
             let snap = snapshot(2);
             for me in 0..4 {
                 assert!(obs(kind, &snap, me).iter().all(|v| v.is_finite()));

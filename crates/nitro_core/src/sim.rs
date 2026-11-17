@@ -159,6 +159,8 @@ impl Sim {
             if self.teams[bumper] != self.teams[victim] {
                 events.cars[bumper].bumped_opponent = true;
                 events.cars[bumper].demoed_opponent |= is_demo != 0;
+                events.cars[victim].bumped_by_opponent = true;
+                events.cars[victim].demoed_by_opponent |= is_demo != 0;
             } else {
                 events.cars[bumper].bumped_teammate = true;
                 events.cars[victim].bumped_teammate = true;
@@ -549,6 +551,8 @@ mod tests {
                         if sim.teams[bumper] != sim.teams[victim] {
                             events.cars[bumper].bumped_opponent = true;
                             events.cars[bumper].demoed_opponent |= hit_car.is_demo;
+                            events.cars[victim].bumped_by_opponent = true;
+                            events.cars[victim].demoed_by_opponent |= hit_car.is_demo;
                         } else {
                             events.cars[bumper].bumped_teammate = true;
                             events.cars[victim].bumped_teammate = true;
@@ -663,6 +667,61 @@ mod tests {
                 (config.pos.x, config.pos.y, config.is_big),
                 (x, y, big),
                 "pad {i}"
+            );
+        }
+    }
+
+    /// GigaLearn's `CommonValues::BOOST_LOCATIONS` (x, y): RLBot's pad order.
+    const GIGALEARN_PADS: [(f32, f32); NUM_BOOST_PADS] = [
+        (0.0, -4240.0),
+        (-1792.0, -4184.0),
+        (1792.0, -4184.0),
+        (-3072.0, -4096.0),
+        (3072.0, -4096.0),
+        (-940.0, -3308.0),
+        (940.0, -3308.0),
+        (0.0, -2816.0),
+        (-3584.0, -2484.0),
+        (3584.0, -2484.0),
+        (-1788.0, -2300.0),
+        (1788.0, -2300.0),
+        (-2048.0, -1036.0),
+        (0.0, -1024.0),
+        (2048.0, -1036.0),
+        (-3584.0, 0.0),
+        (-1024.0, 0.0),
+        (1024.0, 0.0),
+        (3584.0, 0.0),
+        (-2048.0, 1036.0),
+        (0.0, 1024.0),
+        (2048.0, 1036.0),
+        (-1788.0, 2300.0),
+        (1788.0, 2300.0),
+        (-3584.0, 2484.0),
+        (3584.0, 2484.0),
+        (0.0, 2816.0),
+        (-940.0, 3310.0),
+        (940.0, 3308.0),
+        (-3072.0, 4096.0),
+        (3072.0, 4096.0),
+        (-1792.0, 4184.0),
+        (1792.0, 4184.0),
+        (0.0, 4240.0),
+    ];
+
+    #[test]
+    fn gigalearn_pad_slots_are_the_simulators_pads() {
+        if !meshes_loaded() {
+            return;
+        }
+        let sim = Sim::new(1, true, 0);
+        let pos = |i: usize| cpu(&sim).get_boost_pad_config(i).pos;
+        for (i, &(x, y)) in GIGALEARN_PADS.iter().enumerate() {
+            let ours = pos(crate::obs::gigalearn_pad(i));
+            // GigaLearn has one pad at y = 3310 where the simulator has 3308.
+            assert!(
+                (ours.x - x).abs() < 1.0 && (ours.y - y).abs() <= 2.0,
+                "GigaLearn slot {i}"
             );
         }
     }
@@ -1323,6 +1382,7 @@ mod tests {
         sim.absorb(&facts, &mut events);
         assert!(events.cars[6].bumped_opponent && !events.cars[6].demoed_opponent);
         assert!(events.cars[7].bumped_opponent && events.cars[7].demoed_opponent);
+        assert!(events.cars[0].bumped_by_opponent && events.cars[0].demoed_by_opponent);
         assert!((0..6).all(|car| events.cars[car].bumped_teammate));
         assert_eq!(sim.contacts[6], None, "the ninth bump is not kept");
         assert_eq!(sim.contacts[7], None);

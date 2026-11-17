@@ -44,7 +44,14 @@ _WORDS: dict[str, dict[Any, str]] = {
         "attention_communication": "attention, cars compare notes",
         "transformer": "transformer",
     },
-    "env.observation": {"nitro_v2": "detailed (nitro_v2)", "native": "basic (native)"},
+    "env.observation": {
+        "nitro_v2": "detailed (nitro_v2)",
+        "native": "basic (native)",
+        "gigalearn_advanced": "GigaLearn's AdvancedObs (gigalearn_advanced)",
+        "gigalearn_default": "GigaLearn's DefaultObs (gigalearn_default)",
+        "gigalearn_padder": "AdvancedObsPadderGGL (gigalearn_padder)",
+    },
+    "env.action_masks": {"standard": "standard", "gigalearn": "GigaLearn's (gigalearn)"},
     "env.opponents": {True: "an opposing team", False: "none, it plays alone"},
     "model.activation": {"relu": "ReLU", "leaky_relu": "leaky ReLU", "gelu": "GELU", "tanh": "tanh"},
 }
@@ -57,6 +64,7 @@ _REVIEW_ALWAYS = frozenset(
 _REVIEW_NOTHING: dict[str, Any] = {
     "env.obs_team_size": 0,
     "env.ball_prediction": [],
+    "env.action_masks": "standard",
     "model.value_heads": ["main"],
     "model.value_head_layers": [],
     "model.residual": False,

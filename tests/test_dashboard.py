@@ -634,3 +634,161 @@ def test_an_ended_process_its_parent_has_not_collected_is_not_running() -> None:
         time.sleep(0.05)
     assert not bots.pid_alive(ended.pid), "ended, not yet collected"
     ended.wait()
+
+
+def test_a_decimal_comma_is_refused_not_read_as_a_thousands_comma(tmp_path: Path) -> None:
+    config = parse_toml(TINY, NitroConfig, file=tmp_path / "t.toml", base_dir=ROOT)
+    found = items(describe.describe(config, TINY, locked=False))
+    for typed in ("0,0003", "2,5", "1,5e-4", "0,500"):
+        with pytest.raises(edits.EditError, match="dot"):
+            edits.convert(found["ppo.policy_lr"], typed)  # read as 3, 25... before
+    with pytest.raises(edits.EditError, match="dot"):
+        edits.convert(found["ppo.steps_per_iteration"], "100,00")
+    assert edits.convert(found["ppo.steps_per_iteration"], "100,000") == 100_000
+    assert edits.convert(found["ppo.steps_per_iteration"], "1,000,000") == 1_000_000
+    assert edits.convert(found["ppo.discount_half_life"], "1,000.5") == 1000.5
+    assert edits.convert(found["run.seed"], "9007199254740993") == 9007199254740993, "every digit kept"
+
+
+def test_a_list_emptied_in_its_box_says_how_to_write_none(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    make_bot(runs, "lists")
+    api = Api(ROOT, runs)
+    for path in ("env.ball_prediction", "pretrain.replays"):
+        error = api.stage("lists", path, "")["error"]
+        assert "it needs a value" in error and "[]" in error, error  # the way to switch it off is said
+        assert "error" not in api.stage("lists", path, "[]"), "[] taken (the file's value: nothing waits)"
+
+
+def test_a_refused_value_stays_with_its_own_bot(tmp_path: Path) -> None:
+    """A value refused in one bot's Settings tab showed in the same box of the next bot opened, without
+    the reason, as if it were that bot's."""
+    sync_api = playwright_or_skip()
+    from nitro.dashboard.app import page
+
+    runs = tmp_path / "runs"
+    make_bot(runs, "one")
+    make_bot(runs, "two")
+    api = Api(ROOT, runs)
+    errors: list[str] = []
+    with sync_api.sync_playwright() as p:
+        browser = open_chromium(p)
+        try:
+            tab = browser.new_page()
+            tab.on("pageerror", lambda e: errors.append(str(e)))
+            tab.expose_function("__py", lambda method, args: getattr(api, method)(*args))
+            tab.add_init_script(
+                "window.__testApi = new Proxy({}, {get: (t, m) => (...a) => window.__py(m, a)});"
+            )
+            tab.goto("about:blank")
+            tab.set_content(page(api))
+            open_bot(tab, "one")
+            tab.click("[data-tab=settings]")
+            tab.fill("#f-env-tick_skip", "abc")
+            tab.keyboard.press("Enter")
+            tab.wait_for_selector("text=is not a whole number")
+            open_bot(tab, "two")
+            tab.click("[data-tab=settings]")
+            shown = str(items(api.bot("two")["settings"])["env.tick_skip"]["value"])
+            assert tab.input_value("#f-env-tick_skip") == shown, "two's own value, not one's refused one"
+        finally:
+            browser.close()
+    assert errors == []
+
+
+def test_waiting_start_changes_count_on_the_garage_card(tmp_path: Path) -> None:
+    """A bot with only game-start changes waiting showed none on its Garage card, whose Start button then
+    said to apply or discard the waiting changes first."""
+    runs = tmp_path / "runs"
+    make_bot(runs, "starts")
+    api = Api(ROOT, runs)
+    api.stage_starts("starts", [])
+    assert api.bot("starts")["start_changes"] == ["kickoff: removed"]
+    assert api.home()["bots"][0]["pending_count"] == 1
+
+
+def test_a_setting_typed_back_to_its_value_waits_for_nothing(tmp_path: Path) -> None:
+    """Typing a setting back to what the file holds kept a change waiting, so Apply restarted a training
+    bot for nothing."""
+    runs = tmp_path / "runs"
+    make_bot(runs, "same")
+    api = Api(ROOT, runs)
+    assert api.stage("same", "env.tick_skip", "5")["pending"] == {"env.tick_skip": 5}
+    assert api.stage("same", "env.tick_skip", "4")["pending"] == {}
+    assert api.stage("same", "ppo.policy_lr", "0.0003")["pending"] == {}, "3e-4 in the file"
+    assert api.stage("same", "run.deterministic", False)["pending"] == {}, "its default, not written"
+    assert api.bot("same")["pending"] == {} and api.home()["bots"][0]["pending_count"] == 0
+
+
+def test_a_note_being_written_stays_with_its_own_bot(tmp_path: Path) -> None:
+    """A note typed in one bot and another bot opened within the second it takes to save showed up in the
+    other bot's Notes, and typing there cancelled the first bot's save: its note was lost."""
+    sync_api = playwright_or_skip()
+    from nitro.dashboard.app import page
+
+    runs = tmp_path / "runs"
+    make_bot(runs, "one")
+    make_bot(runs, "two")
+    api = Api(ROOT, runs)
+    errors: list[str] = []
+    with sync_api.sync_playwright() as p:
+        browser = open_chromium(p)
+        try:
+            tab = browser.new_page()
+            tab.on("pageerror", lambda e: errors.append(str(e)))
+            tab.expose_function("__py", lambda method, args: getattr(api, method)(*args))
+            tab.add_init_script(
+                "window.__testApi = new Proxy({}, {get: (t, m) => (...a) => window.__py(m, a)});"
+            )
+            tab.goto("about:blank")
+            tab.set_content(page(api))
+            open_bot(tab, "one")
+            tab.click("[data-tab=notes]")
+            tab.click("#botnote")
+            tab.keyboard.type("for one")
+            open_bot(tab, "two")  # before the note has saved itself
+            tab.click("[data-tab=notes]")
+            assert tab.input_value("#botnote") == "", "one's note is not two's"
+            tab.click("#botnote")
+            tab.keyboard.type("for two")
+            tab.wait_for_selector("[data-note-state=bot] >> text=Saved")
+            tab.wait_for_timeout(500)
+            assert api.bot("one")["notes"] == {"bot": "for one"}, "one's note saved"
+            assert api.bot("two")["notes"] == {"bot": "for two"}
+        finally:
+            browser.close()
+    assert errors == []
+
+
+def test_a_limit_is_said_in_plain_digits(tmp_path: Path) -> None:
+    """A refused value's limit read 'the smallest allowed is 1e+06'."""
+    runs = tmp_path / "runs"
+    make_bot(runs, "limits")
+    api = Api(ROOT, runs)
+    assert (
+        "the smallest allowed is 1,000,000" in api.stage("limits", "selfplay.snapshot_steps", "500")["error"]
+    )
+    assert "the smallest allowed is 1e-08" in api.stage("limits", "replay_mix.lr", "0")["error"]
+    assert "the smallest allowed is 1" in api.stage("limits", "env.num_arenas", "0")["error"]
+
+
+def test_a_new_bot_never_takes_the_waiting_changes_of_a_bot_deleted_outside(tmp_path: Path) -> None:
+    """A bot's folder deleted outside the dashboard left its waiting changes kept; a new bot of its name then
+    showed them as its own, and Apply would have written them into it."""
+    import shutil
+
+    runs = tmp_path / "runs"
+    make_bot(runs, "source")
+    for name in ("copied", "renamed"):
+        gone = make_bot(runs, name)
+        api = Api(ROOT, runs)
+        api.stage(name, "ppo.policy_lr", "0.0002")
+        api.stage_starts(name, [])
+        shutil.rmtree(gone.root)
+    api = Api(ROOT, runs)
+    assert api.copy_bot("source", "copied", False)["made"] == "copied"
+    make_bot(runs, "other")
+    assert api.rename_bot("other", "renamed")["renamed"] == "renamed"
+    for name in ("copied", "renamed"):
+        shown = api.bot(name)
+        assert (shown["pending"], shown["start_changes"]) == ({}, []), name

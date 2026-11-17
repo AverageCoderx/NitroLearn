@@ -8,12 +8,27 @@
 //! f32: position, velocity, angular velocity, rotation), each car's floats (`CAR_FLOATS`, NaN when replicar's
 //! is unknown), its small values (`CAR_SMALL` as i8: -1 unknown; the status as its index in `status_names`)
 //! and its jump ticks (i64, -1 unknown).
+//!
+//! `--fit-timing` adds the timing fit (`fit`) after replicar's conversion; the header then
+//! carries `timing_fit` (the fit's version and what it did). Without it the file is as before, byte for byte.
+//!
+//! `nitro-replicar measure <replay> --meshes <folder> [--plain <file>] [--fitted <file>]` converts once, fits a
+//! copy, and prints JSON: the conversion's and the fit's seconds, the fit's report and the car error at 20 ticks
+//! (`measure`) of each window before and after; `--plain` and `--fitted` also write both files.
 
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod car;
+mod fit;
+mod measure;
+#[cfg(test)]
+mod tests;
+mod track;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use replicar_format::CarStatus;
 use replicar_format::record::{Car, Frame};
@@ -76,11 +91,18 @@ fn small(status: Option<CarStatus>, car: Option<&Car>, out: &mut Vec<u8>) {
 }
 
 /// The rows `replicar convert` writes by default: every simulated tick in a play segment.
-fn lean(players: serde_json::Value, frames: &[Frame]) -> Vec<u8> {
+fn lean(
+    players: serde_json::Value,
+    frames: &[Frame],
+    timing_fit: Option<serde_json::Value>,
+) -> Vec<u8> {
     let rows: Vec<&Frame> = frames.iter().filter(|f| f.segment.is_some()).collect();
     let cars = players.as_array().map_or(0, Vec::len);
     let names: Vec<&str> = CarStatus::ALL.iter().map(|s| s.name()).collect();
-    let json = serde_json::json!({"players": players, "rows": rows.len(), "cars": cars, "status_names": names});
+    let mut json = serde_json::json!({"players": players, "rows": rows.len(), "cars": cars, "status_names": names});
+    if let Some(report) = timing_fit {
+        json["timing_fit"] = report;
+    }
     let json = json.to_string();
     let mut out = Vec::with_capacity(
         json.len() + rows.len() * (21 + cars * (8 + 4 * CAR_FLOATS + CAR_SMALL)),
@@ -128,19 +150,92 @@ fn lean(players: serde_json::Value, frames: &[Frame]) -> Vec<u8> {
     out
 }
 
-fn convert(replay: &Path, output: &Path, meshes: &Path) -> Result<(), String> {
+/// A replay converted by replicar: its header's players (as JSON and as replicar's) and its frames.
+struct Converted {
+    players_json: serde_json::Value,
+    players: Vec<replicar_format::header::PlayerInfo>,
+    frames: Vec<Frame>,
+}
+
+fn convert(replay: &Path, meshes: &Path) -> Result<Converted, String> {
     let meshes = replicar::Meshes::load(meshes).map_err(|e| e.to_string())?;
     let converter = replicar::Converter::new(&meshes, replicar::Config::default());
     let bytes = std::fs::read(replay).map_err(|e| format!("{}: {e}", replay.display()))?;
     let conversion = converter.convert(&bytes).map_err(|e| e.to_string())?;
     let header = serde_json::to_value(&conversion.header).map_err(|e| e.to_string())?;
-    let data = lean(header["players"].clone(), &conversion.frames);
+    Ok(Converted {
+        players_json: header["players"].clone(),
+        players: conversion.header.players.clone(),
+        frames: conversion.frames,
+    })
+}
+
+fn write(output: &Path, data: &[u8]) -> Result<(), String> {
     let mut partial = output.as_os_str().to_owned();
     partial.push(".partial"); // as replicar names a file it is writing
     let partial = PathBuf::from(partial);
     std::fs::write(&partial, data).map_err(|e| format!("{}: {e}", partial.display()))?;
     std::fs::rename(&partial, output).map_err(|e| format!("{}: {e}", output.display()))
 }
+
+fn run_convert(
+    replay: &Path,
+    output: &Path,
+    meshes: &Path,
+    fit_timing: bool,
+) -> Result<(), String> {
+    let mut c = convert(replay, meshes)?;
+    let report = if fit_timing {
+        Some(fit::fit(&c.players, &mut c.frames, fit::Settings::DEFAULT)?.json())
+    } else {
+        None
+    };
+    write(output, &lean(c.players_json, &c.frames, report))
+}
+
+fn run_measure(
+    replay: &Path,
+    meshes: &Path,
+    plain: Option<&Path>,
+    fitted: Option<&Path>,
+) -> Result<(), String> {
+    let began = Instant::now();
+    let c = convert(replay, meshes)?;
+    let convert_seconds = began.elapsed().as_secs_f64();
+    let mut frames = c.frames.clone();
+    let began = Instant::now();
+    let report = fit::fit(&c.players, &mut frames, fit::Settings::DEFAULT)?;
+    let fit_seconds = began.elapsed().as_secs_f64();
+    let windows = measure::windows(&c.frames, c.players.len(), 20);
+    let round = |e: Vec<Option<f32>>| -> Vec<Option<f64>> {
+        e.into_iter()
+            .map(|v| v.map(|v| (f64::from(v) * 1000.0).round() / 1000.0))
+            .collect()
+    };
+    let before = round(measure::errors(&c.players, &c.frames, &windows)?);
+    let after = round(measure::errors(&c.players, &frames, &windows)?);
+    let teams = [0u8, 1].map(|t| c.players.iter().filter(|p| p.team == t).count());
+    let out = serde_json::json!({
+        "cars": c.players.len(),
+        "teams": teams,
+        "convert_seconds": convert_seconds,
+        "fit_seconds": fit_seconds,
+        "fit": report.json(),
+        "before": before,
+        "after": after,
+    });
+    if let Some(path) = plain {
+        write(path, &lean(c.players_json.clone(), &c.frames, None))?;
+    }
+    if let Some(path) = fitted {
+        write(path, &lean(c.players_json, &frames, Some(report.json())))?;
+    }
+    println!("{out}");
+    Ok(())
+}
+
+const USAGE: &str = "usage: nitro-replicar convert <replay> -o <file> --meshes <folder> [--fit-timing]\n       \
+                     nitro-replicar measure <replay> --meshes <folder> [--plain <file>] [--fitted <file>]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -150,16 +245,28 @@ fn main() -> ExitCode {
             .and_then(|i| args.get(i + 1))
             .map(PathBuf::from)
     };
-    let (Some("convert"), Some(replay), Some(output), Some(meshes)) = (
+    let fit_timing = args.iter().any(|a| a == "--fit-timing");
+    let result = match (
         args.first().map(String::as_str),
         args.get(1).map(PathBuf::from),
-        value("-o"),
         value("--meshes"),
-    ) else {
-        eprintln!("usage: nitro-replicar convert <replay> -o <file> --meshes <folder>");
-        return ExitCode::from(2);
+    ) {
+        (Some("convert"), Some(replay), Some(meshes)) => match value("-o") {
+            Some(output) => run_convert(&replay, &output, &meshes, fit_timing),
+            None => Err(USAGE.to_owned()),
+        },
+        (Some("measure"), Some(replay), Some(meshes)) => run_measure(
+            &replay,
+            &meshes,
+            value("--plain").as_deref(),
+            value("--fitted").as_deref(),
+        ),
+        _ => {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
     };
-    match convert(&replay, &output, &meshes) {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");

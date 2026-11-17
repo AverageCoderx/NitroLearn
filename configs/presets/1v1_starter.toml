@@ -193,6 +193,7 @@ matchmaking = "variance"    # "variance" = even matches, "uniform" = any, "harde
 # converter = "nitro"         # With batch_replays: the same conversions as "replicar", 14% faster.
 # continue_from = ""          # With batch_replays: a run's name, to carry on its copy.
 # new_only = false            # With batch_replays: leave out replays a copy on this PC used before.
+# fit_timing = true           # With batch_replays: fit on which tick each press and update took effect.
 # prev_action_dropout = 0.0    # Share of copy decisions shown no previous move, so the copy chooses
                               # from the game, not only from its last move (0.3-0.5 to try).
 

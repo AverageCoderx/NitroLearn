@@ -20,8 +20,9 @@ crates/nitro_bot:  RLBot v5 packet → GameSnapshot → the same observations �
 - `sim.rs` wraps RocketSim v3 (pinned in `Cargo.toml`): arenas, state, controls, steps, touches and goals.
 - `snapshot.rs` is the only view of a game that observations, rewards and game ends read; the bot builds the
   same snapshot from an RLBot packet.
-- `obs.rs` (the `native` and `nitro_v2` observations, padded rooms for several game sizes), `actions.rs`
-  (the 90-action table), `rewards.rs` (built-in rewards), `custom/` (the reward library and rewards of your
+- `obs.rs` (the `native` and `nitro_v2` observations, padded rooms for several game sizes, and exact copies
+  of GigaLearn's for bots brought over from it), `actions.rs` (the 90-action table and its masks,
+  NitroLearn's and GigaLearn's), `rewards.rs` (built-in rewards), `custom/` (the reward library and rewards of your
   own), `setters.rs` and `replay.rs` (how games start), `terminals.rs` (when a game ends).
 - `ball_prediction.rs` (`env.ball_prediction`): where the ball will be, from an arena of its own that holds
   only the ball; its path carries on while the real ball matches it and is predicted afresh after a touch or

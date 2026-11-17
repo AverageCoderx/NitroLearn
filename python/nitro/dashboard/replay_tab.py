@@ -29,7 +29,7 @@ def sources(config: NitroConfig) -> dict[str, Any]:
     inside it) and how many each holds (subfolders included), with the total (a replay in two of them counted
     once) and what the store holds of every size. As nitro.replay_mix: the store's folders."""
     named = list(config.replay_mix.replays)
-    store = replays.store_folder()
+    store = replays.store_folder(config.pretrain.fit_timing)
     places = named or [store / f"{n}v{n}" for n in sizes(config)]
     project = replays.OUT.parent  # the store's folders are shown from the project's folder on
     folders, found = [], set()

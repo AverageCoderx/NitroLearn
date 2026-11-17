@@ -17,7 +17,7 @@ if "%CODE%"=="0" (
     echo Some shortcuts could not be removed: read the messages above and delete them by hand.
 )
 echo To finish, close the dashboard and any training, then delete this folder:
-echo   %~dp0
+echo   "%~dp0"
 echo Your bots (runs) and settings files (my-settings) are in it: copy them elsewhere first to keep them.
 echo RLBot v5, if you installed it, is its own program and stays: remove it in Windows' Apps list.
 pause

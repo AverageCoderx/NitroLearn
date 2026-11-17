@@ -95,28 +95,42 @@ fn a_packet_rebuilds_the_simulated_snapshot_and_its_observation() {
                     "pad {slot}: {a:?} vs {b:?}"
                 );
             }
-            // The observations and masks built from both agree (rotation goes through Euler angles).
-            let layout = ObsKind::Native.layout(team_size, true, 0);
+            // The observations and masks built from both agree (rotation goes through Euler angles), for
+            // every observation and mask rule.
             let prev = Controls {
                 throttle: 1.0,
                 boost: true,
                 ..Controls::default()
             };
-            for me in 0..snap.cars.len() {
-                let (mut from_sim, mut from_packet) =
-                    (vec![0.0; layout.size], vec![0.0; layout.size]);
-                ObsKind::Native.build(&snap, me, prev, 0, &mut from_sim);
-                ObsKind::Native.build(&rebuilt, me, prev, 0, &mut from_packet);
-                let worst = from_sim
-                    .iter()
-                    .zip(&from_packet)
-                    .map(|(a, b)| (a - b).abs())
-                    .fold(0.0f32, f32::max);
-                assert!(worst <= 1e-5, "observation differs by {worst}");
-                let (mut mask_sim, mut mask_packet) = ([0u8; NUM_ACTIONS], [0u8; NUM_ACTIONS]);
-                table.write_mask(MaskRule::Standard, &snap.cars[me], &mut mask_sim);
-                table.write_mask(MaskRule::Standard, &rebuilt.cars[me], &mut mask_packet);
-                assert_eq!(mask_sim, mask_packet);
+            for name in [
+                "native",
+                "nitro_v2",
+                "gigalearn_advanced",
+                "gigalearn_default",
+                "gigalearn_padder",
+            ] {
+                let kind = ObsKind::from_name(name).unwrap();
+                let layout = kind.layout(team_size, true, 0);
+                for me in 0..snap.cars.len() {
+                    let (mut from_sim, mut from_packet) =
+                        (vec![0.0; layout.size], vec![0.0; layout.size]);
+                    kind.build(&snap, me, prev, 0, &mut from_sim);
+                    kind.build(&rebuilt, me, prev, 0, &mut from_packet);
+                    let worst = from_sim
+                        .iter()
+                        .zip(&from_packet)
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0.0f32, f32::max);
+                    assert!(worst <= 1e-5, "{name} observation differs by {worst}");
+                }
+            }
+            for rule in [MaskRule::Standard, MaskRule::GigaLearn] {
+                for me in 0..snap.cars.len() {
+                    let (mut mask_sim, mut mask_packet) = ([0u8; NUM_ACTIONS], [0u8; NUM_ACTIONS]);
+                    table.write_mask(rule, &snap.cars[me], &mut mask_sim);
+                    table.write_mask(rule, &rebuilt.cars[me], &mut mask_packet);
+                    assert_eq!(mask_sim, mask_packet, "{rule:?}");
+                }
             }
         }
     }
@@ -186,6 +200,42 @@ fn a_jump_from_the_wheels_reads_as_on_the_ground_for_its_first_ticks_as_in_train
 }
 
 #[test]
+fn a_held_jump_keeps_the_whole_flip_window_as_in_training() {
+    // RocketSim starts the window's clock when the jump's force ends (air_time_since_jump stays 0 while
+    // jumping), so a car still jumping past its ground ticks has the whole window and may flip, whatever
+    // RLBot's dodge_timeout says meanwhile.
+    let mut rng = fastrand::Rng::with_seed(6);
+    let pads = PadMap::new(&field()).unwrap();
+    let snap = random_snapshot(&mut rng, 2);
+    let mut jumps = JumpStarts::default();
+    let mut rebuilt = GameSnapshot::default();
+    let mut read = |frame: u32, state: AirState, timeout: f32| {
+        let mut p = packet(&snap, &pads, frame, MatchPhase::Active);
+        let player = &mut p.players[0];
+        player.air_state = state;
+        (
+            player.has_jumped,
+            player.has_double_jumped,
+            player.has_dodged,
+        ) = (state != AirState::OnGround, false, false);
+        player.demolished_timeout = -1.0;
+        player.dodge_timeout = timeout;
+        snapshot(&p, &pads, &mut jumps, &mut rebuilt).unwrap();
+        rebuilt.cars[0]
+    };
+    read(100, AirState::OnGround, -1.0);
+    for (frame, timeout) in [(101, 1.45), (110, 1.40), (120, 1.35), (124, -1.0)] {
+        let seen = read(frame, AirState::Jumping, timeout);
+        assert!(seen.can_flip, "frame {frame}");
+        assert_eq!(seen.flip_time_left, FLIP_WINDOW_SECONDS, "frame {frame}");
+    }
+    // Once the force ends the clock runs, as RLBot's timeout says.
+    let seen = read(125, AirState::InAir, 1.24);
+    assert!(seen.can_flip && !seen.on_ground);
+    assert_eq!(seen.flip_time_left, 1.24);
+}
+
+#[test]
 fn pads_are_mapped_by_position_and_timers_become_cooldowns() {
     let pads = PadMap::new(&field()).unwrap();
     let mut snap = GameSnapshot::default();
@@ -235,9 +285,28 @@ fn policy_file(
     extra_game: &str,
     num_actions: usize,
 ) -> Vec<u8> {
+    policy_file_seeing(
+        ("native", "standard"),
+        favourite,
+        obs_size,
+        room,
+        extra_game,
+        num_actions,
+    )
+}
+
+/// `policy_file` trained with the observation and the action masks named.
+fn policy_file_seeing(
+    (observation, masks): (&str, &str),
+    favourite: usize,
+    obs_size: usize,
+    room: usize,
+    extra_game: &str,
+    num_actions: usize,
+) -> Vec<u8> {
     let header = format!(
-        r#"{{"format": 1, "run": "test", "agent_steps": 7, "game": {{"observation": "native",
-        "action_masks": "standard", "team_size": 1, "opponents": true, "obs_team_size": {room},
+        r#"{{"format": 1, "run": "test", "agent_steps": 7, "game": {{"observation": "{observation}",
+        "action_masks": "{masks}", "team_size": 1, "opponents": true, "obs_team_size": {room},
         {extra_game} "tick_skip": 8, "action_delay": 7}},
         "obs_size": {obs_size}, "num_actions": {num_actions},
         "layers": [{{"kind": "linear", "inputs": {obs_size}, "outputs": {num_actions}}}]}}"#
@@ -343,6 +412,38 @@ fn the_bot_decides_on_the_training_rhythm_and_coasts_outside_play() {
 }
 
 #[test]
+fn a_frame_count_that_goes_back_in_play_starts_the_rhythm_afresh() {
+    let obs_size = ObsKind::Native.layout(1, true, 0).size;
+    let policy = Policy::from_bytes(&policy_bytes(0, obs_size)).unwrap();
+    let pads = PadMap::new(&field()).unwrap();
+    let mut bot = NitroBot::new(policy, &field(), 0, Choice::MostLikely, 1, 0).unwrap();
+    let mut rng = fastrand::Rng::with_seed(4);
+    let mut snap = random_snapshot(&mut rng, 2);
+    snap.cars[0].on_ground = true;
+    snap.cars[0].body.rot = Mat3A::IDENTITY;
+    let expected = ActionTable::new().controls(0);
+    for frame in 5000..5010 {
+        bot.controls(&packet(&snap, &pads, frame, MatchPhase::Active));
+    }
+    assert_eq!(bot.rhythm_stats().decisions, 2);
+    // The game's frame count starts over while play goes on (a new game in the same connection): the
+    // bot decides at once on the new count instead of waiting thousands of ticks for the old one.
+    let sent: Vec<Controls> = (10..30)
+        .map(|frame| bot.controls(&packet(&snap, &pads, frame, MatchPhase::Active)))
+        .collect();
+    assert_eq!(
+        bot.rhythm_stats().decisions,
+        5,
+        "decisions at 10, 18 and 26"
+    );
+    assert!(
+        sent[..7].iter().all(|c| *c == Controls::default()),
+        "{sent:?}"
+    );
+    assert!(sent[7..].iter().all(|c| *c == expected), "{sent:?}");
+}
+
+#[test]
 fn a_latency_makes_the_bot_send_that_many_ticks_early() {
     let obs_size = ObsKind::Native.layout(1, true, 0).size;
     let policy = Policy::from_bytes(&policy_bytes(0, obs_size)).unwrap();
@@ -389,6 +490,113 @@ fn a_padded_policy_plays_every_game_up_to_its_room_and_coasts_in_bigger_ones() {
             .collect();
         let acted = sent.contains(&expected);
         assert_eq!(acted, plays, "{cars} cars: {sent:?}");
+    }
+}
+
+#[test]
+fn a_gigalearn_padder_bot_reads_trainings_observation_in_every_game_up_to_its_room() {
+    // A GigaLearn bot with AdvancedObsPadderGGL(3): every game up to 3v3 is the same size.
+    let (room, kind) = (3, ObsKind::GigalearnPadder);
+    let obs_size = kind.layout(1, true, room).size;
+    let pads = PadMap::new(&field()).unwrap();
+    let mut rng = fastrand::Rng::with_seed(21);
+    let prev = Controls {
+        throttle: 1.0,
+        boost: true,
+        ..Controls::default()
+    };
+    let expected = ActionTable::new().controls(0);
+    for team_size in 1..=3 {
+        let snap = random_snapshot(&mut rng, team_size * 2);
+        let mut rebuilt = GameSnapshot::default();
+        let p = packet(&snap, &pads, 100, MatchPhase::Active);
+        snapshot(&p, &pads, &mut JumpStarts::default(), &mut rebuilt).unwrap();
+        for me in 0..snap.cars.len() {
+            let mut sim = vec![0.0; obs_size];
+            kind.build(&snap, me, prev, room, &mut sim);
+            let mut bot = vec![0.0; obs_size];
+            kind.build(&rebuilt, me, prev, room, &mut bot);
+            let worst = sim
+                .iter()
+                .zip(&bot)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            assert!(worst <= 1e-5, "{team_size}v{team_size}: differs by {worst}");
+        }
+        let file = policy_file_seeing(
+            ("gigalearn_padder", "gigalearn"),
+            0,
+            obs_size,
+            room,
+            "",
+            NUM_ACTIONS,
+        );
+        let mut bot = NitroBot::new(
+            Policy::from_bytes(&file).unwrap(),
+            &field(),
+            0,
+            Choice::MostLikely,
+            1,
+            0,
+        )
+        .unwrap();
+        let mut playing = snap.clone();
+        playing.cars[0].on_ground = true;
+        playing.cars[0].body.rot = Mat3A::IDENTITY;
+        let sent: Vec<Controls> = (20..30)
+            .map(|frame| bot.controls(&packet(&playing, &pads, frame, MatchPhase::Kickoff)))
+            .collect();
+        assert!(
+            sent.contains(&expected),
+            "{team_size}v{team_size}: {sent:?}"
+        );
+        assert_eq!(bot.observation().len(), obs_size);
+    }
+}
+
+#[test]
+fn gigalearn_bots_play_their_game_and_refuse_what_their_observation_lacks() {
+    let pads = PadMap::new(&field()).unwrap();
+    let mut rng = fastrand::Rng::with_seed(22);
+    let expected = ActionTable::new().controls(0);
+    for name in ["gigalearn_advanced", "gigalearn_default"] {
+        let kind = ObsKind::from_name(name).unwrap();
+        let obs_size = kind.layout(1, true, 0).size;
+        let file = policy_file_seeing((name, "gigalearn"), 0, obs_size, 0, "", NUM_ACTIONS);
+        let mut bot = NitroBot::new(
+            Policy::from_bytes(&file).unwrap(),
+            &field(),
+            0,
+            Choice::MostLikely,
+            1,
+            0,
+        )
+        .unwrap();
+        let mut snap = random_snapshot(&mut rng, 2);
+        snap.cars[0].on_ground = true;
+        snap.cars[0].body.rot = Mat3A::IDENTITY;
+        let sent: Vec<Controls> = (20..30)
+            .map(|frame| bot.controls(&packet(&snap, &pads, frame, MatchPhase::Kickoff)))
+            .collect();
+        assert!(sent.contains(&expected), "{name}: {sent:?}");
+        let prediction = r#""ball_prediction": [0.5],"#;
+        let file = policy_file_seeing(
+            (name, "standard"),
+            0,
+            obs_size + 12,
+            0,
+            prediction,
+            NUM_ACTIONS,
+        );
+        let refused = NitroBot::new(
+            Policy::from_bytes(&file).unwrap(),
+            &field(),
+            0,
+            Choice::MostLikely,
+            1,
+            0,
+        );
+        assert!(refused.err().unwrap().contains("ball prediction"), "{name}");
     }
 }
 

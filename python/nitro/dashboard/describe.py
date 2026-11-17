@@ -44,6 +44,7 @@ _LABELS = {
     "pretrain.workers": "Replays converted at once",
     "pretrain.prev_action_dropout": "Share of decisions without the previous move",
     "pretrain.keep_converted": "Keep converted replays for later bots",
+    "pretrain.fit_timing": "Fit the timing of presses and updates",
     "pretrain.skill_every": "Skill check every (rounds)",
     "pretrain.skill_points": "Points against each earlier version",
     "pretrain.save_every": "Save the copy so far every (replays)",

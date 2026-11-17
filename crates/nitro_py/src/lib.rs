@@ -378,6 +378,11 @@ fn observation_layout_of(
     let kind = nitro_core::obs::ObsKind::from_name(observation).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!("unknown observation '{observation}'"))
     })?;
+    if ball_prediction > 0 && !kind.pads() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "ball_prediction needs the native or nitro_v2 observation",
+        ));
+    }
     let layout = kind
         .checked_layout(team_size, opponents, obs_team_size)
         .map_err(pyo3::exceptions::PyValueError::new_err)?

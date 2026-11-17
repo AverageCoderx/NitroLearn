@@ -16,6 +16,7 @@ function showTab(tab) { const b = document.querySelector(`[role=tab][data-tab="$
 function botIsBusy() { const b = shownBot(); return !!b && (b.status === "training" || b.status === "copying" || b.status === "starting"); }
 COMMANDS.push(
   { id: "new-bot", label: "New bot", keywords: "make create add wizard starter", command: "nitro new <settings file> --name <name>", run: () => ACTIONS.newbot() },
+  { id: "gigalearn", label: "Bring a GigaLearn bot over", keywords: "gigalearn import port convert move checkpoint new bot", command: "nitro import-gigalearn <saves> --source <project> --into <name>", run: async () => { await ACTIONS.newbot(); if (S.wiz) pickKind("gigalearn"); } },
   { id: "unpack", label: "Add a packed bot", keywords: "unpack import cloud another computer", command: "nitro unpack <file>", run: () => ACTIONS.unpack() },
   { id: "open-rlbot", label: "Open RLBot", keywords: "match play real game rocket league", about: "plays your bot in a real match, offline", run: () => openRLBot() },
   { id: "install-rlbot", label: "Install RLBot v5", keywords: "rlbot download installer setup get", command: "nitro install-rlbot", when: () => !rlbotFound() && onWindows(), run: () => { rlbotModal(); return ACTIONS["rlbot-install"](); } },

@@ -38,6 +38,8 @@ impl PyPolicy {
         dict.set_item("run", &header.run)?;
         dict.set_item("agent_steps", header.agent_steps)?;
         dict.set_item("created", &header.created)?;
+        dict.set_item("observation", header.game.observation.name())?;
+        dict.set_item("action_masks", header.game.action_masks.name())?;
         dict.set_item("team_size", header.game.team_size)?;
         dict.set_item("opponents", header.game.opponents)?;
         dict.set_item("obs_team_size", header.game.obs_team_size)?;

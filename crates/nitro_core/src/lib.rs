@@ -8,6 +8,8 @@ pub mod custom;
 pub mod demos;
 pub mod driver;
 pub mod env;
+#[cfg(test)]
+mod gigalearn_rewards;
 pub mod mechanics;
 pub mod meshes;
 pub mod obs;

@@ -29,7 +29,7 @@ def _converted(folder: Path, count: int) -> None:
 @pytest.fixture
 def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(replays, "OUT", tmp_path / "project-replays")
-    return replays.store_folder()
+    return replays.store_folder(fit_timing=True)  # a new bot's (pretrain.fit_timing)
 
 
 def test_the_tab_counts_the_replays_to_copy_and_reads_the_newest_copy_steps(

@@ -71,14 +71,16 @@ ACTIONS["console-copy"] = async () => {
 
 // Notes save themselves a second after typing stops, as waiting changes are kept; Save note saves at once.
 // The word beside a note ([data-note-state]) says how its saving goes.
+// The timers are a bot's own: opening another bot never cancels a save that is still to come.
 const NOTE_TIMERS = {};
+function noteTimer(bot, key) { return bot + "\n" + key; }
 function noteState(key, word) { document.querySelectorAll(`[data-note-state="${CSS.escape(key)}"]`).forEach(el => { el.textContent = word; }); }
 function autosaveNote(key, value) {
-  const bot = S.bot;
-  clearTimeout(NOTE_TIMERS[key]);
+  const bot = S.bot, timer = noteTimer(bot, key);
+  clearTimeout(NOTE_TIMERS[timer]);
   noteState(key, "Saving…");
-  NOTE_TIMERS[key] = setTimeout(async () => {
-    delete NOTE_TIMERS[key];
+  NOTE_TIMERS[timer] = setTimeout(async () => {
+    delete NOTE_TIMERS[timer];
     const out = await call("set_note", bot, key, value);
     if (out.error) { noteState(key, "Not saved"); return toast(out.error, true); }
     if (S.bot === bot && S.data) { S.data.notes = out.notes; if (S.drafts[key] === value) delete S.drafts[key]; }
@@ -94,7 +96,7 @@ function renderNotes(box) {
   box.innerHTML = `<section class="card pad notes"><div class="heading"><h2 class="display">Notes about ${esc(S.data.name)}</h2></div><div class="muted">Anything to remember about this bot. Notes on single settings are kept beside them in the Settings tab.</div><textarea id="botnote" class="field" aria-label="Notes about this bot">${esc(draftOr("bot", note))}</textarea><div class="row"><button type="button" class="btn primary" data-act="savenote">Save note</button>${noteStateHTML("bot")}<span class="muted">Notes save by themselves as you type.</span></div></section>`;
 }
 
-ACTIONS.savenote = async () => { clearTimeout(NOTE_TIMERS.bot); const out = await call("set_note", S.bot, "bot", $("#botnote").value); if (out.error) return toast(out.error, true); S.data.notes = out.notes; delete S.drafts.bot; noteState("bot", "Saved"); return toast("Note saved."); };
+ACTIONS.savenote = async () => { clearTimeout(NOTE_TIMERS[noteTimer(S.bot, "bot")]); const out = await call("set_note", S.bot, "bot", $("#botnote").value); if (out.error) return toast(out.error, true); S.data.notes = out.notes; delete S.drafts.bot; noteState("bot", "Saved"); return toast("Note saved."); };
 on("input", el => {
   if (el.id === "botnote") { S.drafts.bot = el.value; autosaveNote("bot", el.value); }
 });

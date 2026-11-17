@@ -1,6 +1,7 @@
 // The new-bot wizard, a page of four steps: the kind of bot, its name and number, its brain size, and a review.
 // It makes the bot with `create_bot`, from the starting settings and the changed
-// values (or `copy_bot` for a bot started from another), not started.
+// values (or `copy_bot` for a bot started from another, `import_gigalearn` for one brought over from GigaLearn),
+// not started.
 const ATTENTION_ONLY = ["model.attention_width", "model.attention_blocks", "model.attention_heads"];
 const TRANSFORMER_ONLY = ["model.transformer_layers", "model.transformer_width", "model.transformer_heads", "model.transformer_ff"];
 const WIZ_STEPS = ["Kind of bot", "Name and number", "Brain size", "Review"];
@@ -36,7 +37,7 @@ function wizPreset(size) {
   const found = presets.find(p => p.name === `${size}v${size}_starter`) || presets[0];
   return found ? found.name : "";
 }
-// The kinds of bot: every preset the API lists, then the two that start from something of the user's.
+// The kinds of bot: every preset the API lists, then the ones that start from something of the user's.
 function wizKinds() {
   const w = S.wiz, presets = (S.home && S.home.presets) || [];
   const kinds = presets.map(p => {
@@ -48,6 +49,7 @@ function wizKinds() {
     return { id: "preset:" + p.name, preset: p.name, size, title: p.title || title[0].toUpperCase() + title.slice(1), about, tags };
   });
   kinds.push({ id: "replays", size: 2, picture: fieldSVG(2, true), title: "Learn from my replays first", about: "Copies how the players in your replay files play, then trains from there." });
+  kinds.push({ id: "gigalearn", size: 1, title: "From a GigaLearn bot", about: "Brings a bot you trained with GigaLearn over, so it keeps training here as the same bot." });
   if (homeBots().length) kinds.push({ id: "from-bot", size: 1, picture: plate(fromBot(), 54), title: "Start from one of my bots", about: "A new bot with another bot's settings, which can keep what that bot already learned." });
   if (w.kind === "file") { const src = sourceOf(w.source); kinds.push({ id: "file", size: (src && src.team_size) || 1, title: src ? src.title : "A settings file", about: src ? src.about : "" }); }
   return kinds;
@@ -61,6 +63,18 @@ function wizSource() {
 }
 function wizSize() { const w = S.wiz, src = sourceOf(wizSource()); return w.form ? w.form.team_size : src ? src.team_size : 1; }
 function fromBot() { return homeBot(S.wiz.fromBot) || homeBots()[0] || null; }
+// The two folders of a GigaLearn bot, each typed or chosen, and what the import found in them.
+function gigalearnFields() {
+  const w = S.wiz, plan = w.gglPlan;
+  const folder = (id, which, label, help) => `<div class="f"><label class="lab" for="${id}">${label}</label><span class="h">${help}</span>
+    <div class="row"><input id="${id}" class="field mono grow" type="text" autocomplete="off" spellcheck="false" value="${esc(w[which])}"><button type="button" class="btn" data-act="wiz-ggl-pick" data-which="${which}">Choose…</button></div></div>`;
+  return `<div class="wiz-more">
+    ${folder("wz-ggl-save", "gglSave", "Its saves", "The bot's checkpoints folder (the one with a numbered folder for each save), or one save inside it. The newest save is taken.")}
+    ${folder("wz-ggl-project", "gglProject", "Its project folder", "The folder with your GigaLearn project's main .cpp file. Its rewards, their weights and the learning settings are read from there.")}
+    <div class="row"><button type="button" class="btn" data-act="wiz-ggl-check">Check what comes over</button><span class="muted">Reads both folders; nothing is made yet.</span></div>
+    ${plan ? `<div class="banner${plan.refused ? " bad" : ""}" ${plan.refused ? 'role="alert"' : ""}><div>${plan.refused ? "<b>This bot cannot be brought over</b>, for the reasons under Cannot import." : `<b>It can be brought over</b>: a ${plan.team_size}v${plan.team_size} bot at ${Number(plan.steps).toLocaleString("en-US")} steps.`}<pre>${esc(plan.lines.join("\n"))}</pre></div></div>` : ""}
+    <div class="muted">The new bot is the same bot: the same networks, what it sees, its actions, rewards and learning settings, starting at the steps it had reached. Rewards and other C++ you wrote yourself are listed to port by hand.</div></div>`;
+}
 
 // Said on the kind and brain steps when this PC has no graphics card training can use.
 function noCardNote() {
@@ -258,6 +272,8 @@ function kindStep() {
   if (w.kind === "replays") {
     extra = `<div class="wiz-more"><div class="f"><span class="lab">Game size</span><div class="seg" data-seg="wzsize">${starters.map(p => `<button type="button" data-v="${esc(p.name)}" aria-pressed="${wizSource() === p.name}">${esc(p.name.split("_")[0])}</button>`).join("")}</div></div>
       <div class="muted">The bot is made from the starter of this size with <b>Learn from replays first</b> switched on. Its Settings tab opens next: add the folder your replays are in there, then press Apply.</div></div>`;
+  } else if (w.kind === "gigalearn") {
+    extra = gigalearnFields();
   } else if (w.kind === "from-bot" && from) {
     const newest = from.newest_save;
     extra = `<div class="wiz-more"><label class="f" for="wz-from"><span class="lab">Which bot</span><select id="wz-from" class="field">${homeBots().map(b => `<option value="${esc(b.name)}" ${b.name === from.name ? "selected" : ""}>${esc(b.name)}${b.team_size ? " · " + b.team_size + "v" + b.team_size : ""} · ${b.saves} ${b.saves === 1 ? "save" : "saves"}</option>`).join("")}</select></label>
@@ -282,7 +298,7 @@ function nameStep() {
         <label class="f" for="wz-name"><span class="lab">Name</span><span class="h">Up to 64 letters, digits, -, _ and . (starting with a letter or digit). It names the bot's folder and its RLBot bot.</span>
           <input id="wz-name" class="field" type="text" autocomplete="off" spellcheck="false" value="${esc(w.name)}" ${w.nameError ? 'aria-invalid="true"' : ""}></label>
         <span class="err" id="wz-name-err" role="alert">${esc(w.nameError)}</span>
-        <label class="f" for="wz-number"><span class="lab">Plate</span><span class="h">One or two letters or digits (like 07 or XM), on its plate and its car.</span>
+        <label class="f" for="wz-number"><span class="lab">Plate</span><span class="h">One or two letters or digits (like 07 or AB), on its plate and its car.</span>
           <input id="wz-number" class="field mono wiz-number" type="text" maxlength="2" autocomplete="off" value="${esc(l.number || "")}"></label>
         <div class="f"><span class="lab">Colours</span><span class="h">Pick a pair, or set the main and the second colour yourself.</span>
           <div class="wiz-swatches">${w.palette.map((pair, i) => `<button type="button" class="wiz-swatch" data-swatch="${i}" aria-pressed="${pair[0] === l.main && pair[1] === l.contrast}" aria-label="Colour pair ${i + 1}" title="Colour pair ${i + 1}"><span style="background:${esc(pair[0])};"></span><span style="background:${esc(pair[1])};"></span></button>`).join("")}</div>
@@ -295,6 +311,10 @@ function nameStep() {
 }
 function brainStep() {
   const w = S.wiz;
+  if (w.kind === "gigalearn") {
+    return `<div><h1 class="display wiz-title">Brain size</h1><div class="muted wiz-lede">A bot brought over from GigaLearn keeps its own brain.</div></div>
+      <div class="banner"><div><b>${esc(w.name)} gets the GigaLearn bot's networks</b>, their sizes and their trained weights, so it carries on from what it learned.</div></div>`;
+  }
   if (w.kind === "from-bot") {
     const from = fromBot() || {};
     return `<div><h1 class="display wiz-title">Brain size</h1><div class="muted wiz-lede">A bot started from another gets that bot's brain.</div></div>
@@ -320,6 +340,13 @@ function reviewStep() {
   const w = S.wiz, l = w.livery || {};
   const head = `<div><h1 class="display wiz-title">Review</h1><div class="muted wiz-lede">Nothing is made until you press Make the bot.</div></div>`;
   const who = `<div class="wiz-made">${plate({ livery: l }, 72)}<div><div class="display wiz-preview-name">${esc(w.name)}</div><div class="cap muted">Number ${esc(l.number || "")} · ${w.liveryTouched ? "your number and colours" : "number and colours picked from its name"}</div></div><span class="grow"></span>${carSVG(l, 200)}</div>`;
+  if (w.kind === "gigalearn") {
+    const plan = w.gglPlan || { lines: [] };
+    return `${head}${who}<div class="wiz-review"><span class="muted">Kind</span><span>Brought over from GigaLearn: <span class="mono path">${esc(w.gglSave)}</span></span>
+      <span class="muted">Starts from</span><span>The GigaLearn bot as it is, at ${Number(plan.steps || 0).toLocaleString("en-US")} steps.</span></div>
+      <div class="banner"><div><pre>${esc(plan.lines.join("\n"))}</pre></div></div>
+      <div class="banner">Make the bot first plays a few short games to check that the new bot chooses exactly as the GigaLearn bot does (this takes a little while), and makes it only if it does. It is not started: you choose when to start training.</div>`;
+  }
   if (w.kind === "from-bot") {
     const from = fromBot() || {}, newest = from.newest_save;
     return `${head}${who}<div class="wiz-review"><span class="muted">Kind</span><span>A new bot from <b>${esc(from.name)}</b>: its rewards, its network sizes and every other setting.</span>
@@ -388,6 +415,14 @@ async function leaveStep() {
   const w = S.wiz;
   if (w.step === 0) {
     w.formError = "";
+    if (w.kind === "gigalearn") {
+      if (!w.gglSave.trim()) { w.formError = "Choose the GigaLearn bot's saves folder."; return wizStop("#wz-ggl-save"); }
+      if (!w.gglProject.trim()) { w.formError = "Choose the GigaLearn bot's project folder."; return wizStop("#wz-ggl-project"); }
+      if (!await gigalearnCheck()) return wizStop();
+      if (w.gglPlan.refused) { w.formError = "This bot cannot be brought over: see Cannot import above."; return wizStop(); }
+      if (!w.name) { const base = (w.gglProject.trim().split(/[\\/]/).filter(Boolean).pop() || "").replace(/[^A-Za-z0-9_.-]/g, "-").replace(/^[^A-Za-z0-9]+/, "").slice(0, 64); w.name = base && !nameProblem(base) ? base : ""; }
+      return true;
+    }
     if (w.kind === "from-bot") {
       const from = fromBot();
       if (!from || from.status === "problem") return wizStop("#wz-from");
@@ -415,7 +450,7 @@ async function leaveStep() {
     }
     return true;
   }
-  if (w.step === 2 && w.kind !== "from-bot") {
+  if (w.step === 2 && w.kind !== "from-bot" && w.kind !== "gigalearn") {
     const out = await call("check_bot", w.preset, w.values);
     if (S.wiz !== w) return false;
     if (out.error) { w.formError = out.error; toast(out.error, true); return false; }
@@ -457,7 +492,7 @@ function pickKind(id) {
 async function newBotWizard() {
   const first = ((S.home && S.home.presets) || [])[0];
   const wiz = S.wiz = {
-    step: 0, seen: 0, kind: "preset:" + (wizPreset(1) || (first && first.name) || ""), source: "", replayPreset: "", fromBot: "", transfer: true,
+    step: 0, seen: 0, kind: "preset:" + (wizPreset(1) || (first && first.name) || ""), source: "", replayPreset: "", fromBot: "", transfer: true, gglSave: "", gglProject: "", gglPlan: null,
     sources: [], name: "", nameError: "", livery: null, auto: null, palette: [], liveryTouched: false, liveryError: "", asked: null,
     preset: "", form: null, values: {}, errors: {}, helpOpen: {}, custom: false, sizes: null, fixed: null, formError: "",
   };
@@ -482,6 +517,15 @@ async function wizardMake() {
   if (!w || w.making) return;
   w.making = true;
   try {
+    if (w.kind === "gigalearn") {
+      const out = await call("import_gigalearn", w.gglSave.trim(), w.gglProject.trim(), w.name);
+      if (out.error) { w.nameError = nameProblem(w.name); if (w.nameError) { showStep(1); return wizStop("#wz-name"); } return toast(out.error, true); }
+      if (out.refused) return gigalearnReport(out.lines, false);
+      await keepLivery(out.made);
+      S.wiz = null; await loadHome();
+      await openBot(out.made, "settings");
+      return gigalearnReport(out.lines, true);
+    }
     if (w.kind === "from-bot") {
       const out = await call("copy_bot", w.fromBot, w.name, !!(w.transfer && (fromBot() || {}).newest_save != null));
       if (out.error) { w.nameError = nameProblem(w.name); if (w.nameError) { showStep(1); return wizStop("#wz-name"); } return toast(out.error, true); }
@@ -520,7 +564,33 @@ async function replaysFirst(name) {
   if (batch && !Number(batch.value)) await call("stage", name, "pretrain.batch_replays", 100);
 }
 
+// What the import of a GigaLearn bot found; false when it could not run.
+async function gigalearnCheck() {
+  const w = S.wiz;
+  const out = await call("gigalearn_plan", w.gglSave.trim(), w.gglProject.trim());
+  if (S.wiz !== w) return false;
+  if (out.error) { w.gglPlan = null; w.formError = "Cannot read this GigaLearn bot: " + out.error; return false; }
+  w.gglPlan = out; w.formError = "";
+  return true;
+}
+// The import's report: with the new bot, a way to start training it at once.
+function gigalearnReport(lines, made) {
+  modal(`<h2 class="display">${made ? "Brought over from GigaLearn" : "Not brought over"}</h2>
+    <div class="banner${made ? "" : " bad"}"><div><pre>${esc(lines.join("\n"))}</pre></div></div>
+    <div class="muted" style="font-size:13px;">${made ? "The report is kept in the bot's folder as imported.txt. Port anything listed under 'to port by hand' before training long, or train on without it." : "Nothing was made."}</div>
+    <div class="foot"><button type="button" class="btn" data-close="1">${made ? "Not now" : "Close"}</button>${made ? '<button type="button" class="btn primary" data-act="ggl-start">Start training</button>' : ""}</div>`);
+}
+
 VIEWS.wizard = () => renderWizard();
+ACTIONS["wiz-ggl-pick"] = async t => {
+  const w = S.wiz, which = t.dataset.which;
+  const out = await call("choose_folder");
+  if (S.wiz !== w || !out.folder) return out.error ? toast(out.error, true) : undefined;
+  w[which] = out.folder; w.gglPlan = null;
+  return keepFocus(renderWizard);
+};
+ACTIONS["wiz-ggl-check"] = async () => { const w = S.wiz; await gigalearnCheck(); if (S.wiz === w) keepFocus(renderWizard); };
+ACTIONS["ggl-start"] = async () => { closeModal(); return ACTIONS.start(); };
 ACTIONS.newbot = () => newBotWizard();
 ACTIONS["wiz-next"] = () => wizardGo(S.wiz.step + 1);
 ACTIONS["wiz-back"] = () => wizardGo(S.wiz.step - 1);
@@ -553,6 +623,8 @@ on("input", el => {
     put($("#wz-preview"), previewHTML());
     pickLivery();
   }
+  if (el.id === "wz-ggl-save") { w.gglSave = el.value; w.gglPlan = null; }
+  if (el.id === "wz-ggl-project") { w.gglProject = el.value; w.gglPlan = null; }
   if (el.id === "wz-number") editLivery({ number: el.value });
   if (el.id === "wz-main") editLivery({ main: el.value });
   if (el.id === "wz-second") editLivery({ contrast: el.value });

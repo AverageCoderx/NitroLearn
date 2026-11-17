@@ -6,6 +6,7 @@ nothing of the user's is touched, files the user changed are copied first), the 
 from __future__ import annotations
 
 import contextlib
+import http.client
 import io
 import json
 import os
@@ -461,6 +462,50 @@ def test_the_release_notes_are_the_readmes_whats_new_as_plain_text(tmp_path: Pat
     )
 
 
+def test_an_update_stopped_part_way_is_finished_by_the_next_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file that cannot be written (in use, antivirus) stops the copy part way. The folder must still say
+    the old version, so the next update copies the rest and removes what the new version dropped."""
+    root = installed(tmp_path / "Nitro Learn José 日本", release_files("1.0.0"))
+    new = release_files("1.1.0", {"python/nitro/added.py": "NEW = True\n"})
+    del new["python/nitro/removed_later.py"]
+    github = GitHub(
+        {
+            update.LATEST: release_answer("1.1.0"),
+            update.ARCHIVE.format(version="1.1.0"): archive("1.1.0", new),
+            update.ARCHIVE.format(version="1.0.0"): archive("1.0.0", release_files("1.0.0")),
+        }
+    )
+    write = update._write
+
+    def locked(target: Path, source: Path) -> None:
+        if target.name == "trainer.py":
+            raise PermissionError(13, "The process cannot access the file", str(target))
+        write(target, source)
+
+    monkeypatch.setattr(update, "_write", locked)
+    said: list[str] = []
+    ran: list[list[str]] = []
+    options: dict[str, Any] = {
+        "yes": True,
+        "installer": "now",
+        "get": github,
+        "say": said.append,
+        "run_installer": lambda command, cwd: ran.append(command) or 0,
+    }
+    assert update.command(root, root / "runs", **options) == 1
+    assert "trainer.py" in said[-1] and "again" in said[-1], said[-1]
+    assert update.installed_version(root) == "1.0.0", "a half-copied folder is not the new version"
+    assert ran == []
+    monkeypatch.setattr(update, "_write", write)
+    assert update.command(root, root / "runs", **options) == 0, said
+    assert update.installed_version(root) == "1.1.0"
+    assert (root / "python/nitro/trainer.py").read_text(encoding="utf-8") == "VERSION = '1.1.0'\n"
+    assert not (root / "python/nitro/removed_later.py").exists()
+    assert not (root / ".tmp/update/replaced").exists(), "the first attempt's copies are not the user's"
+
+
 def test_a_strange_or_missing_download_changes_nothing(tmp_path: Path) -> None:
     root = installed(tmp_path / "NitroLearn", release_files("1.0.0"))
     before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
@@ -472,6 +517,7 @@ def test_a_strange_or_missing_download_changes_nothing(tmp_path: Path) -> None:
         (bad.getvalue(), "strange path"),
         (b"not a zip", "not a zip archive"),
         (urllib.error.URLError("no route"), "could not be downloaded"),
+        (http.client.IncompleteRead(b"part", 100), "could not be downloaded"),
     ):
         github = GitHub(
             {update.LATEST: release_answer("1.1.0"), update.ARCHIVE.format(version="1.1.0"): answer}
@@ -480,6 +526,9 @@ def test_a_strange_or_missing_download_changes_nothing(tmp_path: Path) -> None:
             update.apply(root, update.check(root, github), github, lambda _: None)
     assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file() and ".tmp" not in p.parts} == before
     assert not (tmp_path / "outside.txt").exists()
+    cut_off = GitHub({update.LATEST: http.client.IncompleteRead(b"{", 100)})
+    with pytest.raises(update.UpdateError, match="GitHub cannot be reached"):
+        update.check(root, cut_off)
 
 
 def test_the_kept_paths_come_from_gitignore_and_the_fixed_minimum(tmp_path: Path) -> None:
@@ -658,6 +707,9 @@ def test_the_installer_runs_as_the_install_scripts_run_it(tmp_path: Path) -> Non
     assert f"-WorkingDirectory '{str(folder).replace(chr(39), chr(39) * 2)}'" in script
     assert "'-m', 'nitro', 'dashboard'" in script and "Read-Host" in script
     assert "install.ps1" not in update.finisher_command(1, None, None, folder)[-1]
+    # PowerShell also ends a '...' string at a typographic quote (U+2018 to U+201B): each is doubled too.
+    curly = update.finisher_command(1, None, ["python", "-m"], Path("C:/Sam\u2019s \u2018bots\u201b"))[-1]
+    assert "'C:/Sam\u2019\u2019s \u2018\u2018bots\u201b\u201b'" in curly
 
     assert update.reopen_command(["dashboard", "--runs", "runs"], "/v/bin/python") == [
         "/v/bin/python",
@@ -698,6 +750,37 @@ def test_an_update_installs_the_parts_chosen_before_without_asking(tmp_path: Pat
     assert update.installer_command(tmp_path, windows=True)[-2] == "none"
     record.write_text("not json", encoding="utf-8")
     assert "-Parts" not in update.installer_command(tmp_path, windows=True)
+
+
+def test_the_updates_installer_run_is_added_to_install_log(tmp_path: Path) -> None:
+    """Run as an update runs it (-Parts, -NoLaunch, no -Progress), install.ps1 runs itself again piped and
+    adds every line to the end of install-log.txt (UTF-8) while showing it; the setup wizard (-Progress)
+    writes that log itself. Windows PowerShell only: checked here as text."""
+    record = tmp_path / update.CHOICES
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps({"gpu": True}), encoding="utf-8")
+    command = update.installer_command(tmp_path, windows=True)
+    assert "-Parts" in command and "-NoLaunch" in command and "-Progress" not in command
+    ps1 = (PROJECT / "install.ps1").read_text(encoding="utf-8")
+    condition = "$Logged = $NoLaunch -and -not $Progress -and $PSBoundParameters.ContainsKey('Parts')"
+    assert condition in ps1
+    logged = ps1[ps1.index(condition) : ps1.index("exit $code")]
+    assert ps1.index("exit $code") < ps1.index("Set-Location -LiteralPath $PSScriptRoot"), (
+        "before anything is done"
+    )
+    assert "-not $env:NITRO_INSTALL_LOGGED" in logged and "$env:NITRO_INSTALL_LOGGED = '1'" in logged
+    assert "Join-Path $PSScriptRoot 'install-log.txt'" in logged
+    assert "New-Object System.Text.UTF8Encoding $false" in logged
+    assert "[IO.File]::AppendAllText($log" in logged
+    assert "| Tee-Object" not in ps1 and " *> " not in ps1, "both write UTF-16 in Windows PowerShell 5.1"
+    assert "-File $PSCommandPath @again 2>&1 | ForEach-Object" in logged and "Write-Host $line" in logged
+    assert "$code = $LASTEXITCODE" in logged, "the installer's exit code is the run's"
+    assert "@('-Parts', 'none')" in logged, "no parts survives the run again"
+    assert "$env:PYTHONUNBUFFERED = '1'" in logged and "$env:PYTHONIOENCODING = 'utf-8'" in logged
+    # Piped, a question would not show: the long-path warning does not wait.
+    assert "-not [Console]::IsOutputRedirected) {" in ps1
+    iss = (PROJECT / "installer" / "NitroLearn.iss").read_text(encoding="utf-8")
+    assert "LogFile := ExpandConstant('{app}\\install-log.txt');" in iss and "-NoLaunch -Progress" in iss
 
 
 def test_the_relauncher_waits_for_the_process_then_starts_the_command(tmp_path: Path) -> None:

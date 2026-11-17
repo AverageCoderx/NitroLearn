@@ -40,6 +40,26 @@ use them to cheat online. See [LICENSE](LICENSE) and [BOTS-LICENSE.md](BOTS-LICE
 Questions, bugs, or a bot to share: NitroLearn is supported in the Vanta Discord server,
 <https://discord.gg/bYP3kYtryg>. The dashboard's **Help** page (in its top band) has the link too.
 
+## What's new in 1.0.4
+- **Bring a GigaLearn bot over (new):** a bot you trained with GigaLearn can keep training here as the same
+  bot: its networks, what it sees, its actions, rewards and learning settings, from the step it had reached.
+  In the dashboard: New bot, then From a GigaLearn bot. NitroLearn first checks that the new bot chooses
+  exactly as the GigaLearn one does, and says what you have to port by hand. See "Bringing a GigaLearn bot
+  over" below.
+- **More accurate replay conversion (on for new bots):** after re-simulating a replay, NitroLearn now works
+  out on which tick each jump, each update from the game's server and each throttle, steering, powerslide and
+  boost change took effect. In a check on 200 high-level games, the simulated cars ended up less than half as
+  far from where the replay shows them. Converting takes about 2.5 to 3 times as long.
+- **Your existing bots and replays are left as they are:** bots made before 1.0.4 carry on with the replays
+  they already use, and replays converted with and without the new timing are kept apart. Nothing is
+  converted again unless you ask: `nitro convert-replays --reconvert`, or the tick box on the Converted
+  replays card. For a big collection that takes hours (roughly 12 hours for 40,000 replays on a fast PC).
+- **Fixes:** updating from the dashboard now adds everything the installer prints, the clean-up summary
+  included, to install-log.txt in NitroLearn's folder, so you can read it after the window closes. A Start
+  menu or desktop shortcut called NitroLearn that you changed to open something else is no longer replaced by
+  installing or updating, nor deleted by uninstalling. The warning that exploiters.max_steps is not shorter
+  than exploiters.every_steps now appears once when training starts, not again at every exploiter phase.
+
 ## What's new in 1.0.3
 - **Exploiters (new, off by default):** every so often NitroLearn trains a separate bot whose only job is to
   beat yours, then mixes games against it into your bot's training, so your bot learns to fix its weak spots.
@@ -61,7 +81,7 @@ Questions, bugs, or a bot to share: NitroLearn is supported in the Vanta Discord
 - **Ball prediction (new setting, off by default):** a bot can see where the ball will be a moment ahead, as
   Rocket League's own prediction shows it. Turn it on for a new bot under Settings, Games (advanced). It costs some
   training speed (about 15% on one test PC); whether it makes a better bot is not measured yet.
-- **Bot plates take letters too:** a bot's plate shows one or two letters or digits (like 07 or XM), in the
+- **Bot plates take letters too:** a bot's plate shows one or two letters or digits (like 07 or AB), in the
   colours you pick.
 
 ## What's new in 1.0.1
@@ -328,7 +348,7 @@ without a terminal. Every button that has a matching command shows it, so you ca
 you need most (**Stop and save**, **Watch it play**). Under it a short **Getting set up** checklist (this PC,
 the arena files, your first bot, where RLBot is) that goes away once everything is done, and then every other
 bot as a row with the one button that fits it (Start training, Carry on, See progress, Fix settings). Each bot
-has a plate (two letters or digits, like 07 or XM) and two colours, picked from its name, so you know it at a glance; click its number plate on
+has a plate (two letters or digits, like 07 or AB) and two colours, picked from its name, so you know it at a glance; click its number plate on
 its page to change them.
 
 **+ New bot** is four steps: the kind of bot (a 1v1, 2v2 or 3v3 starter, the
@@ -729,6 +749,30 @@ own recordings place the controls one row apart: inside `replays\` conversions a
 themselves; for conversions kept anywhere else add `--rows replicar`. `nitro pretrain` says how many it read each way. You can
 `nitro watch` and `nitro export` a cloned bot like any run.
 
+## Bringing a GigaLearn bot over
+If you trained a bot with GigaLearn, NitroLearn can take it over so it keeps training here as the same bot,
+not a new one copied from it. In the dashboard: **New bot**, then **From a GigaLearn bot**. Choose the bot's
+saves (its checkpoints folder) and its project folder (the one with your main `.cpp` file), press **Check
+what comes over** to see the report, give it a name, and press **Make the bot**. When it is made you can start
+training it straight away. From a terminal:
+```powershell
+.\nitro import-gigalearn D:\MyGigaLearnBot\checkpoints --source D:\MyGigaLearnBot --into my-ggl-bot
+.\nitro resume my-ggl-bot
+```
+What comes over: the networks with their trained weights and Adam's running averages, what the bot sees
+(GigaLearn's `AdvancedObs`, `DefaultObs`, or the community `AdvancedObsPadderGGL`), its actions and their
+masks, its rewards with their weights, its learning settings and how its rewards were scaled, starting at the
+step count GigaLearn had reached. It acts with the lowest action delay (1 tick), with which a bot reacts
+fastest in a real game, whatever delay it was trained with (`--keep-action-delay` keeps its own). Before anything is written, NitroLearn plays a few short games and checks
+that the new bot chooses exactly as the GigaLearn bot does ("Parity check PASSED"); if it does not, nothing is
+made.
+
+The report says what came over exactly, what is close but not quite the same, and what you have to port by
+hand: rewards, observations or action parsers you wrote yourself in C++ (with the file and line where they
+are), and GigaLearn's shot, save and assist rewards, which need game events NitroLearn's simulator does not
+have. A bot with its own observation or action parser, or with sigmoid networks, cannot be brought over: the
+import says so and writes nothing. The report is kept in the bot's folder as `imported.txt`.
+
 ## Training on a rented computer
 A bot can move to another machine with a bigger graphics card (a rented cloud machine, say), train there and come
 back, carrying on from its newest save. **Pack for another computer** on its page (or
@@ -931,7 +975,7 @@ Run these from this folder:
 | `.\nitro new SETTINGS --name NAME` | Makes a bot from a settings file without starting it (to pack it, say). |
 | `.\nitro copy-save NAME` | Saves a bot's unfinished copy of replays as its save (the copy also does this itself). |
 | `.\nitro reward-check NAME` | Plays the bot's newest save, learning nothing, and says what each reward would pay it. |
-| `.\nitro convert-replays FOLDERS` | Converts replays ahead of a later copy of replays, learning nothing. |
+| `.\nitro convert-replays FOLDERS` | Converts replays ahead of a later copy of replays, learning nothing, with the timing fit (`--no-fit-timing` without it). Replays converted before are left as they are; `--reconvert` converts them again with the fit (hours for a big store). |
 | `.\nitro wandb NAME` | Sends a run's charts to Weights & Biases (its copy of replays and its training). |
 | `.\nitro dashboard` | The dashboard window: make, train, change, watch and export bots without typing. |
 | `.\nitro update` | Updates NitroLearn to its newest release, keeping your bots, settings, replays and saves (`--check`: only says whether one is out). |
@@ -941,6 +985,7 @@ Run these from this folder:
 | `.\nitro skills NAME` | Scores the run's newest save on the practice skills against each skill's bar; appends to `runs\NAME\skills.csv`. |
 | `.\nitro export NAME` | Writes an RLBot v5 bot folder (`bots\NAME\`) from the run's newest save. |
 | `.\nitro pack NAME` / `.\nitro unpack FILE` | Puts a bot in one file to train it on another computer, and adds it there (or back home). |
+| `.\nitro import-gigalearn SAVE --source PROJECT --into NAME` | Makes `NAME` from a GigaLearn bot, to keep training it here (see "Bringing a GigaLearn bot over"). |
 | `.\nitro surgery NAME --widen 2` | Makes `NAME-x2`, the same bot with networks twice as wide, to resume with bigger networks. |
 | `.\nitro ab A.toml B.toml --task TASK` (or `--speed`) | Compares two settings files. |
 

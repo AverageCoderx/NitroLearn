@@ -247,8 +247,15 @@ def data_files(folder: RunFolder, config: NitroConfig) -> tuple[list[tuple[Path,
         if not matches:
             notes.append(f"{where}: no file {text} here, so nothing is packed for it")
         for file in matches:
-            if file.is_file():
-                found[Path(os.path.relpath(file, settings_dir)).as_posix()] = file
+            if not file.is_file():
+                continue
+            rel = Path(os.path.relpath(file, settings_dir)).as_posix()
+            if _plain(rel, climb=True) is None:  # every unpack would refuse the pack
+                raise PackError(
+                    f"{where}: the file '{rel}' has : or \\ in its name, which another computer may not "
+                    "allow: rename it (and the setting, if it names it), then pack again"
+                )
+            found[rel] = file
     return [(file, rel) for rel, file in sorted(found.items())], notes
 
 
@@ -322,7 +329,8 @@ def pack(
             "so the pack can carry it to the other computer, then pack again"
         )
     own = own_rust_files(config)
-    kept = [saves[-1]] if saves and not all_saves else saves
+    newest = _newest_readable(saves, notes)
+    kept = [newest] if newest is not None and not all_saves else saves
     if len(saves) > len(kept):
         left = len(saves) - len(kept)
         notes.append(f"{left} older save{'s' if left != 1 else ''} left out (--all-saves packs every save)")
@@ -367,6 +375,9 @@ def pack(
                 name = f"run/{inside.as_posix()}"
                 if inside.parts[0] in _SKIPPED or path.name.endswith(".partial"):
                     continue
+                if _plain(inside.as_posix()) is None:  # every unpack would refuse the pack
+                    notes.append(f"{inside.as_posix()} left out: a name with : or \\ cannot travel")
+                    continue
                 if inside == Path(folder.info.name):  # this computer's folders stay here
                     zipped.writestr(name, json.dumps(here.value(_travelling(info))))
                     continue
@@ -403,6 +414,27 @@ def pack(
         partial.unlink(missing_ok=True)
         spare.unlink(missing_ok=True)
     return out, notes
+
+
+def _newest_readable(saves: list[Path], notes: list[str]) -> Path | None:
+    """The newest of `saves` that reads, as a resume takes it (a newer one cut short is noted and passed
+    over); the newest when none reads."""
+    import torch
+
+    from nitro.runs import UNREADABLE, unreadable_reason
+
+    for save in reversed(saves):
+        try:
+            torch.load(save / "state.pt", map_location="cpu", weights_only=True, mmap=True)
+        except UNREADABLE as err:
+            notes.append(
+                f"the save at {int(save.name):,} agent steps cannot be read: {unreadable_reason(err)}; "
+                "the bot carries on from the save before it"
+            )
+            continue
+        return save
+    del notes[len(notes) - len(saves) :]  # none reads: the newest goes, as before
+    return saves[-1] if saves else None
 
 
 _TEXTS = (".json", ".log", ".csv", ".txt", ".html")  # a bot's files a pack carries as `_carried_text`

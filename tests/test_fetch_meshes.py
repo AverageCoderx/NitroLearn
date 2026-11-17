@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import os
 import tarfile
@@ -111,3 +112,17 @@ def test_the_pins_match_rlgyms_real_package(tmp_path: Path, capsys: pytest.Captu
 @pytest.mark.skipif(not (PROJECT / "collision_meshes" / "soccar").is_dir(), reason="no collision meshes here")
 def test_the_meshes_in_this_folder_are_the_pinned_ones() -> None:
     assert fm.already_there(PROJECT / "collision_meshes")
+
+
+def test_a_download_cut_off_part_way_is_tried_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    class CutOff(io.BytesIO):
+        def read(self, *args: object) -> bytes:
+            raise http.client.IncompleteRead(b"part", 100)
+
+    answers: list[io.BytesIO] = [CutOff(), io.BytesIO(b"archive")]
+    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout: answers.pop(0))
+    monkeypatch.setattr(fm.time, "sleep", lambda seconds: None)
+    assert fm.download() == b"archive"
+    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout: CutOff())
+    with pytest.raises(fm.MeshFetchError, match="could not download"):
+        fm.download()

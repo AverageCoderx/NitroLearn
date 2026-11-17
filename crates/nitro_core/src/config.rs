@@ -80,6 +80,10 @@ impl PoolConfig {
                 "obs_team_size must be 0 or from team_size to 4",
             ),
             (
+                self.obs_team_size != 0 && !self.observation.takes_room(),
+                "obs_team_size needs the native, nitro_v2 or gigalearn_padder observation",
+            ),
+            (
                 self.state_setters.is_empty(),
                 "at least one state setter is needed",
             ),
@@ -115,8 +119,14 @@ impl PoolConfig {
         if self.shuffle_slots && self.obs_team_size == 0 {
             return Err("shuffle_slots needs a padded observation (obs_team_size)".to_owned());
         }
+        if self.shuffle_slots && !self.observation.pads() {
+            return Err("shuffle_slots needs the native or nitro_v2 observation".to_owned());
+        }
         if !self.ball_prediction.is_empty() {
             crate::ball_prediction::decisions(&self.ball_prediction, self.tick_skip)?;
+            if !self.observation.pads() {
+                return Err("ball_prediction needs the native or nitro_v2 observation".to_owned());
+            }
         }
         Ok(())
     }
@@ -317,6 +327,19 @@ mod tests {
         assert_eq!(config.check(), Ok(()));
         config.team_size = 4;
         assert!(config.check().unwrap_err().contains("obs_team_size"));
+        let mut config = pool_config(2, 1, 1, 0);
+        config.obs_team_size = 2;
+        config.observation = crate::obs::ObsKind::GigalearnAdvanced;
+        assert!(
+            config
+                .check()
+                .unwrap_err()
+                .contains("native, nitro_v2 or gigalearn_padder")
+        );
+        config.observation = crate::obs::ObsKind::GigalearnPadder;
+        assert_eq!(config.check(), Ok(()), "AdvancedObsPadderGGL's teamSize");
+        config.shuffle_slots = true;
+        assert!(config.check().unwrap_err().contains("shuffle_slots needs"));
 
         // Ball prediction's times
         let mut config = pool_config(2, 1, 1, 0);
@@ -330,6 +353,14 @@ mod tests {
         config.ball_prediction = vec![6.0];
         assert!(config.check().unwrap_err().contains("719 ticks"));
         config.ball_prediction = vec![1.0];
+        for gigalearn in [
+            "gigalearn_advanced",
+            "gigalearn_default",
+            "gigalearn_padder",
+        ] {
+            config.observation = crate::obs::ObsKind::from_name(gigalearn).unwrap();
+            assert!(config.check().unwrap_err().contains("native or nitro_v2"));
+        }
         config.observation = crate::obs::ObsKind::NitroV2;
         assert_eq!(config.check(), Ok(()));
     }

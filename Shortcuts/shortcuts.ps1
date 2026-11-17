@@ -8,7 +8,7 @@ param([Parameter(Mandatory = $true)][string]$Action)
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
-Set-Location $Root
+Set-Location -LiteralPath $Root
 $Runs = Join-Path $Root 'runs'
 $Mine = Join-Path $Root 'my-settings'
 $Presets = Join-Path $Root (Join-Path 'configs' 'presets')
@@ -47,7 +47,7 @@ function Invoke-Nitro([string[]]$Arguments) {
 
 function Open-Thing([string]$Path) {
     if ($DryRun) { Write-Host "would open: $Path"; return }
-    Invoke-Item $Path
+    Invoke-Item -LiteralPath $Path
 }
 
 function Choose([string]$Title, [object[]]$Items, [string]$Default = '') {
@@ -85,12 +85,12 @@ function Pick-File([string]$Start) {
 
 function Pick-Settings([string]$Title) {
     $items = @()
-    if (Test-Path $Mine) {
-        foreach ($file in Get-ChildItem $Mine -Filter '*.toml' | Sort-Object LastWriteTime -Descending) {
+    if (Test-Path -LiteralPath $Mine) {
+        foreach ($file in Get-ChildItem -LiteralPath $Mine -Filter '*.toml' | Sort-Object LastWriteTime -Descending) {
             $items += [pscustomobject]@{ Label = "my-settings\$($file.Name)"; Path = $file.FullName }
         }
     }
-    foreach ($file in Get-ChildItem $Presets -Filter '*.toml' | Sort-Object Name) {
+    foreach ($file in Get-ChildItem -LiteralPath $Presets -Filter '*.toml' | Sort-Object Name) {
         $items += [pscustomobject]@{ Label = "preset: $($file.BaseName) (as shipped)"; Path = $file.FullName }
     }
     $items += [pscustomobject]@{ Label = 'another settings file (pick it)'; Path = '' }
@@ -101,13 +101,13 @@ function Pick-Settings([string]$Title) {
 
 function Pick-Run([string]$Title) {
     $found = @()
-    if (Test-Path $Runs) {
-        $found = @(Get-ChildItem $Runs -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'run.json') } |
+    if (Test-Path -LiteralPath $Runs) {
+        $found = @(Get-ChildItem -LiteralPath $Runs -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'run.json') } |
             Sort-Object LastWriteTime -Descending)
     }
     if ($found.Count -eq 0) { Stop-With "There are no runs yet in $Runs. Start one with 'Train a new bot'." }
     $items = foreach ($run in $found) {
-        $saves = @(Get-ChildItem (Join-Path $run.FullName 'checkpoints') -Directory -ErrorAction SilentlyContinue |
+        $saves = @(Get-ChildItem -LiteralPath (Join-Path $run.FullName 'checkpoints') -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -notlike '*.partial' }).Count
         [pscustomobject]@{
             Label = "{0}   (last active {1:yyyy-MM-dd HH:mm}, {2} saves)" -f $run.Name, $run.LastWriteTime, $saves
@@ -141,7 +141,7 @@ function Open-Report-When-Ready([string]$Report) {
     [void](Start-Job -ArgumentList $Report -ScriptBlock {
         param($Path)
         for ($i = 0; $i -lt 360; $i++) {
-            if (Test-Path $Path) { Start-Sleep -Seconds 2; Invoke-Item $Path; return }
+            if (Test-Path -LiteralPath $Path) { Start-Sleep -Seconds 2; Invoke-Item -LiteralPath $Path; return }
             Start-Sleep -Seconds 5
         }
     })
@@ -150,13 +150,13 @@ function Open-Report-When-Ready([string]$Report) {
 switch ($Action) {
     'new-settings' {
         $preset = Choose 'Which game size should your settings start from?' @(
-            foreach ($file in Get-ChildItem $Presets -Filter '*.toml' | Sort-Object Name) {
+            foreach ($file in Get-ChildItem -LiteralPath $Presets -Filter '*.toml' | Sort-Object Name) {
                 [pscustomobject]@{ Label = $file.BaseName; Path = $file.FullName }
             }
         ) '1'
         $name = Ask-Name 'Name for your settings file' ("my-" + ($preset.Label -replace '_starter$', ''))
         $target = Join-Path $Mine "$name.toml"
-        if (Test-Path $target) { Stop-With "my-settings\$name.toml already exists: use 'Edit a settings file' to change it." }
+        if (Test-Path -LiteralPath $target) { Stop-With "my-settings\$name.toml already exists: use 'Edit a settings file' to change it." }
         New-Item -ItemType Directory -Force $Mine | Out-Null
         # The preset as it is, byte for byte: it names no mesh folder, so the copy finds them as the preset does.
         [System.IO.File]::WriteAllBytes($target, [System.IO.File]::ReadAllBytes($preset.Path))
@@ -164,10 +164,10 @@ switch ($Action) {
         Edit-Settings $target
     }
     'edit-settings' {
-        if (-not (Test-Path $Mine) -or @(Get-ChildItem $Mine -Filter '*.toml').Count -eq 0) {
+        if (-not (Test-Path -LiteralPath $Mine) -or @(Get-ChildItem -LiteralPath $Mine -Filter '*.toml').Count -eq 0) {
             Stop-With "You have no settings files of your own yet. Make one with 'New settings file' (the presets stay as shipped, so updates never clash with your changes)."
         }
-        $items = foreach ($file in Get-ChildItem $Mine -Filter '*.toml' | Sort-Object LastWriteTime -Descending) {
+        $items = foreach ($file in Get-ChildItem -LiteralPath $Mine -Filter '*.toml' | Sort-Object LastWriteTime -Descending) {
             [pscustomobject]@{ Label = $file.Name; Path = $file.FullName }
         }
         Edit-Settings (Choose 'Which settings file?' @($items) '1').Path
@@ -176,7 +176,7 @@ switch ($Action) {
         $settings = Pick-Settings 'Which settings should the new bot train with?'
         $stem = [System.IO.Path]::GetFileNameWithoutExtension($settings) -replace '_starter$', ''
         $name = Ask-Name 'Name for the new run' ("$stem-" + (Get-Date -Format 'yyyyMMdd-HHmm'))
-        if (Test-Path (Join-Path $Runs $name)) {
+        if (Test-Path -LiteralPath (Join-Path $Runs $name)) {
             $again = (Ask "A run called $name already exists. Continue that one instead? (y/n):").Trim()
             if ($again -match '^[yY]') { Invoke-Nitro @('resume', $name); exit $script:Code }
             Stop-With 'Nothing started. Pick another name next time.'
@@ -200,7 +200,7 @@ switch ($Action) {
     'progress' {
         $name = Pick-Run 'Whose progress page?'
         $report = Join-Path (Join-Path $Runs $name) 'report.html'
-        if (-not (Test-Path $report)) { Stop-With "$name has no progress page yet: it appears after the first few minutes of training." }
+        if (-not (Test-Path -LiteralPath $report)) { Stop-With "$name has no progress page yet: it appears after the first few minutes of training." }
         Open-Thing $report
     }
     'watch' {
@@ -212,7 +212,7 @@ switch ($Action) {
         $name = Pick-Run 'Which run''s newest bot should become an RLBot bot?'
         Invoke-Nitro @('export', $name)
         $folder = Join-Path (Join-Path $Root 'bots') $name
-        if ($script:Code -eq 0 -and ($DryRun -or (Test-Path $folder))) { Open-Thing $folder }
+        if ($script:Code -eq 0 -and ($DryRun -or (Test-Path -LiteralPath $folder))) { Open-Thing $folder }
         exit $script:Code
     }
     'doctor' {
@@ -224,7 +224,7 @@ switch ($Action) {
         # it (nitro.dashboard.winapp open: tools, caches and temporary files inside this folder), so this
         # window can close at once.
         $pythonw = Join-Path $Root '.venv\Scripts\pythonw.exe'
-        if (-not (Test-Path $pythonw)) { Stop-With 'NitroLearn is not installed yet: double-click "Install NitroLearn.cmd" in its folder.' }
+        if (-not (Test-Path -LiteralPath $pythonw)) { Stop-With 'NitroLearn is not installed yet: double-click "Install NitroLearn.cmd" in its folder.' }
         . (Join-Path $Root 'tools\env.ps1')
         if ($DryRun) { Write-Host 'would run: pythonw -m nitro.dashboard.winapp open'; exit 0 }
         Start-Process -FilePath $pythonw -ArgumentList @('-m', 'nitro.dashboard.winapp', 'open') -WorkingDirectory $Root

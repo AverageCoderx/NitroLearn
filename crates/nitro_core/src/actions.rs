@@ -20,6 +20,32 @@ pub enum MaskRule {
     /// (or the car is turtled), no boosting actions with an empty tank.
     #[default]
     Standard,
+    /// GigaLearn's `DefaultAction` masks, for like-for-like comparisons and bots brought over from
+    /// GigaLearn: its off-by-one that never allows action 24 and its yaw-with-handbrake air actions are
+    /// reproduced. One difference: GigaLearn also allows jumping whenever the car's body touches the floor
+    /// (simulator contact data an RLBot packet lacks); here, as in `Standard`, only an upside-down car near
+    /// the floor counts as turtled.
+    #[serde(rename = "gigalearn")]
+    GigaLearn,
+}
+
+impl MaskRule {
+    /// The rule a settings file names (`env.action_masks`).
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "standard" => Some(Self::Standard),
+            "gigalearn" => Some(Self::GigaLearn),
+            _ => None,
+        }
+    }
+
+    /// The name a settings file gives this rule.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::GigaLearn => "gigalearn",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,7 +56,8 @@ enum Kind {
 
 pub struct ActionTable {
     controls: Vec<Controls>,
-    /// Every mask there can be, by situation: a mask depends on nothing else, so writing one is a copy.
+    /// Every mask there can be, by rule and situation: a mask depends on nothing else, so writing one is a
+    /// copy.
     masks: Vec<u8>,
 }
 
@@ -43,6 +70,7 @@ struct Situation {
 }
 
 const SITUATIONS: usize = 8;
+const RULES: [MaskRule; 2] = [MaskRule::Standard, MaskRule::GigaLearn];
 
 impl Situation {
     fn of(car: &CarSnapshot) -> Self {
@@ -140,25 +168,50 @@ impl ActionTable {
         let len = controls.len();
         // The air part of the table skips pure-yaw actions; these ground actions are exactly them.
         let pure_yaw = |c: &Controls| throttle_is_boost(c) && !c.handbrake;
+        // GigaLearn picks them with handbrake on exactly when yawing (a powerslide on landing).
+        let gigalearn_yaw = |c: &Controls| throttle_is_boost(c) && (c.yaw != 0.0) == c.handbrake;
+        let air = |skip: Option<usize>, yaw_only: &dyn Fn(&Controls) -> bool| -> Vec<bool> {
+            controls
+                .iter()
+                .zip(&kinds)
+                .enumerate()
+                .map(|(i, (c, &kind))| match kind {
+                    Kind::Air => Some(i) != skip && !c.jump,
+                    Kind::Ground => yaw_only(c),
+                })
+                .collect()
+        };
         let ground: Vec<bool> = kinds.iter().map(|&k| k == Kind::Ground).collect();
-        let air: Vec<bool> = controls
-            .iter()
-            .zip(&kinds)
-            .map(|(c, &kind)| match kind {
-                Kind::Air => !c.jump,
-                Kind::Ground => pure_yaw(c),
-            })
-            .collect();
-        let mut masks = vec![0u8; SITUATIONS * len];
-        for situation in Situation::all() {
-            let start = situation.index() * len;
-            let out = &mut masks[start..start + len];
-            let base = if situation.on_ground { &ground } else { &air };
-            for i in 0..len {
-                let (jump, boost) = (controls[i].jump, controls[i].boost);
-                let allowed =
-                    (base[i] || (jump && situation.can_jump)) && (situation.has_boost || !boost);
-                out[i] = u8::from(allowed);
+        let air_standard = air(None, &pure_yaw);
+        let air_gigalearn = air(Some(NUM_GROUND_ACTIONS), &gigalearn_yaw);
+        let mut masks = vec![0u8; RULES.len() * SITUATIONS * len];
+        for (r, rule) in RULES.into_iter().enumerate() {
+            for situation in Situation::all() {
+                let start = (r * SITUATIONS + situation.index()) * len;
+                let out = &mut masks[start..start + len];
+                let base = if situation.on_ground {
+                    &ground
+                } else {
+                    match rule {
+                        MaskRule::Standard => &air_standard,
+                        MaskRule::GigaLearn => &air_gigalearn,
+                    }
+                };
+                for i in 0..len {
+                    let (jump, boost) = (controls[i].jump, controls[i].boost);
+                    let allowed = match rule {
+                        MaskRule::Standard => {
+                            (base[i] || (jump && situation.can_jump))
+                                && (situation.has_boost || !boost)
+                        }
+                        // GigaLearn removes boost actions before adding jump actions back.
+                        MaskRule::GigaLearn => {
+                            (base[i] && (situation.has_boost || !boost))
+                                || (jump && situation.can_jump)
+                        }
+                    };
+                    out[i] = u8::from(allowed);
+                }
             }
         }
         Self { controls, masks }
@@ -200,8 +253,11 @@ impl ActionTable {
     /// Writes 1 for every action `car` may take now, 0 otherwise (`out.len() == self.len()`).
     pub fn write_mask(&self, rule: MaskRule, car: &CarSnapshot, out: &mut [u8]) {
         let len = self.len();
-        let MaskRule::Standard = rule;
-        let start = Situation::of(car).index() * len;
+        let r = match rule {
+            MaskRule::Standard => 0,
+            MaskRule::GigaLearn => 1,
+        };
+        let start = (r * SITUATIONS + Situation::of(car).index()) * len;
         out.copy_from_slice(&self.masks[start..start + len]);
     }
 }
@@ -282,6 +338,89 @@ mod tests {
     }
 
     #[test]
+    fn gigalearn_rule_matches_its_known_quirks() {
+        let table = ActionTable::new();
+        let states = [
+            car(true, true, 50.0),
+            car(false, true, 50.0),
+            car(false, false, 0.0),
+            car(true, true, 0.0),
+        ];
+        for state in &states {
+            assert!(!allowed(&table, MaskRule::GigaLearn, state).contains(&24));
+        }
+        let in_air = allowed(&table, MaskRule::GigaLearn, &car(false, false, 50.0));
+        for &i in in_air.iter().filter(|&&i| i < 24) {
+            let c = table.controls(i);
+            assert_eq!(
+                c.handbrake,
+                c.yaw != 0.0,
+                "GigaLearn yaws with handbrake in the air"
+            );
+        }
+        // With an empty tank GigaLearn still allows jump actions that boost.
+        let ok = allowed(&table, MaskRule::GigaLearn, &car(true, true, 0.0));
+        assert!(
+            ok.iter()
+                .any(|&i| table.controls(i).jump && table.controls(i).boost)
+        );
+    }
+
+    /// GigaLearn's DefaultAction builds its list by its own rule (re-typed here from `DefaultAction`):
+    /// the same 90 actions, in the same order, as this table.
+    #[test]
+    fn gigalearn_default_action_is_this_table_in_order() {
+        const AXIS: [f32; 3] = [-1.0, 0.0, 1.0];
+        let mut theirs = Vec::new();
+        for throttle in AXIS {
+            for steer in AXIS {
+                for boost in [0.0f32, 1.0] {
+                    for handbrake in [0.0f32, 1.0] {
+                        if boost == 1.0 && throttle != 1.0 {
+                            continue;
+                        }
+                        theirs.push([throttle, steer, 0.0, steer, 0.0, 0.0, boost, handbrake]);
+                    }
+                }
+            }
+        }
+        for pitch in AXIS {
+            for yaw in AXIS {
+                for roll in AXIS {
+                    for jump in [0.0f32, 1.0] {
+                        for boost in [0.0f32, 1.0] {
+                            if (jump == 1.0 && yaw != 0.0)
+                                || (pitch == 0.0 && roll == 0.0 && jump == 0.0)
+                            {
+                                continue;
+                            }
+                            let handbrake =
+                                jump == 1.0 && (pitch != 0.0 || yaw != 0.0 || roll != 0.0);
+                            let handbrake = f32::from(u8::from(handbrake));
+                            theirs.push([boost, yaw, pitch, yaw, roll, jump, boost, handbrake]);
+                        }
+                    }
+                }
+            }
+        }
+        let table = ActionTable::new();
+        let ours: Vec<[f32; 8]> = (0..NUM_ACTIONS)
+            .map(|i| table.controls(i).to_floats())
+            .collect();
+        assert_eq!(ours, theirs);
+    }
+
+    #[test]
+    fn mask_rules_are_named_as_in_the_settings() {
+        for name in ["standard", "gigalearn"] {
+            let parsed: MaskRule = serde_json::from_str(&format!("\"{name}\"")).unwrap();
+            assert_eq!(MaskRule::from_name(name), Some(parsed));
+            assert_eq!(parsed.name(), name);
+        }
+        assert_eq!(MaskRule::from_name("other"), None);
+    }
+
+    #[test]
     fn mirroring_pairs_every_action_and_undoes_itself() {
         let table = ActionTable::new();
         let mirror = table.mirror_permutation();
@@ -344,7 +483,7 @@ mod tests {
         for i in 0..NUM_ACTIONS {
             text += &format!("action {i} {:?}\n", table.controls(i).to_floats());
         }
-        for rule in [MaskRule::Standard] {
+        for rule in RULES {
             for (name, state) in reference_states() {
                 let mut mask = vec![0u8; table.len()];
                 table.write_mask(rule, &state, &mut mask);

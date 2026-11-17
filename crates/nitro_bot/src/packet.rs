@@ -108,12 +108,15 @@ pub fn car(player: &PlayerInfo, on_ground: bool) -> CarSnapshot {
         player.has_double_jumped,
         player.has_dodged,
     );
+    // RocketSim's window clock starts when the first jump's force ends (air_time_since_jump stays 0
+    // while jumping): a car still jumping has the whole window, whatever RLBot's timeout says.
+    let jumping = player.air_state == AirState::Jumping;
     // RocketSim's has_flip_or_jump: on the ground, or airborne with neither used and the jump window
     // still open; a car that fell off a surface never jumped, so its window never closes.
     let can_flip = on_ground
         || (!has_flipped
             && !has_double_jumped
-            && (!has_jumped || window_open(player.dodge_timeout)));
+            && (!has_jumped || jumping || window_open(player.dodge_timeout)));
     CarSnapshot {
         team: if player.team == 0 {
             Team::Blue
@@ -132,7 +135,7 @@ pub fn car(player: &PlayerInfo, on_ground: bool) -> CarSnapshot {
         is_supersonic: player.is_supersonic,
         demo_timer: player.demolished_timeout.max(0.0),
         // RLBot's dodge_timeout is the window's remaining time while a first jump has it running.
-        flip_time_left: if can_flip && !on_ground && has_jumped {
+        flip_time_left: if can_flip && !on_ground && has_jumped && !jumping {
             player.dodge_timeout.max(0.0)
         } else if can_flip {
             FLIP_WINDOW_SECONDS

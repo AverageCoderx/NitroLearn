@@ -11,6 +11,7 @@ computer, never shipped with NitroLearn (git ignores them). Meshes dumped from y
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import os
 import tarfile
@@ -73,7 +74,7 @@ def download(url: str = URL, attempts: int = 4) -> bytes:
             with urllib.request.urlopen(url, timeout=120) as answer:
                 data: bytes = answer.read()
                 return data
-        except (urllib.error.URLError, OSError) as err:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
             if attempt == attempts - 1:
                 raise MeshFetchError(
                     f"could not download {url} ({err}). Check the internet connection and try again "

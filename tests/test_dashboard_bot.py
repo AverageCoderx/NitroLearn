@@ -242,7 +242,7 @@ def test_the_number_and_colours_are_changed_in_a_dialog_with_a_preview(tmp_path:
     assert api.check_livery("7", "#C8321F", "#F3F1EC")["livery"]["ink"] == "#F3F1EC"
     assert "too alike" in api.check_livery("7", "#C8321F", "#C8321F")["error"]
     # Two letters or digits: digits read as a race number (7 is 07), letters are shown in capitals.
-    assert api.check_livery("xm", "#C8321F", "#F3F1EC")["livery"]["number"] == "XM"
+    assert api.check_livery("ab", "#C8321F", "#F3F1EC")["livery"]["number"] == "AB"
     assert api.check_livery("7", "#C8321F", "#F3F1EC")["livery"]["number"] == "07"
     assert api.check_livery("R2", "#C8321F", "#F3F1EC")["livery"]["number"] == "R2"
     assert "letters or digits" in api.check_livery("X!", "#C8321F", "#F3F1EC")["error"]
@@ -911,3 +911,20 @@ def test_the_bots_page_fits_a_small_window(tmp_path: Path) -> None:
         finally:
             browser.close()
     assert errors == []
+
+
+def test_a_comparisons_own_name_is_made_from_any_file_name(tmp_path: Path) -> None:
+    project, runs = tmp_path / "project", tmp_path / "runs"
+    (project / "configs" / "presets").mkdir(parents=True)
+    (project / "my-settings").mkdir()
+    for stem in ("my fast bot", "réglages", "x" * 70):
+        (project / "my-settings" / f"{stem}.toml").write_text(TINY, encoding="utf-8")
+    make_bot(runs, "racer", saves=1)
+    api = Api(project, runs)
+    mine = {f["title"]: f["id"] for f in api.tool_choices("racer")["files"] if f["group"] == "my-settings"}
+    for title, ident in mine.items():
+        out = api.tool_command("racer", "ab", {"a": "bot:racer", "b": ident, "on": "speed"})
+        assert "error" not in out, (title, out)  # no name was typed: the one made up must do
+        assert out["name"].startswith("racer-vs-") and len(out["name"]) <= 64
+    out = api.tool_command("racer", "ab", {"a": "bot:racer", "b": mine["my fast bot"], "on": "speed"})
+    assert out["name"] == "racer-vs-my-fast-bot-speed"

@@ -535,7 +535,8 @@ def test_the_wizard_makes_the_bot_the_form_made_for_default_and_for_custom_choic
             assert [kinds.nth(i).get_attribute("data-kind") for i in range(kinds.count())] == [
                 *(f"preset:{name}" for name in presets),
                 "replays",
-            ], "every preset the API lists, then learning from replays"
+                "gigalearn",
+            ], "every preset the API lists, then learning from replays and bringing a GigaLearn bot over"
             assert tab.get_attribute("[data-kind='preset:1v1_starter']", "aria-pressed") == "true"
             assert tab.text_content("[data-kind='preset:1v1_starter'] .tag") == "Recommended"
             assert tab.locator("[data-kind] svg.mini").count() == kinds.count(), "each with its field picture"
@@ -1177,3 +1178,65 @@ def test_the_garage_the_wizard_and_the_search_fit_the_smallest_window(tmp_path: 
         finally:
             browser.close()
     assert errors == []
+
+
+# ---------- a bot brought over from GigaLearn ----------
+GIGALEARN = Path(__file__).parent / "fixtures" / "gigalearn"
+needs_meshes = pytest.mark.skipif(
+    not (ROOT / "collision_meshes" / "soccar").is_dir(), reason="no collision meshes in NitroLearn's folder"
+)
+
+
+def test_the_gigalearn_plan_and_import_calls_say_what_comes_over(tmp_path: Path) -> None:
+    api = quiet(Api(ROOT, tmp_path / "runs"))
+    save, project = str(GIGALEARN / "saves" / "advanced_shared"), str(GIGALEARN / "project")
+    plan = api.gigalearn_plan(save, project)
+    assert "error" not in plan, plan
+    assert plan["refused"] is False and plan["team_size"] >= 1 and plan["steps"] == 123456
+    assert any(line.startswith("Carried over exactly") for line in plan["lines"])
+    assert not (tmp_path / "runs").exists(), "a plan writes nothing"
+    missing = api.gigalearn_plan(str(tmp_path / "nowhere"), project)
+    assert "error" in missing
+    bad = api.import_gigalearn(save, project, "no good name")
+    assert "error" in bad and not (tmp_path / "runs" / "no good name").exists()
+
+
+@needs_meshes
+def test_the_wizard_brings_a_gigalearn_bot_over_and_can_start_it(tmp_path: Path) -> None:
+    sync_api = playwright_or_skip()
+    api = quiet(Api(ROOT, tmp_path / "runs"))
+    started: list[str] = []
+    api.start = lambda name: started.append(name) or {"started": True}  # type: ignore[method-assign]
+    errors: list[str] = []
+    with sync_api.sync_playwright() as p:
+        browser = open_chromium(p)
+        try:
+            tab = opened(browser, api, errors)
+            tab.click("[data-act=newbot] >> nth=0")
+            tab.wait_for_selector("#wizard [data-kind]")
+            tab.click("[data-kind=gigalearn]")
+            tab.click("[data-act=wiz-next]")
+            assert "Choose the GigaLearn bot's saves folder" in tab.text_content(".banner.bad")
+            tab.fill("#wz-ggl-save", str(GIGALEARN / "saves" / "advanced_shared"))
+            tab.fill("#wz-ggl-project", str(GIGALEARN / "project"))
+            tab.click("[data-act=wiz-ggl-check]")
+            tab.wait_for_selector(".wiz-more .banner pre")
+            assert "It can be brought over" in tab.text_content(".wiz-more .banner")
+            tab.click("[data-act=wiz-next]")
+            assert tab.input_value("#wz-name") == "project", "named after the project's folder"
+            tab.fill("#wz-name", "from-ggl")
+            tab.click("[data-act=wiz-next]")
+            assert "keeps its own brain" in tab.text_content(".wizard")
+            tab.click("[data-act=wiz-next]")
+            assert "Carried over exactly" in tab.text_content(".wiz-review + .banner")
+            tab.click("[data-act=wiz-make]")
+            tab.wait_for_selector("#modal h2:has-text('Brought over from GigaLearn')", timeout=120_000)
+            assert "Parity check PASSED" in tab.text_content("#modal")
+            tab.click("[data-act=ggl-start]")
+            tab.wait_for_function("document.querySelector('#modal').hidden")
+        finally:
+            browser.close()
+    assert errors == []
+    assert started == ["from-ggl"]
+    assert (tmp_path / "runs" / "from-ggl" / "imported.txt").is_file()
+    assert RunFolder(tmp_path / "runs" / "from-ggl").load_settings().env.observation == "gigalearn_advanced"

@@ -45,7 +45,7 @@ from nitro.dashboard.tools import Tools
 from nitro.dashboard.updating import Updating
 from nitro.dashboard.watching import Watching
 from nitro.doctor import find_rlbot
-from nitro.runs import RunFolder
+from nitro.runs import RunFolder, new_run_info
 
 # How long a trainer started again after an Apply may take to be training before it counts as failed.
 RESTART_GRACE = 10 * 60
@@ -190,6 +190,14 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
         except OSError:
             pass  # kept in memory; only a closed window loses them then
 
+    def _forget_waiting(self, name: str) -> None:
+        """Drops every change waiting for a bot called `name`: one deleted or replaced, or one whose folder
+        went outside the dashboard, whose waiting changes a new bot of that name must not take."""
+        with self._lock:
+            waiting = (self._pending, self._reward_pending, self._start_pending)
+            if [kept.pop(name, None) for kept in waiting] != [None] * len(waiting):
+                self._keep_pending()
+
     # ---------- the bots ----------
     @_safe
     def home(self) -> dict[str, Any]:
@@ -267,7 +275,11 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
             return {"error": f"{item['label']}: {err}"}
         with self._lock:
             pending = dict(self._pending.get(name, {}))
-            pending[path] = converted
+            if converted == describe.plain(item["value"]) and not path.startswith("start_from."):
+                # Back to what the file says: nothing to apply (an Apply would restart a training bot).
+                pending.pop(path, None)
+            else:
+                pending[path] = converted
             text = self._written(folder, name, pending)
             found = edits.problems(text, folder.settings, self._settings_dir(folder))
             mine = [p for p in found if path in p] or found
@@ -383,7 +395,9 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
     def _reward_state(self, folder: RunFolder, name: str) -> dict[str, Any]:
         text = folder.settings.read_text(encoding="utf-8-sig")
         before, in_file = rewards.read(text)
-        entries = self._reward_pending.get(name) or [{"from": i, "view": v} for i, v in enumerate(before)]
+        entries = self._reward_pending.get(name)
+        if entries is None:  # an empty list waiting is every reward removed
+            entries = [{"from": i, "view": v} for i, v in enumerate(before)]
         found = edits.issues(self._written(folder, name), folder.settings, self._settings_dir(folder))
         per_reward: dict[int, list[str]] = {}
         general = []
@@ -470,7 +484,9 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
 
     def _start_state(self, folder: RunFolder, name: str) -> dict[str, Any]:
         before, in_file = starts.read(folder.settings.read_text(encoding="utf-8-sig"))
-        entries = self._start_pending.get(name) or [{"from": i, "view": v} for i, v in enumerate(before)]
+        entries = self._start_pending.get(name)
+        if entries is None:  # an empty list waiting is every start removed
+            entries = [{"from": i, "view": v} for i, v in enumerate(before)]
         found = edits.issues(self._written(folder, name), folder.settings, self._settings_dir(folder))
         per_start: dict[int, list[str]] = {}
         general = []
@@ -738,10 +754,7 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
         if with_rlbot and rlbot.is_dir() and not rlbot.is_symlink():
             shutil.rmtree(rlbot)
             removed.append(str(rlbot))
-        with self._lock:
-            for kept in (self._pending, self._reward_pending, self._start_pending):
-                kept.pop(name, None)
-            self._keep_pending()
+        self._forget_waiting(name)
         return {"deleted": name, "removed": removed}
 
     @_safe
@@ -767,6 +780,7 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
                 moved = True
         if moved:
             edits.save(info_file, json.dumps(info))
+        self._forget_waiting(new_name)
         with self._lock:
             for kept in (self._pending, self._reward_pending, self._start_pending):
                 if name in kept:
@@ -786,6 +800,7 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
         if start_from:
             self._folder(start_from)
             args += ["--from", start_from]
+        self._forget_waiting(name)
         self._jobs.start(name, "train", args, self._runs / name)
         return {"started": True, "name": name}
 
@@ -829,10 +844,12 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
         if errors:
             return {"errors": errors}
         made = edits.written(text, changes)
+        self._forget_waiting(name)
         folder = RunFolder(self._runs / name)
         folder.checkpoints.mkdir(parents=True)
         edits.save(folder.settings, made)
-        folder.info.write_text(json.dumps({"settings_dir": str(file.resolve().parent)}), encoding="utf-8")
+        info = new_run_info(settings_dir=str(file.resolve().parent))
+        folder.info.write_text(json.dumps(info), encoding="utf-8")
         advice = folder.load_settings().advice()
         return {"made": name, "changes": changes, "adjusted": adjusted, "advice": advice}
 
@@ -909,15 +926,61 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
         if transfer and source.load_settings().pretrain.enabled:
             text = edits.written(text, {"pretrain.enabled": False})  # both choose what a bot starts from
             notes.append(f"It starts from {name}, so it does not copy replays first ([pretrain] is off).")
+        self._forget_waiting(new_name)
         target = RunFolder(self._runs / new_name)
         target.checkpoints.mkdir(parents=True)
         edits.save(target.settings, text)
-        info: dict[str, Any] = {"settings_dir": str(self._settings_dir(source))}
+        settings_dir = self._settings_dir(source)
+        root, here = source.root.resolve(), settings_dir.resolve()
+        own = here.relative_to(root) if here.is_relative_to(root) else None
+        if own is not None and own.parts:  # an unpacked bot's files, in its own folder: the copy gets its own
+            shutil.copytree(root / own.parts[0], target.root / own.parts[0])
+            settings_dir = target.root.resolve() / own
+        info = new_run_info(settings_dir=str(settings_dir))
         meshes = json.loads(source.info.read_text(encoding="utf-8")).get("collision_meshes")
         if meshes:  # an unpacked bot's: this computer's meshes
             info["collision_meshes"] = meshes
         target.info.write_text(json.dumps(info), encoding="utf-8")
         return {"made": new_name, "notes": notes}
+
+    @_safe
+    def choose_folder(self) -> dict[str, Any]:
+        """Asks for a folder (a GigaLearn bot's checkpoints or project folder)."""
+        if self._window is None:
+            return {"error": "no window to ask from"}
+        import webview
+
+        chosen = self._window.create_file_dialog(webview.FileDialog.FOLDER)
+        if not chosen:
+            return {"cancelled": True}
+        return {"folder": str(Path(chosen[0]))}
+
+    @_safe
+    def gigalearn_plan(self, checkpoint: str, project: str) -> dict[str, Any]:
+        """What importing this GigaLearn bot would bring over, without writing anything (the New bot page)."""
+        from nitro import gigalearn_import as gi
+
+        plan = gi.plan_import(Path(checkpoint), Path(project) if project else None)
+        return {
+            "lines": gi.Report(plan, None, None, 0).lines(),
+            "refused": bool(plan.refused),
+            "team_size": plan.team_size,
+            "steps": plan.steps,
+        }
+
+    @_safe
+    def import_gigalearn(self, checkpoint: str, project: str, name: str) -> dict[str, Any]:
+        """Makes bot `name` from a GigaLearn bot (`nitro import-gigalearn`), not started yet; the report says
+        what came over, and why when nothing was made."""
+        from nitro.gigalearn_import import import_bot
+
+        self._check_new_name(name)
+        report = import_bot(
+            Path(checkpoint), Path(project) if project else None, name, self._runs, say=lambda _: None
+        )
+        if report.run is None:
+            return {"refused": True, "lines": report.lines()}
+        return {"made": name, "lines": report.lines()}
 
     @_safe
     def export(self, name: str) -> dict[str, Any]:
@@ -1018,9 +1081,7 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
             free = next(f"{name}-{k}" for k in range(2, 10_000) if not (self._runs / f"{name}-{k}").exists())
             return {"exists": name, "path": path, "free": free}
         done = pack.unpack(Path(path), self._runs, replace=replace, project=self._project, name=new_name)
-        with self._lock:  # changes waiting for the bot that was replaced are not this one's
-            if self._pending.pop(name, None) is not None:
-                self._keep_pending()
+        self._forget_waiting(done.folder.name)  # the replaced bot's are not this one's
         for file in done.rust:
             with contextlib.suppress(OSError, ValueError):  # already in the library
                 self._library.add(file)
@@ -1215,8 +1276,11 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
             with contextlib.suppress(OSError, ValueError):
                 folders = [str(f) for f in json.loads(chosen.read_text(encoding="utf-8"))]
         text, end = read_console(folder, int(after))
+        unfitted = replays.store_folder(False)
         return {
-            "store": replays.store_summary(),
+            # New conversions are timing-fitted; the store of those kept before without it is shown apart.
+            "store": replays.store_summary(replays.store_folder(True)),
+            "unfitted": replays.store_summary(unfitted)["counts"] if unfitted.is_dir() else {},
             "state": state,
             "progress": progress,
             "folders": folders,
@@ -1226,9 +1290,10 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
         }
 
     @_safe
-    def convert_start(self, folders: list[str], limit: int = 0) -> dict[str, Any]:
+    def convert_start(self, folders: list[str], limit: int = 0, reconvert: bool = False) -> dict[str, Any]:
         """Starts converting the replays in `folders` (none: the game's own) into the store, every thread at
-        work at low priority, learning nothing (`nitro convert-replays`)."""
+        work at low priority, learning nothing (`nitro convert-replays`); `reconvert`: also the replays kept
+        before without the timing fit, again with it."""
         job = self._jobs.get(_CONVERT, "convert")
         if job is not None and not job.done:
             return {"error": "replays are already being converted"}
@@ -1243,6 +1308,8 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
         args = ["convert-replays", *folders, "--meshes", str(meshes)]
         if int(limit) > 0:
             args += ["--limit", str(int(limit))]
+        if reconvert:
+            args.append("--reconvert")
         self._jobs.start(_CONVERT, "convert", args, folder)
         return {"started": True}
 
@@ -1318,7 +1385,11 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
     def _summary(self, folder: RunFolder) -> dict[str, Any]:
         out = bots.summary(folder)
         name = folder.root.name
-        out["pending_count"] = len(self._pending.get(name, {})) + len(self._reward_changes(folder, name))
+        out["pending_count"] = (
+            len(self._pending.get(name, {}))
+            + len(self._reward_changes(folder, name))
+            + len(self._start_changes(folder, name))
+        )
         applying = self._applying.get(name)
         if applying and out.get("running_since", 0) > applying["at"]:
             self._applying.pop(name, None)  # started again with the changes

@@ -170,20 +170,42 @@ def test_compact_samples_keep_the_mask_exactly_and_the_label_to_rounding() -> No
     torch.testing.assert_close(got_label, torch.from_numpy(expected).float(), rtol=2e-3, atol=2e-3)
 
 
-def stand_in_lean_tool(folder: Path) -> Path:
+# Marks a nitro-replicar file (argv[1]) as made with the timing fit, as its header says then.
+_MARK_FITTED = (
+    "import json,struct,sys;p=sys.argv[1];d=open(p,'rb').read();n=struct.unpack_from('<I',d,8)[0];"
+    "h=json.loads(d[12:12+n]);h['timing_fit']={'version':1};t=json.dumps(h).encode();"
+    "open(p,'wb').write(d[:4]+struct.pack('<II',1,len(t))+t+d[12+n:])"
+)
+
+
+def mark_fitted(data: bytes) -> bytes:
+    """A nitro-replicar file's bytes as the timing fit writes its header (the rows unchanged)."""
+    size = struct.unpack_from("<I", data, 8)[0]
+    header = json.loads(data[12 : 12 + size])
+    header["timing_fit"] = {"version": replays.TIMING_FIT_VERSION}
+    text = json.dumps(header).encode()
+    return data[:4] + struct.pack("<II", 1, len(text)) + text + data[12 + size :]
+
+
+def stand_in_lean_tool(folder: Path, fits: bool = True) -> Path:
     """nitro-replicar's stand-in, as `stand_in_tool` is replicar's: it copies the prepared files as
-    nitro-replicar writes them (`lean_file`) and logs to the same calls.log."""
+    nitro-replicar writes them (`lean_file`) and logs to the same calls.log; asked for the timing fit
+    (`--fit-timing`), its file says it was fitted, unless `fits` is False (a build without the fit)."""
     lean = folder / "lean"
     lean.mkdir(exist_ok=True)
     for name in ("one", "two"):
         lean_file(lean / f"{name}.lean", *replays.read_replicar(folder / f"{name}.parquet"))
     tool = stand_in_tool(lean)
-    tool.write_text(
+    text = (
         tool.read_text(encoding="utf-8")
         .replace(".parquet", ".lean")
-        .replace(f"{lean}/calls.log", f"{folder}/calls.log"),
-        encoding="utf-8",
+        .replace(f"{lean}/calls.log", f"{folder}/calls.log")
     )
+    if fits:
+        text += f'case " $* " in *" --fit-timing "*) "{sys.executable}" -c "{_MARK_FITTED}" "$4" ;; esac\n'
+    tool = tool.with_name("nitro-replicar" if fits else "nitro-replicar-unfitted")
+    tool.write_text(text, encoding="utf-8")
+    tool.chmod(0o755)
     return tool
 
 
@@ -1069,7 +1091,8 @@ def test_conversions_are_kept_so_no_later_bot_converts_them_again(
     first = set(converted_calls(tools))
     kept = first - {"broken"}
     assert {"a", "two"} <= kept, first
-    counts = replays.store_summary()["counts"]
+    fitted = replays.store_folder(fit_timing=True)  # a new bot's copy fits the timing
+    counts = replays.store_summary(fitted)["counts"]
     assert counts == {"1v1": len(kept - {"two"}), "2v2": 1}, "another size is kept too, for later bots"
     assert main(["train", str(file), "--name", "second", "--runs", str(runs)]) == 0
     assert set(converted_calls(tools)) <= {"broken"}, (
@@ -1085,14 +1108,21 @@ def test_conversions_are_kept_so_no_later_bot_converts_them_again(
         )
     # Converting only: what is not kept yet (the broken one is tried again; it has no size to remember).
     heard: list[str] = []
-    done = replays.convert_to_store([demos], tmp_path / "meshes", workers=2, say=heard.append)
+    done = replays.convert_to_store(
+        [demos], tmp_path / "meshes", workers=2, say=heard.append, fit_timing=True
+    )
     rest = set(names) - kept
     assert set(converted_calls(tools)) == rest and done.todo == done.done == len(rest)
     assert dict(done.failed) == {"could not decode the replay": 1} and done.kept == len(rest) - 1
-    assert replays.store_summary()["counts"] == {"1v1": 4, "2v2": 1}
+    assert replays.store_summary(fitted)["counts"] == {"1v1": 4, "2v2": 1}
     view = json.loads(replays.converting_file().read_text(encoding="utf-8"))
     assert view["state"] == "done" and view["found"] == 6 and view["kept"] == len(rest) - 1
-    assert replays.convert_to_store([demos], tmp_path / "meshes", workers=2, say=heard.append).todo == 1
+    assert (
+        replays.convert_to_store(
+            [demos], tmp_path / "meshes", workers=2, say=heard.append, fit_timing=True
+        ).todo
+        == 1
+    )
 
 
 @SHELL

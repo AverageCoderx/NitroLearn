@@ -790,12 +790,26 @@ class EnvConfig:
         minimum=0,
         maximum=31,
     )
-    observation: Literal["native", "nitro_v2"] = setting(
+    observation: Literal[
+        "native", "nitro_v2", "gigalearn_advanced", "gigalearn_default", "gigalearn_padder"
+    ] = setting(
         "nitro_v2",
         "What the bot sees: 'nitro_v2' (the default: NitroLearn's own observation plus the relative, "
         "goal-aware and speed features strong bots use, 148 numbers in 1v1) or 'native' (the smaller one, "
         "112 numbers in 1v1). Measured: with nitro_v2 bots scored on 88% of shots against 53%, and did the "
-        "same on ball touch and on saves (0.88 against 0.87). Fixed once the bot has saves.",
+        "same on ball touch and on saves (0.88 against 0.87). For bots brought over from GigaLearn, exact "
+        "copies of its observations: 'gigalearn_advanced' (AdvancedObs, 109 numbers in 1v1), "
+        "'gigalearn_default' (DefaultObs, 89) and 'gigalearn_padder' (AdvancedObsPadderGGL, a community "
+        "GigaLearn observation, 109; its room for players is env.obs_team_size). The GigaLearn ones work "
+        "without ball prediction, shuffle_slots and attention or transformer encoders, and only "
+        "gigalearn_padder takes env.obs_team_size. Fixed once the bot has saves.",
+    )
+    action_masks: Literal["standard", "gigalearn"] = setting(
+        "standard",
+        "Which of the 90 actions the bot may pick at each moment (the others are masked): 'standard' "
+        "(NitroLearn's rules) or 'gigalearn' (GigaLearn's exact rules, for bots brought over from "
+        "GigaLearn: it never allows one air action and its air yaw actions hold handbrake). Fixed once the "
+        "bot has saves.",
     )
     obs_team_size: int = setting(
         0,
@@ -866,6 +880,12 @@ class EnvConfig:
             found.append(("num_arenas", f"must be at least groups ({self.groups})"))
         if 0 < self.obs_team_size < self.team_size:
             found.append(("obs_team_size", f"must be 0 or at least team_size ({self.team_size})"))
+        if self.obs_team_size > 0 and self.observation in ("gigalearn_advanced", "gigalearn_default"):
+            found.append(
+                ("obs_team_size", "needs the 'native', 'nitro_v2' or 'gigalearn_padder' observation")
+            )
+        if self.shuffle_slots and self.is_gigalearn:
+            found.append(("shuffle_slots", "needs the 'native' or 'nitro_v2' observation"))
         found += [("ball_prediction", problem) for problem in self.ball_prediction_problems()]
         if self.team_size_shares and len(self.team_size_shares) != len(self.team_sizes):
             found.append(
@@ -908,6 +928,8 @@ class EnvConfig:
         if not times:
             return []
         found = []
+        if self.is_gigalearn:
+            found.append("needs the 'native' or 'nitro_v2' observation")
         if len(times) > 8:
             found.append(f"takes at most 8 times, not {len(times)}")
         if any(t <= 0 for t in times):
@@ -926,6 +948,11 @@ class EnvConfig:
                 "(5.99 s) the bot can read from RLBot's prediction"
             )
         return found
+
+    @property
+    def is_gigalearn(self) -> bool:
+        """One of GigaLearn's observations (no car places of NitroLearn's kind, no ball prediction)."""
+        return self.observation.startswith("gigalearn")
 
     @property
     def mixed_sizes(self) -> bool:
@@ -1258,6 +1285,22 @@ class PretrainConfig:
         "a copy uses the kept ones first. About 8-10 MB a 5-minute 2v2 replay; nothing is kept "
         "while the disk has under 20 GB free.",
     )
+    fit_timing: bool = setting(
+        True,
+        "With batch_replays and converter = nitro: after a replay is converted, fit on exactly which tick "
+        "each jump press and release, each of the game server's position updates and each throttle, steer, "
+        "powerslide and boost change took effect, by simulating each car between its updates. What was "
+        "pressed never changes, only when. Converting takes 2.5 to 3 times as long. Replays converted this "
+        "way are kept in a store of their own (replays\\store\\replicar-<version>-timing-fit-1), never mixed "
+        "with ones converted without it, and the bot's replays in training ([replay_mix]) come from the same "
+        "store. On for new bots; bots made before this setting existed keep it off unless their settings "
+        "file turns it on. Turning it on or off for a copy in progress starts that copy over. Replays "
+        "converted before without it are converted again for a copy that uses it (or convert them ahead "
+        "with nitro convert-replays --reconvert). In a check on 200 replays of high-level 1v1 and 2v2 games, "
+        "where the simulated car is a moment later fell to under half as far from where the replay puts it "
+        "(the median), with the copy's labels as good as before; whether a bot copied from fitted replays "
+        "plays better is not measured yet.",
+    )
     continue_from: str = setting(
         "",
         "With batch_replays: carry on another run's copy instead of starting from a fresh network: the name "
@@ -1350,6 +1393,12 @@ class PretrainConfig:
         minimum=0,
     )
 
+    @property
+    def fits_timing(self) -> bool:
+        """Whether the copy converts with the timing fit: fit_timing applies to the large replay mode with
+        the nitro converter only."""
+        return self.fit_timing and bool(self.batch_replays) and self.converter == "nitro"
+
 
 @dataclass(frozen=True)
 class ReplayMixConfig:
@@ -1395,7 +1444,9 @@ class ReplayMixConfig:
         (),
         "Folders of converted replays (.nrpl.zst files, as the project's replays\\store keeps them; "
         "subfolders included). Empty = the store's folder of this bot's game size (of each of "
-        "pretrain.team_sizes when set). The replays are taken in a random order fixed by run.seed, each "
+        "pretrain.team_sizes when set): the store of replays converted with the timing fit when "
+        "pretrain.fit_timing is on, as it is for new bots, else the store of those converted without it. The "
+        "replays are taken in a random order fixed by run.seed, each "
         "once a cycle, and the cycle starts again when all are used. Relative paths are relative to the "
         "settings file.",
     )
@@ -1707,6 +1758,14 @@ class NitroConfig:
                 ("ppo.advantage_keep_rest", "below 1 does not work with several cards (run.cards) yet")
             )
         if self.model.uses_attention:
+            if self.env.is_gigalearn:
+                found.append(
+                    (
+                        "model.encoder",
+                        f"'{self.model.encoder}' needs env.observation = 'native' or 'nitro_v2', which give "
+                        "every car a place of its own",
+                    )
+                )
             if self.model.encoder == "transformer":
                 if self.model.transformer_width % self.model.transformer_heads:
                     found.append(("model.transformer_heads", "must divide model.transformer_width"))

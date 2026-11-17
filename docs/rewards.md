@@ -8,7 +8,7 @@ explains the format).
 - **Built in** (13): the everyday rewards, part of NitroLearn itself.
 - **Moves** (17): rewards for trick moves (air dribbles, flip resets, flicks, speed flips, dashes). Their
   files' headers have a `//! group: moves` line, which lists them as their own group.
-- **More rewards** (67): everything else in `crates/nitro_core/src/custom/library/`.
+- **More rewards** (76): everything else in `crates/nitro_core/src/custom/library/`.
 - `example_ball_height` (`crates/nitro_core/src/custom/example.rs`): the example to copy for a reward of
   your own (`docs/your_own_rewards.md`).
 
@@ -83,11 +83,13 @@ move: `air_dribble_bot`, `breezi_bot`, `flip_reset_simple`, `mawkzy_flick_bot`, 
 | `flip_reset_height.rs` | `flip_reset_height` |
 | `flip_reset_height_v2.rs` | `flip_reset_height_v2` |
 | `flip_reset_simple.rs` | `flip_reset_simple`, `flip_reset_approach` |
+| `gigalearn_common.rs` | `gigalearn_velocity`, `gigalearn_velocity_ball_to_goal`, `gigalearn_strong_touch`, `gigalearn_touch_accel`, `gigalearn_wavedash`, `gigalearn_bumped_penalty`, `gigalearn_demoed_penalty` |
 | `goal_speed.rs` | `goal_speed`, `goal_speed_and_placement` |
 | `goal_speed_bonus.rs` | `goal_speed_bonus`, `goal_speed_top_corner` |
 | `high_touch.rs` | `high_touch` |
 | `kickoff.rs` | `kickoff` |
 | `kickoff_nearest.rs` | `kickoff_nearest`, `kickoff_nearest_v2` |
+| `kickoff_proximity.rs` | `kickoff_proximity` |
 | `kickoff_speed_nearest.rs` | `kickoff_speed_no_boost`, `kickoff_nearest_team` |
 | `kickoff_speed_no_boost.rs` | `kickoff_speed_no_boost_v2` |
 | `landing_recovery.rs` | `landing_recovery` |
@@ -100,6 +102,7 @@ move: `air_dribble_bot`, `breezi_bot`, `flip_reset_simple`, `mawkzy_flick_bot`, 
 | `speed_sqrt.rs` | `speed_sqrt` |
 | `speed_sqrt_v2.rs` | `speed_sqrt_v2` |
 | `speed_toward_ball.rs` | `speed_toward_ball` |
+| `speed_towards_opponent.rs` | `speed_towards_opponent` |
 | `speedy_touch.rs` | `speedy_touch` |
 | `supersonic.rs` | `supersonic` |
 | `touch_ball_scaled_by_hit_force.rs` | `touch_ball_scaled_by_hit_force` |
@@ -133,5 +136,10 @@ Each reward file's header says where its reward came from; in short:
   MIT licence, full text in `LICENSES/walldashcoach-MIT.txt`): `wall_dash.rs` follows its rules for
   a wall dash (what counts as a make, the timing and flip angle bands, the speed window, wall types, chains
   and the spam guard).
+- **GigaLearn** (GigaLearnCPP-Leak, commit 86e11c3; CREDITS.md): `gigalearn_common.rs` follows its
+  `CommonRewards.h` (VelocityReward, VelocityBallToGoalReward, StrongTouchReward, TouchAccelReward,
+  WavedashReward, BumpedPenalty, DemoedPenalty), for bots brought over from GigaLearn.
+- **Community GigaLearn bots**, whose author let them be used: `kickoff_proximity.rs`
+  (KickoffProximityReward) and `speed_towards_opponent.rs` (SpeedTowardsOpponentReward).
 - `all_of` follows the Lucy-SKG paper's way of combining reward parts by multiplying them (it pays only
   when every part does), and the zero-sum sharing is the "team spirit" of OpenAI Five.

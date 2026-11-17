@@ -127,3 +127,15 @@ def test_the_starts_tab_in_the_page(tmp_path: Path) -> None:
         ("kickoff", 30.0),
         ("random", 70.0),
     ]
+
+
+def test_removing_the_last_start_or_reward_shows_an_empty_list(tmp_path: Path) -> None:
+    """With every start (or reward) removed, the tab showed the ones in the file again, as if nothing had
+    changed, while their removal waited for Apply."""
+    api, _ = _bot(tmp_path)
+    staged = api.stage_starts("b", [])
+    assert staged["starts"] == [] and staged["changes"] == ["kickoff: removed"]
+    assert api.starts("b")["starts"] == []
+    shown = api.stage_rewards("b", [])
+    assert shown["rewards"] == [] and shown["changes"] == api.bot("b")["reward_changes"] != []
+    assert api.rewards("b")["rewards"] == []

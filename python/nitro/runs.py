@@ -44,9 +44,14 @@ FIXED_SETTINGS = (
     "model.attention_heads", "model.attention_skip", "model.transformer_layers", "model.transformer_width",
     "model.transformer_heads", "model.transformer_ff", "model.transformer_pads", "model.transformer_readout",
     "model.residual", "model.value_heads", "model.value_head_layers", "env.ball_prediction",
+    "env.action_masks",
 )  # fmt: skip
 # Fixed settings added in a later version, with the value every earlier save had.
-_ADDED_LATER: dict[str, Any] = {"env.ball_prediction": ()}
+_ADDED_LATER: dict[str, Any] = {"env.ball_prediction": (), "env.action_masks": "standard"}
+# Settings whose default changed for new bots, with the value every bot made before had: a bot whose run.json
+# does not list one under "new_defaults" and whose settings file leaves it out keeps that value, so updating
+# NitroLearn changes nothing for it.
+NEW_DEFAULTS: dict[str, Any] = {"pretrain.fit_timing": False}
 # A padded observation (env.obs_team_size) is the same size for every game up to its room, so the
 # team size and opponents can change on a resume as long as the room stays.
 _FREE_WHEN_PADDED = ("env.team_size", "env.opponents")
@@ -78,6 +83,27 @@ def encoder_settings(saved: dict[str, Any], config: NitroConfig) -> tuple[str, .
 def saved_settings(state: dict[str, Any]) -> dict[str, Any]:
     """A checkpoint's fixed settings, those added since it was saved at the value it had."""
     return {**_ADDED_LATER, **state["settings"]}
+
+
+def new_run_info(**info: Any) -> dict[str, Any]:
+    """run.json's start for a new bot: it takes the defaults of new bots (NEW_DEFAULTS)."""
+    return {**info, "new_defaults": list(NEW_DEFAULTS)}
+
+
+def with_old_defaults(config: NitroConfig, info: dict[str, Any], text: str) -> NitroConfig:
+    """`config` with the old value of every setting in NEW_DEFAULTS that the bot (`info`, its run.json) was
+    not made with and its settings file (`text`) leaves out."""
+    import tomllib
+
+    given = tomllib.loads(text)
+    made_with = info.get("new_defaults", [])
+    for path, old in NEW_DEFAULTS.items():
+        section, name = path.split(".")
+        if path in made_with or name in given.get(section, {}):
+            continue
+        part = dataclasses.replace(getattr(config, section), **{name: old})
+        config = dataclasses.replace(config, **{section: part})
+    return config
 
 
 def fixed_settings(config: NitroConfig) -> dict[str, Any]:
@@ -317,11 +343,11 @@ class RunFolder:
         # Relative paths in the copy keep meaning what they meant next to the original file. The file's name
         # and what the copy said are kept too, so a run that stops before its first save can read the file
         # again once it is fixed (`refresh_settings`).
-        info: dict[str, Any] = {
-            "settings_dir": str(settings.resolve().parent),
-            "settings_file": settings.name,
-            "settings_copied": _digest(text),
-        }
+        info = new_run_info(
+            settings_dir=str(settings.resolve().parent),
+            settings_file=settings.name,
+            settings_copied=_digest(text),
+        )
         if start_from:
             info["start_from"] = start_from
         folder.info.write_text(json.dumps(info), encoding="utf-8")
@@ -369,7 +395,9 @@ class RunFolder:
         info = json.loads(self.info.read_text(encoding="utf-8"))
         base_dir = Path(info["settings_dir"])
         text = self.settings.read_text(encoding="utf-8-sig") if text is None else text
-        config = parse_toml(text, NitroConfig, file=self.settings, base_dir=base_dir)
+        config = with_old_defaults(
+            parse_toml(text, NitroConfig, file=self.settings, base_dir=base_dir), info, text
+        )
         if "start_from" in info:
             given = {**info["start_from"], "enabled": config.start_from.enabled}
             config = dataclasses.replace(config, start_from=dataclasses.replace(config.start_from, **given))
@@ -431,7 +459,9 @@ class RunFolder:
         if final.exists():
             shutil.rmtree(final)
         os.replace(partial, final)
-        complete = self.complete_checkpoints()
+        # Saves at more steps than this one were passed over on resuming (they do not read): they are
+        # left where they are and do not count, or the run's new saves would be pruned in their stead.
+        complete = [path for path in self.complete_checkpoints() if path <= final]
         milestones: dict[int, Path] = {}
         if milestone_steps:
             for path in complete:

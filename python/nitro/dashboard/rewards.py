@@ -20,7 +20,7 @@ from tomlkit.items import AoT, Comment, Table, Whitespace
 
 from nitro.config.rewards import DEFAULT_REWARDS, STATE_REWARDS, Reward, ZeroSum, custom_kinds
 from nitro.config.schema import EnvConfig
-from nitro.dashboard import bots, describe, reward_guide
+from nitro.dashboard import bots, describe, edits, reward_guide
 from nitro.runs import RunFolder, numbered
 
 # The fields every reward has; the rest are its own parameters.
@@ -221,10 +221,9 @@ def _number(value: Any) -> Any:
     """Numbers as a person writes them (4, not 4.0); text that is not a number stays text, for the settings
     check to name."""
     if isinstance(value, str):
-        cleaned = value.strip().replace("_", "").replace(",", "")
         try:
-            value = float(cleaned)
-        except ValueError:
+            value = float(edits.ungrouped(value))
+        except ValueError:  # a decimal comma (0,5) included: never read as a bigger number
             return value
     if isinstance(value, float) and math.isfinite(value) and value.is_integer() and abs(value) < 1e15:
         return int(value)

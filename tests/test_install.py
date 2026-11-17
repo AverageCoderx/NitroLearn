@@ -6,6 +6,7 @@ for uv and those steps (and once for real against PyPI when it can be reached)."
 from __future__ import annotations
 
 import hashlib
+import http.client
 import importlib.util
 import io
 import json
@@ -1411,6 +1412,24 @@ def test_the_windowless_python_is_made_a_windowed_program(tmp_path: Path) -> Non
     assert steps.program_subsystem(tmp_path / "text.exe") is None
 
 
+def test_the_record_names_the_desktop_shortcut(tmp_path: Path) -> None:
+    """With the user's own Start menu shortcut left alone (not recorded), the desktop one is the only one
+    recorded: the record names it, so it is not taken for the Start menu one."""
+    from nitro.dashboard import winapp
+
+    start, desktop = tmp_path / "Programs" / "NitroLearn.lnk", tmp_path / "Desktop" / "NitroLearn.lnk"
+    for link in (start, desktop):
+        link.parent.mkdir()
+        link.write_bytes(b"lnk")
+    assert winapp.SHORTCUTS == steps.SHORTCUTS_RECORD
+    winapp.record_shortcuts(tmp_path, [desktop], desktop=True)
+    assert steps.shortcuts_made(tmp_path) == (False, True)
+    winapp.record_shortcuts(tmp_path, [start])
+    assert steps.shortcuts_made(tmp_path) == (True, True)
+    desktop.unlink()
+    assert steps.shortcuts_made(tmp_path) == (True, False)
+
+
 def test_a_deleted_shortcut_counts_as_missing_and_is_made_again(tmp_path: Path) -> None:
     """The shortcuts present are the recorded .lnk files still on disk, not only the recorded choice."""
     start, desktop = tmp_path / "Programs" / "NitroLearn.lnk", tmp_path / "Desktop" / "NitroLearn.lnk"
@@ -2102,3 +2121,107 @@ def test_install_ps1_makes_the_venv_again_for_another_python() -> None:
     assert "sys.exit('%d.%d' % sys.version_info[:2] != '$PythonVersion')" in text
     assert "or not Python ${PythonVersion}: making it again" in text
     assert '"cpython-$PythonVersion.*"' in text and "cpython-3.11*" not in text
+
+
+class _CutOff:
+    """An answer whose body ends before its Content-Length: the connection was cut off part way."""
+
+    def __enter__(self) -> _CutOff:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        raise http.client.IncompleteRead(b"part", 100)
+
+
+def test_a_download_cut_off_part_way_is_tried_again_then_stops_plainly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"the release file"
+    answers: list[Any] = [_CutOff(), io.BytesIO(data)]
+    monkeypatch.setattr(steps.urllib.request, "urlopen", lambda url, timeout: answers.pop(0))
+    monkeypatch.setattr(steps.time, "sleep", lambda seconds: None)
+    assert steps.fetch("https://example.invalid/file") == data, "tried again"
+    monkeypatch.setattr(steps.urllib.request, "urlopen", lambda url, timeout: _CutOff())
+    sha = hashlib.sha256(data).hexdigest()
+    with pytest.raises(steps.Stop, match="could not be downloaded"):
+        steps.fetch_checked("https://example.invalid/file", sha, tmp_path / "file")
+
+
+def test_the_cmd_files_quote_their_folder() -> None:
+    """A folder name with & in it ("Tom & Jerry") breaks a command line that has %~dp0 outside
+    quotes: cmd runs the rest of the name as a command."""
+    for cmd in [*PROJECT.glob("*.cmd"), *(PROJECT / "Shortcuts").glob("*.cmd")]:
+        for number, line in enumerate(cmd.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().lower().startswith("rem "):
+                continue
+            outside = re.sub(r'"[^"]*"', "", line)
+            assert "%~dp0" not in outside and "%NITRO_ROOT%" not in outside, f"{cmd.name}:{number}: {line}"
+
+
+# The cmdlets whose -Path takes wildcards: [ and ] in a folder name (C:\Bots [old]) make them miss the file.
+WILDCARD_CMDLETS = (
+    "Test-Path",
+    "Get-FileHash",
+    "Get-Item",
+    "Get-ChildItem",
+    "Get-Content",
+    "Set-Content",
+    "Add-Content",
+    "Select-String",
+    "Remove-Item",
+    "Copy-Item",
+    "Move-Item",
+    "Rename-Item",
+    "Invoke-Item",
+    "Set-Location",
+    "Push-Location",
+    "Resolve-Path",
+    "Expand-Archive",
+)
+
+
+def _command_after(line: str, start: int) -> str:
+    """The rest of the command that starts at `start`: up to a pipe, a semicolon or a closing bracket."""
+    depth = 0
+    for at in range(start, len(line)):
+        char = line[at]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                return line[start:at]
+            depth -= 1
+        elif char in "|;" and depth == 0:
+            return line[start:at]
+    return line[start:]
+
+
+def test_the_powershell_scripts_take_paths_literally() -> None:
+    """Every path from a variable goes to these cmdlets as -LiteralPath, and a download is first saved under
+    a name without brackets (Windows PowerShell 5.1's Invoke-WebRequest -OutFile takes wildcards too)."""
+    scripts = [
+        PROJECT / "install.ps1",
+        *(PROJECT / "tools").glob("*.ps1"),
+        *(PROJECT / "Shortcuts").glob("*.ps1"),
+    ]
+    found = []
+    for script in scripts:
+        for number, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split(" #", 1)[0]
+            if code.lstrip().startswith("#"):
+                continue
+            for match in re.finditer(rf"(?<![\w-])({'|'.join(WILDCARD_CMDLETS)})(?![\w-])", code):
+                command = _command_after(code, match.start())
+                variable = "$" in command or "(" in command
+                if variable and "-LiteralPath" not in command and "Env:\\" not in command:
+                    found.append(f"{script.name}:{number}: {command.strip()}")
+            if "-OutFile" in code and "-OutFile $plain" not in code:
+                found.append(f"{script.name}:{number}: {code.strip()}")
+    assert found == [], "\n".join(found)
+    install = (PROJECT / "install.ps1").read_text(encoding="utf-8")
+    saving = install[install.index("function Save-Download") :]
+    saving = saving[: saving.index("\n}\n")]
+    assert "-match '[\\[\\]]'" in saving and "Move-Item -LiteralPath $plain -Destination $File" in saving

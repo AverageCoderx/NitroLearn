@@ -3,7 +3,7 @@
 # Requires a developer install: .\install.ps1 -Dev
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-Set-Location $root
+Set-Location -LiteralPath $root
 . (Join-Path $PSScriptRoot 'env.ps1')
 $venv = Join-Path $root '.venv\Scripts'
 

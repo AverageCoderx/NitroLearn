@@ -458,7 +458,9 @@ class TrainingRun:
         state: dict[str, Any] | None = None,
         start: transfer.Source | None = None,
         applied: bool = False,
+        advise: bool = True,
     ) -> None:
+        # `advise`: log the settings' advice (off when the same run starts again after an exploiter phase).
         # `start`: what a new run starts from, instead of what its settings choose (a copy of replays so
         # far). `written` is the settings file as it is, which the saved settings and the "changed since the
         # save" warnings refer to. `applied`: started again after the dashboard's Apply, so the changes since
@@ -469,7 +471,7 @@ class TrainingRun:
         self.whole_config = config
         multigpu.check(config, resolve_device(config.run))
         self.config = config = multigpu.share(config, 0)
-        for note in config.advice():
+        for note in config.advice() if advise else []:
             log.warning(note)
         self.folder = folder
         if config.pretrain.enabled and config.start_from.source and not state:

@@ -307,6 +307,12 @@ def _new(args: argparse.Namespace) -> int:
 def _convert_replays(args: argparse.Namespace) -> int:
     from nitro import replays
 
+    if args.reconvert and not args.fit_timing:
+        print(
+            "--reconvert converts again with the timing fit, so it cannot go with --no-fit-timing",
+            file=sys.stderr,
+        )
+        return 1
     sources = args.folders or replays.game_folders(replays.documents())
     missing = [str(f) for f in sources if not f.is_dir()]
     if missing:
@@ -314,16 +320,32 @@ def _convert_replays(args: argparse.Namespace) -> int:
         return 1
     replays.lower_priority()
     try:
-        done = replays.convert_to_store(sources, args.meshes, args.limit, args.workers)
+        done = replays.convert_to_store(
+            sources,
+            args.meshes,
+            args.limit,
+            args.workers,
+            fit_timing=args.fit_timing,
+            reconvert=args.reconvert,
+        )
     except replays.ReplayError as err:
         print(f"Cannot convert: {err}", file=sys.stderr)
         return 1
-    summary = replays.store_summary()
+    summary = replays.store_summary(replays.store_folder(args.fit_timing))
     kinds = ", ".join(f"{k} {v:,}" for k, v in summary["counts"].items()) or "none"
+    which = "with the timing fit" if args.fit_timing else "without the timing fit"
     print(
         f"Done: {done.done:,} converted, {done.kept:,} kept, {sum(done.failed.values()):,} could not be. "
-        f"The store holds {kinds} ({summary['bytes'] / 2**30:.1f} GB)."
+        f"The store of replays converted {which} holds {kinds} ({summary['bytes'] / 2**30:.1f} GB)."
     )
+    if args.fit_timing and not args.reconvert:
+        older = sum(replays.store_summary(replays.store_folder(False))["counts"].values())
+        if older:
+            print(
+                f"{older:,} replays converted before without the timing fit were left as they are; "
+                "`nitro convert-replays --reconvert` converts them again with it (this takes hours for a big "
+                "store)."
+            )
     return 0
 
 
@@ -1234,6 +1256,26 @@ def _surgery(args: argparse.Namespace) -> int:
     return 0
 
 
+def _import_gigalearn(args: argparse.Namespace) -> int:
+    from nitro.gigalearn_import import GigaLearnImportError, import_bot
+
+    try:
+        report = import_bot(
+            args.checkpoint,
+            args.source,
+            args.into,
+            args.runs,
+            activation=args.activation,
+            meshes=args.meshes,
+            keep_action_delay=args.keep_action_delay,
+        )
+    except (GigaLearnImportError, FileNotFoundError) as err:
+        print(f"Cannot import: {err}", file=sys.stderr)
+        return 1
+    print("\n".join(report.lines()))
+    return 0 if report.run is not None else 1
+
+
 def _pack(args: argparse.Namespace) -> int:
     from nitro import pack
 
@@ -1243,6 +1285,10 @@ def _pack(args: argparse.Namespace) -> int:
         )
     except pack.PackError as err:
         print(f"Cannot pack {args.name}: {err}", file=sys.stderr)
+        return 1
+    except OSError as err:  # the file cannot be written there (no such folder, a full disk)
+        where = str(err.filename or "").removesuffix(".partial")
+        print(f"Cannot pack {args.name}: {err.strerror or err} ({where})", file=sys.stderr)
         return 1
     print(f"Packed {args.name} into {out} ({out.stat().st_size / 2**20:,.1f} MB).")
     for note in notes:
@@ -1485,7 +1531,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     runs = argparse.ArgumentParser(add_help=False)
     runs.add_argument(
-        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
     )
     runs.add_argument(
         "--steps",
@@ -1541,7 +1587,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     trial.add_argument("name", help="the run's name (its folder in --runs)")
     trial.add_argument(
-        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
     )
     trial.add_argument(
         "--rewards",
@@ -1572,6 +1618,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     convert_command.add_argument(
         "--meshes", type=Path, default=Path("collision_meshes"), help="the arena meshes folder"
+    )
+    convert_command.add_argument(
+        "--no-fit-timing",
+        dest="fit_timing",
+        action="store_false",
+        help="convert without the timing fit, into the store of replays converted without it (as versions "
+        "before 1.0.4 did; for bots made before it, which keep reading that store). By default each "
+        "conversion also fits when each jump, server update and control change took effect, which takes "
+        "2.5 to 3 times as long and is kept in a store of its own, never mixed with the other",
+    )
+    convert_command.add_argument(
+        "--reconvert",
+        action="store_true",
+        help="also convert again, with the timing fit, the replays kept before without it (they stay kept "
+        "too, for the bots that use them). This takes hours for a big store: roughly 10 seconds a replay "
+        "on a fast PC converting 10 at once, so about 12 hours for 40,000 replays",
     )
     convert_command.set_defaults(run=_convert_replays)
 
@@ -1627,7 +1689,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     charts.add_argument("name", help="the run's name (its folder in --runs)")
     charts.add_argument(
-        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
     )
     charts.set_defaults(run=_wandb)
 
@@ -1636,7 +1698,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch.add_argument("name", help="the run's name (its folder in --runs)")
     watch.add_argument(
-        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
     )
     watch.add_argument(
         "--at",
@@ -1688,7 +1750,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument("name", help="the run's name (its folder in --runs)")
     evaluate.add_argument(
-        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
     )
     evaluate.add_argument(
         "--at", type=int, help="play this run's save at this many agent steps (default: newest)"
@@ -1752,7 +1814,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     skills.add_argument("name", help="the run's name (its folder in --runs)")
     skills.add_argument(
-        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
     )
     skills.add_argument("--at", type=int, help="score the save at this many agent steps (default: newest)")
     skill_tasks = sorted(
@@ -1792,14 +1854,46 @@ def build_parser() -> argparse.ArgumentParser:
         "--at", type=int, help="widen the save made at this many agent steps instead of the newest"
     )
     surgery.add_argument(
-        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
     )
     surgery.set_defaults(run=_surgery)
+
+    importer = commands.add_parser(
+        "import-gigalearn",
+        help="bring a GigaLearn bot over to keep training the same network here",
+        description="Makes a NitroLearn bot from a GigaLearn bot's save: the same networks, observation, "
+        "actions, rewards and learning settings, so it carries on training where it was. Its own C++ "
+        "(rewards, observations or action parsers you wrote) is listed to port by hand; what cannot be "
+        "brought over stops the import before anything is written. The imported bot is first checked "
+        "against the GigaLearn networks on real game states. Continue with `nitro resume <name>`.",
+    )
+    importer.add_argument(
+        "checkpoint", type=Path, help="the GigaLearn save: its checkpoints folder or one save in it"
+    )
+    importer.add_argument(
+        "--source", type=Path, help="your GigaLearn project folder (or its main .cpp): rewards and settings"
+    )
+    importer.add_argument("--into", required=True, help="name of the new NitroLearn bot")
+    importer.add_argument(
+        "--activation",
+        choices=("relu", "leaky_relu", "tanh"),
+        help="the networks' activation, only when there is no --source to read it from",
+    )
+    importer.add_argument("--meshes", type=Path, help="the collision meshes folder (default: NitroLearn's)")
+    importer.add_argument(
+        "--keep-action-delay",
+        action="store_true",
+        help="keep GigaLearn's actionDelay instead of the lowest delay (1), which reacts fastest",
+    )
+    importer.add_argument(
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
+    )
+    importer.set_defaults(run=_import_gigalearn)
 
     export = commands.add_parser("export", help="turn a run's newest save into an RLBot v5 bot folder")
     export.add_argument("name", help="the run's name (its folder in --runs)")
     export.add_argument(
-        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
     )
     export.add_argument("--out", type=Path, help="the bot folder to write (default: bots/<name>)")
     export.add_argument("--bot-name", help="the name RLBot shows for the bot (default: the run's name)")
@@ -1813,7 +1907,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pack_command.add_argument("name", help="the bot's name (its folder in --runs)")
     pack_command.add_argument(
-        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
     )
     pack_command.add_argument(
         "--to",
@@ -1840,7 +1934,7 @@ def build_parser() -> argparse.ArgumentParser:
     unpack_command = commands.add_parser("unpack", help="add a bot packed with `nitro pack`")
     unpack_command.add_argument("file", type=Path, help="the .nitropack.zip file")
     unpack_command.add_argument(
-        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
     )
     unpack_command.add_argument("--name", default="", help="the bot's name here (default: its own)")
     unpack_command.add_argument(

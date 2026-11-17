@@ -315,6 +315,14 @@ pub fn demonstrations(recording: &Recording, rules: &DemoRules) -> Result<Demos,
     if rules.obs_team_size == 0 && blue != orange && orange != 0 {
         return Err("uneven teams need a padded observation (env.obs_team_size)".to_owned());
     }
+    if !rules.ball_prediction.is_empty() && !rules.obs.pads() {
+        return Err("ball prediction needs the native or nitro_v2 observation".to_owned());
+    }
+    if rules.obs_team_size > 0 && !rules.obs.takes_room() {
+        return Err(
+            "obs_team_size needs the native, nitro_v2 or gigalearn_padder observation".to_owned(),
+        );
+    }
     let obs_size = rules
         .obs
         .layout(team_size, orange > 0, rules.obs_team_size)

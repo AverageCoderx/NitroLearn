@@ -312,6 +312,8 @@ def _made_with(config: NitroConfig) -> dict[str, Any]:
                 **({"team_sizes": list(chosen.team_sizes)} if chosen.team_sizes else {}),
                 **({"continue_from": chosen.continue_from} if chosen.continue_from else {}),
                 **({"new_only": True} if chosen.new_only else {}),
+                # Left out when off, so a copy made before the setting existed carries on.
+                **({"fit_timing": True} if chosen.fits_timing else {}),
                 "seed": config.run.seed,
                 "settings": settings,
                 # What the labels depend on beyond the fixed settings.
@@ -567,6 +569,8 @@ def _measure_packed(
 
 def previous_action(config: NitroConfig) -> slice:
     """Where the previous action (8 numbers) sits in the run's observation (nitro_core::obs)."""
+    if config.env.observation.startswith("gigalearn"):
+        return slice(9, 17)  # GigaLearn's observations: the ball (9 numbers), then the previous action
     start = config_parts(config)[0] + 34  # the ball (and its prediction), then the 34 boost pads
     return slice(start, start + 8)
 
@@ -969,18 +973,22 @@ def _make_copy_in_batches(
     for left in [*parquet_dir.glob("*.partial"), *parquet_dir.glob("*.parquet"), *parquet_dir.glob("*.lean")]:
         left.unlink(missing_ok=True)  # replicar's files of a copy that was stopped
 
-    store = replays.store_folder() if chosen.keep_converted and lean else None
+    fit_timing = chosen.fits_timing
+    store = replays.store_folder(fit_timing) if chosen.keep_converted and lean else None
     told_full = False
 
     def kept(replay: Path) -> tuple[Path, int]:
-        """`replay` converted before, in any copied size: a recording or a kept conversion."""
-        for n in wanted:
+        """`replay` converted before, in any copied size: a recording (never timing-fitted) or a kept
+        conversion of the copy's timing."""
+        for n in wanted if not fit_timing else ():
             path = replays.OUT / f"{n}v{n}" / f"{replay.stem}.rlpr.zst"
             if path.is_file():
                 return path, n
-        found = replays.find_stored(replay.stem, wanted)
+        found = replays.find_stored(replay.stem, wanted, replays.store_folder(fit_timing))
         if found is not None:
             return found
+        if fit_timing:  # not the recording's path: one kept there is not fitted and must not be read
+            return parquet_dir / f"{replay.stem}.not-converted", wanted[0]
         return replays.OUT / f"{wanted[0]}v{wanted[0]}" / f"{replay.stem}.rlpr.zst", wanted[0]
 
     def job(index: int) -> replays.Job:
@@ -997,6 +1005,7 @@ def _make_copy_in_batches(
             0.1,
             lean,
             store,
+            fit_timing,
         )
 
     model: ActorCritic | None = None

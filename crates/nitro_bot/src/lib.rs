@@ -103,6 +103,8 @@ pub struct NitroBot {
     /// Decisions in a row without a prediction, and whether the note saying so was printed.
     unpredicted: u32,
     told_prediction: bool,
+    /// The frame of the last packet in play: a count that goes back starts the rhythm afresh.
+    last_frame: Option<u32>,
 }
 
 impl NitroBot {
@@ -118,6 +120,11 @@ impl NitroBot {
         let policy = policy.into();
         let game = &policy.header().game;
         let room = game.obs_team_size;
+        if !game.ball_prediction.is_empty() && !game.observation.pads() {
+            return Err(
+                "the policy file asks for ball prediction with an observation that has none".into(),
+            );
+        }
         let prediction_steps = ball_prediction::decisions(&game.ball_prediction, game.tick_skip)?;
         let layout = game
             .observation
@@ -143,7 +150,8 @@ impl NitroBot {
             ));
         }
         let expected_cars = game.team_size * if game.opponents { 2 } else { 1 };
-        let any_size = policy.reads_any_cars();
+        // Only NitroLearn's own observations have a place per car to give a bigger game.
+        let any_size = policy.reads_any_cars() && game.observation.pads();
         Ok(Self {
             pads: PadMap::new(field)?,
             jumps: JumpStarts::default(),
@@ -176,6 +184,7 @@ impl NitroBot {
             own_prediction: None,
             unpredicted: 0,
             told_prediction: false,
+            last_frame: None,
             policy,
         })
     }
@@ -394,6 +403,14 @@ impl NitroBot {
             return Controls::default();
         }
         let frame = info.frame_num;
+        // The game's frame count started over in play: the rhythm's ticks belong to the old count.
+        if self
+            .last_frame
+            .replace(frame)
+            .is_some_and(|last| frame < last)
+        {
+            self.restart();
+        }
         if self.rhythm.needs(frame) {
             self.finish_decision();
         }

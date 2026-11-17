@@ -369,3 +369,21 @@ def test_saves_record_paths_relative_to_the_bots_folder_or_nitrolearns(
     assert saved["paths.collision_meshes"] == "collision_meshes"
     assert saved["pretrain.replays"] == ["settings-files/demos", str(tmp_path / "elsewhere")], "else as is"
     assert all_settings(config)["pretrain.replays"][0] == str(run / "settings-files" / "demos")
+
+
+def test_saves_after_resuming_past_an_unreadable_save_are_kept(tmp_path: Path) -> None:
+    """A run resumed from the save before an unreadable newer one saves at fewer steps than that one: its
+    new saves are the newest of the run, never pruned for the unreadable one that sorts after them."""
+    folder = RunFolder.create(tmp_path / "runs", "a", settings_file(tmp_path))
+    for steps in (300, 900):
+        folder.save_checkpoint({"agent_steps": steps}, steps, keep=5, milestone_steps=0)
+    newest = folder.checkpoints / "000000000900" / "state.pt"
+    newest.write_bytes(b"")  # a power cut
+    assert folder.load_latest(lambda _: None) == {"agent_steps": 300}
+    folder.save_checkpoint({"agent_steps": 500}, 500, keep=1, milestone_steps=0)
+    assert folder.load_latest(lambda _: None) == {"agent_steps": 500}
+    folder.save_checkpoint({"agent_steps": 700}, 700, keep=1, milestone_steps=0)
+    assert folder.load_latest(lambda _: None) == {"agent_steps": 700}
+    assert newest.is_file(), "the unreadable save is left where it is"
+    folder.save_checkpoint({"agent_steps": 1100}, 1100, keep=1, milestone_steps=0)
+    assert [int(p.name) for p in folder.complete_checkpoints()] == [1100]

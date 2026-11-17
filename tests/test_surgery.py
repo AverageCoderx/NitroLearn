@@ -290,3 +290,32 @@ def test_widening_a_run_makes_a_new_run_that_resumes_from_the_same_point(tmp_pat
         widen_run(tmp_path / "runs", "small", 2, target="other", at=7)
     with pytest.raises(SurgeryError, match="no run called"):
         widen_run(tmp_path / "runs", "missing", 2)
+
+
+def test_a_widened_unpacked_bot_keeps_its_settings_files_when_the_original_goes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unpacked bot's settings read files in its own folder (settings-files): the widened run gets a copy,
+    so it still starts once the original is renamed or deleted."""
+    import shutil
+
+    from nitro import pack
+    from test_export import _saved_run
+
+    folder = _saved_run(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "match.rlpr.zst").write_bytes(b"a recording")
+    starts = '[[state_setters]]\nname = "kickoff"\n[[state_setters]]\nname = "replay"\n'
+    starts += 'files = ["data/match.rlpr.zst"]\n'
+    folder.settings.write_text(folder.settings.read_text(encoding="utf-8") + starts, encoding="utf-8")
+    out, _ = pack.pack(folder.root, tmp_path / "bot.nitropack.zip")
+    runs = tmp_path / "server" / "runs"
+    pack.unpack(out, runs, project=tmp_path / "server", meshes=tmp_path / "meshes")
+    monkeypatch.chdir(tmp_path)
+    widen_run(Path("server/runs"), "my-bot", 2, "wide")  # as `nitro surgery` names the runs folder
+    shutil.rmtree(runs / "my-bot")
+    wide = RunFolder(runs / "wide")
+    config = wide.load_settings(wide.load_latest())
+    files = [file for setter in config.state_setters for file in getattr(setter, "files", ())]
+    assert files and all(file.is_relative_to(wide.root.resolve()) for file in files)
+    assert files[0].read_bytes() == b"a recording"

@@ -1404,6 +1404,122 @@ MORE: dict[str, str] = {
         "\n"
         "Measured: unit tests."
     ),
+    "gigalearn_velocity": (
+        "What it does: pays every step: the car's speed over 2,300 units/s (its top speed), 0 to 1, in any direction (reversing and falling count too). With negative = true it charges that instead.\n"
+        "\n"
+        "When to use it: a bot brought over from GigaLearn, where it was VelocityReward or SpeedReward. For a new bot, speed_forward or speed_toward_ball are the usual choices.\n"
+        "\n"
+        "How to use it:\n"
+        "- negative: false pays speed (GigaLearn's default), true charges it.\n"
+        "- Weight: every step, so keep it small, around 0.05 to 0.3 next to a goal at 150. GigaLearn pays every step without scaling to the tick skip; NitroLearn scales every-step rewards to it, so a GigaLearn weight is multiplied by 8 / tick_skip.\n"
+        "\n"
+        "Watch out for: it pays for speed anywhere, ball or no ball, so at a large weight a bot drives fast circles. From GigaLearn's CommonRewards (VelocityReward). Changed: nothing.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "gigalearn_velocity_ball_to_goal": (
+        "What it does: pays every step: the ball's speed toward the back of the net the car attacks, over 6,000 units/s (-1 to 1); with own_goal = true, toward the net it defends.\n"
+        "\n"
+        "When to use it: a bot brought over from GigaLearn: VelocityBallToGoalReward(true), usually with a negative weight to punish sending the ball toward one's own net. Without own_goal it is the same as the built-in velocity_ball_to_goal.\n"
+        "\n"
+        "How to use it:\n"
+        "- own_goal: false aims at the net the car attacks (GigaLearn's default), true at the one it defends.\n"
+        "- Weight: every step; negative with own_goal = true.\n"
+        "\n"
+        "Watch out for: it pays every car of the team for the ball's movement, touched or not. From GigaLearn's CommonRewards (VelocityBallToGoalReward). Changed: nothing.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "gigalearn_strong_touch": (
+        "What it does: pays on a step the car touches the ball: how much the ball's velocity changed over that step, divided by max_speed_kph, at most 1, and 0 when the change is below min_speed_kph. So a hit just over the minimum already pays a share (min / max), unlike the built-in strong_touch, which starts from 0 at the minimum.\n"
+        "\n"
+        "When to use it: a bot brought over from GigaLearn, where it was StrongTouchReward, so it keeps exactly the pay it learned with. For a new bot, the built-in strong_touch.\n"
+        "\n"
+        "How to use it:\n"
+        "- min_speed_kph: changes below this (km/h) pay 0 (GigaLearn's default 20).\n"
+        "- max_speed_kph: the change that pays 1 (GigaLearn's default 130).\n"
+        "- Weight: per touch, like strong_touch: about 20 to 60 next to a goal at 150.\n"
+        "\n"
+        "Watch out for: direction does not count, only how much the ball's velocity changed, so stopping a fast ball pays as much as hitting a slow one hard. From GigaLearn's CommonRewards (StrongTouchReward). Changed: nothing.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "gigalearn_touch_accel": (
+        "What it does: pays on a step the car touches the ball: how much faster the ball got, as a share of 110 km/h (both speeds capped there), so a bot can earn 1 by putting the ball from rest up to that speed in one touch or several. Slowing the ball pays nothing.\n"
+        "\n"
+        "When to use it: a bot brought over from GigaLearn, where it was TouchAccelReward: it pays pushing the ball along, slowly or hard.\n"
+        "\n"
+        "How to use it:\n"
+        "- No settings of its own; the weight is all there is.\n"
+        "- Weight: per touch, around 5 to 20 next to a goal at 150.\n"
+        "\n"
+        "Watch out for: a touch that speeds up a ball already above 110 km/h pays nothing. From GigaLearn's CommonRewards. Changed: nothing.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "gigalearn_wavedash": (
+        "What it does: pays 1 on the step the car lands on its wheels from a flip it was doing in the air.\n"
+        "\n"
+        "When to use it: a bot brought over from GigaLearn, where it was WavedashReward. For a new bot, wavedash (in the trick moves) checks more.\n"
+        "\n"
+        "How to use it:\n"
+        "- No settings of its own; the weight is all there is.\n"
+        "- Weight: small; a bot can learn to flip just before landing all the time.\n"
+        "\n"
+        "Watch out for: any landing during a flip pays, wanted or not. From GigaLearn's CommonRewards. Changed: nothing.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "gigalearn_bumped_penalty": (
+        "What it does: charges 1 on a step an opponent bumps the car (a demolition counts as a bump too).\n"
+        "\n"
+        "When to use it: a bot brought over from GigaLearn, where it was BumpedPenalty; or to teach a bot to avoid being bumped.\n"
+        "\n"
+        "How to use it:\n"
+        "- No settings of its own; give it a positive weight: the value is already negative.\n"
+        "\n"
+        "Watch out for: the simulator names one car of a bump the bumper and the other the victim; only the victim is charged. From GigaLearn's CommonRewards. Changed: nothing.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "gigalearn_demoed_penalty": (
+        "What it does: charges 1 on a step an opponent demolishes the car.\n"
+        "\n"
+        "When to use it: a bot brought over from GigaLearn, where it was DemoedPenalty; or to teach a bot to avoid demolitions.\n"
+        "\n"
+        "How to use it:\n"
+        "- No settings of its own; give it a positive weight: the value is already negative.\n"
+        "\n"
+        "Watch out for: the built-in demo reward with zero_sum already charges the demolished side; using both charges twice. From GigaLearn's CommonRewards. Changed: nothing.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "kickoff_proximity": (
+        "What it does: on every step while the ball is still (slower than 1 unit/s, as at a kickoff before anyone touches it): +1 when this car is nearer the ball than every opponent, -1 when not, ties counting as -1. 0 once the ball moves, or with no opponent.\n"
+        "\n"
+        "When to use it: kickoff training, to teach a bot to get to the ball first. Meant for 1v1, where it is zero-sum: one car's +1 is the other's -1. It comes from community GigaLearn bots (KickoffProximityReward), so a bot brought over from GigaLearn keeps it.\n"
+        "\n"
+        "How to use it:\n"
+        "- zero_within_200: default off, as in the original. On pays 0 while this car is within 200 units of the ball (a variant some bots use), so the last moment before the hit pays nothing.\n"
+        "- Weight: it pays 1 every step, about 15 times a second at tick skip 8, for the second or two before the first touch, so a kickoff is worth roughly 20 to 40 times the weight. Try 0.5 to 3 next to a goal at 150.\n"
+        "\n"
+        "Watch out for: a car that is ahead keeps earning +1 for as long as nobody touches the ball, so unless other rewards pay for the touch it can learn to wait beside the ball. Any still ball counts, not only kickoffs, so starts that put the ball at rest pay it too. In 2v2 and 3v3 each car is compared with the opponents, so the teammate who stays back is paid -1 every kickoff step.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "speed_towards_opponent": (
+        "What it does: every step it pays the car's speed toward the first opponent in the car list, as a share of a car's top speed (2,300 units/s), from -1 (full speed away) to 1 (full speed at it), times scale. 0 with no opponent.\n"
+        "\n"
+        "When to use it: to teach chasing the opponent, for bumps and demos. It comes from a community GigaLearn bot (SpeedTowardsOpponentReward), so a bot brought over from GigaLearn keeps it. Meant for 1v1.\n"
+        "\n"
+        "How to use it:\n"
+        "- scale: multiplies the value (default 1, as in the original); it does the same job as the weight.\n"
+        "- Weight: up to plus or minus 1 per step, about 15 a second at tick skip 8. With a goal at 150, about 0.5 to 4.\n"
+        "\n"
+        "Watch out for: in 2v2 and 3v3 it only looks at the first opponent in the list and ignores the others. It pays chasing, not hitting, so the bot may ignore the ball, and driving away is charged, which fights rotating back. Changed: nothing.\n"
+        "\n"
+        "Measured: not measured."
+    ),
 }
 
 
@@ -2409,6 +2525,91 @@ NERD: dict[str, str] = {
         "[[rewards]]\n"
         'name = "wizard_flick"\n'
         "weight = 20\n"
+        "```"
+    ),
+    "gigalearn_velocity": (
+        "Every step: v = |car velocity| / 2300, or -|car velocity| / 2300 with negative = true (GigaLearn's VelocityReward; its SpeedReward is the same without negative).\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "gigalearn_velocity"\n'
+        "weight = 0.1\n"
+        "```"
+    ),
+    "gigalearn_velocity_ball_to_goal": (
+        "Every step: v = ball velocity . direction from the ball to the back of a net (y = 6000 on the far side, half the goal height up) / 6000; the net the car attacks, or with own_goal = true the one it defends.\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "gigalearn_velocity_ball_to_goal"\n'
+        "weight = -0.5\n"
+        "own_goal = true\n"
+        "```"
+    ),
+    "gigalearn_strong_touch": (
+        "On a touch: d = |ball velocity after - before| over the step; v = 0 when d < min_speed_kph (in uu/s, x 250/9), else min(1, d / max_speed_kph). The built-in strong_touch is (d - min) / (max - min) instead.\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "gigalearn_strong_touch"\n'
+        "weight = 40\n"
+        "min_speed_kph = 20\n"
+        "max_speed_kph = 130\n"
+        "```"
+    ),
+    "gigalearn_touch_accel": (
+        "On a touch: v = max(0, min(1, |ball velocity after| / 3056) - min(1, |ball velocity before| / 3056)), 3056 uu/s being 110 km/h.\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "gigalearn_touch_accel"\n'
+        "weight = 10\n"
+        "```"
+    ),
+    "gigalearn_wavedash": (
+        "v = 1 on a step the car is on the ground, was not at the step before, and was flipping at the step before; else 0.\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "gigalearn_wavedash"\n'
+        "weight = 2\n"
+        "```"
+    ),
+    "gigalearn_bumped_penalty": (
+        "v = -1 on a step an opponent bumped this car (the car is the victim of the bump the simulator reports), else 0.\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "gigalearn_bumped_penalty"\n'
+        "weight = 4\n"
+        "```"
+    ),
+    "gigalearn_demoed_penalty": (
+        "v = -1 on a step an opponent demolished this car, else 0.\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "gigalearn_demoed_penalty"\n'
+        "weight = 10\n"
+        "```"
+    ),
+    "kickoff_proximity": (
+        "Every step with |ball velocity| < 1: v = +1 when this car's distance to the ball is below every opponent's, else -1; 0 with a moving ball or no opponent. With zero_within_200, v = 0 while this car is within 200 uu.\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "kickoff_proximity"\n'
+        "weight = 1\n"
+        "```"
+    ),
+    "speed_towards_opponent": (
+        "Every step: v = clamp(car velocity . direction to the first opponent / 2300, -1, 1) x scale; 0 with no opponent.\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "speed_towards_opponent"\n'
+        "weight = 1\n"
+        "scale = 1\n"
         "```"
     ),
 }

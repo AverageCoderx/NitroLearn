@@ -110,12 +110,13 @@ Filename: "{app}\.venv\Scripts\pythonw.exe"; Parameters: "-m nitro.dashboard.win
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\app_shortcuts.ps1"" -Remove"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveShortcuts"
 
 ; What the install made in the folder, and NitroLearn's own folders (an update can add files to them). The
-; user's own folders (UserFolders below) go only when the uninstaller is told not to keep them.
+; user's own folders (UserFolders below) go only when the uninstaller is told not to keep them. The files at
+; the top of the folder and .tmp are removed by the code below (RemoveTopFiles, RemoveTemporary): the user's
+; packed bots and replays there, and an update's copies of the files they changed, stay when kept.
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\.venv"
 Type: filesandordirs; Name: "{app}\.tools"
 Type: filesandordirs; Name: "{app}\.cache"
-Type: filesandordirs; Name: "{app}\.tmp"
 Type: filesandordirs; Name: "{app}\collision_meshes"
 Type: filesandordirs; Name: "{app}\rocketsim_recordings"
 Type: filesandordirs; Name: "{app}\target"
@@ -132,11 +133,15 @@ Type: filesandordirs; Name: "{app}\installer"
 Type: filesandordirs; Name: "{app}\python"
 Type: filesandordirs; Name: "{app}\tests"
 Type: filesandordirs; Name: "{app}\tools"
-Type: files; Name: "{app}\*"
 
 [Code]
 const
   UserFolders = 'runs,my-settings,packs,replays,bots,ab,wandb,saves';
+  { The user's own files at the top of the folder, by their endings: packed bots (nitro pack writes them
+    in the folder it runs in) and replays. Kept with the user's folders. }
+  UserFileEnds = '.nitropack.zip,.replay,.rlpr,.rlpr.zst';
+  { In .tmp: the copies an update made of NitroLearn's files the user had changed (python\nitro\update.py). }
+  UpdateBackups = '.tmp\update\replaced';
   { Written by an uninstall that keeps the user's folders, beside them. }
   KeptNote = 'Kept by NitroLearn.txt';
   DirectoryAttribute = $10;
@@ -166,7 +171,26 @@ begin
   Result := Pos(',' + Lowercase(Name) + ',', ',' + UserFolders + ',') > 0;
 end;
 
-{ An empty folder, or one an uninstall left: only the user's own folders and the note about them. }
+function IsUserFile(const Name: String): Boolean;
+var
+  Rest, Ending, Lower: String;
+  Comma: Integer;
+begin
+  Result := False;
+  Lower := Lowercase(Name);
+  Rest := UserFileEnds + ',';
+  while (Rest <> '') and not Result do
+  begin
+    Comma := Pos(',', Rest);
+    Ending := Copy(Rest, 1, Comma - 1);
+    Rest := Copy(Rest, Comma + 1, Length(Rest));
+    if (Length(Lower) > Length(Ending)) and (Copy(Lower, Length(Lower) - Length(Ending) + 1, Length(Ending)) = Ending) then
+      Result := True;
+  end;
+end;
+
+{ An empty folder, or one an uninstall left: only the user's own folders and files, an update's copies of
+  their changed files (in .tmp), and the note about them. }
 function HoldsOnlyKeptFiles(const Dir: String): Boolean;
 var
   Found: TFindRec;
@@ -178,9 +202,9 @@ begin
       if (Found.Name <> '.') and (Found.Name <> '..') then
       begin
         if (Found.Attributes and DirectoryAttribute) <> 0 then
-          Result := IsUserFolder(Found.Name)
+          Result := IsUserFolder(Found.Name) or (CompareText(Found.Name, '.tmp') = 0)
         else
-          Result := CompareText(Found.Name, KeptNote) = 0;
+          Result := (CompareText(Found.Name, KeptNote) = 0) or IsUserFile(Found.Name);
       end;
     until (not Result) or (not FindNext(Found));
   finally
@@ -665,8 +689,86 @@ begin
       Kept := Kept + Name;
     end;
   end;
+  if DirExists(AddBackslash(App) + UpdateBackups) then
+  begin
+    if Kept <> '' then
+      Kept := Kept + ', ';
+    Kept := Kept + UpdateBackups + ': your changed copies of NitroLearn''s files';
+  end;
   if Kept <> '' then
     SaveStringToFile(AddBackslash(App) + KeptNote, 'NitroLearn was uninstalled, and your bots and settings were kept in this folder (' + Kept + ').' + #13#10#13#10 + 'To use them again, install NitroLearn into this same folder: NitroLearn-Setup accepts it.' + #13#10 + 'To get rid of them, delete this folder.' + #13#10, False);
+end;
+
+{ Setup's own uninstaller files: unins000.exe, unins000.dat (to unins999). }
+function IsUninstaller(const Name: String): Boolean;
+begin
+  Result := (CompareText(Copy(Name, 1, 5), 'unins') = 0) and (Pos('.', Name) = 9);
+end;
+
+{ The files at the top of App: all of them, or (KeepUsers) all but the user's own (IsUserFile). Setup's own
+  uninstaller files (unins000.exe, .dat) are left to the uninstaller, which removes them last. }
+procedure RemoveTopFiles(const App: String; KeepUsers: Boolean);
+var
+  Found: TFindRec;
+  Names: TArrayOfString;
+  I, N: Integer;
+begin
+  N := 0;
+  if FindFirst(AddBackslash(App) + '*', Found) then
+  try
+    repeat
+      if ((Found.Attributes and DirectoryAttribute) = 0) and not IsUninstaller(Found.Name) and not (KeepUsers and IsUserFile(Found.Name)) then
+      begin
+        SetArrayLength(Names, N + 1);
+        Names[N] := Found.Name;
+        N := N + 1;
+      end;
+    until not FindNext(Found);
+  finally
+    FindClose(Found);
+  end;
+  for I := 0 to N - 1 do
+    DeleteFile(AddBackslash(App) + Names[I]);
+end;
+
+{ Everything in Dir but its entry named Keep. }
+procedure RemoveAllBut(const Dir, Keep: String);
+var
+  Found: TFindRec;
+  Names: TArrayOfString;
+  I, N: Integer;
+begin
+  N := 0;
+  if FindFirst(AddBackslash(Dir) + '*', Found) then
+  try
+    repeat
+      if (Found.Name <> '.') and (Found.Name <> '..') and (CompareText(Found.Name, Keep) <> 0) then
+      begin
+        SetArrayLength(Names, N + 1);
+        Names[N] := Found.Name;
+        N := N + 1;
+      end;
+    until not FindNext(Found);
+  finally
+    FindClose(Found);
+  end;
+  for I := 0 to N - 1 do
+    if DirExists(AddBackslash(Dir) + Names[I]) then
+      DelTree(AddBackslash(Dir) + Names[I], True, True, True)
+    else
+      DeleteFile(AddBackslash(Dir) + Names[I]);
+end;
+
+{ .tmp: all of it, or (KeepUsers) all but an update's copies of the files the user had changed. }
+procedure RemoveTemporary(const App: String; KeepUsers: Boolean);
+begin
+  if KeepUsers and DirExists(AddBackslash(App) + UpdateBackups) then
+  begin
+    RemoveAllBut(AddBackslash(App) + '.tmp', 'update');
+    RemoveAllBut(AddBackslash(App) + '.tmp\update', 'replaced');
+  end
+  else
+    DelTree(AddBackslash(App) + '.tmp', True, True, True);
 end;
 
 { NitroLearn's own folders an uninstall could not delete (a file in them was in use), or ''. }
@@ -701,6 +803,8 @@ begin
     KeepUserFiles := SuppressibleMsgBox('Keep your bots and settings?' + #13#10#13#10 + 'Yes: your trained bots, settings files, packed bots and replays (the folders runs, my-settings, packs, replays and bots) stay in ' + App + '.' + #13#10 + 'No: they are deleted with NitroLearn.' + #13#10#13#10 + 'RLBot is a separate program and is not touched.', mbConfirmation, MB_YESNO, IDYES) <> IDNO;
   if CurUninstallStep = usPostUninstall then
   begin
+    RemoveTopFiles(App, KeepUserFiles);
+    RemoveTemporary(App, KeepUserFiles);
     if KeepUserFiles then
       WriteKeptNote(App)
     else

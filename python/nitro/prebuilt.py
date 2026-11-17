@@ -38,8 +38,11 @@ def nitro_replicar_source(root: Path = ROOT) -> str:
     """nitro-replicar's fingerprint: what decides whether a built copy is still current. Line endings do
     not count (a Windows checkout has CRLF)."""
     source = root / NITRO_REPLICAR
-    parts = ("Cargo.toml", "Cargo.lock", "src/main.rs")
-    text = b"".join((source / part).read_bytes().replace(b"\r\n", b"\n") for part in parts)
+    code = sorted(p.relative_to(source).as_posix() for p in (source / "src").glob("*.rs"))
+    parts = ("Cargo.toml", "Cargo.lock", *code)
+    text = b"".join(
+        part.encode() + b"\n" + (source / part).read_bytes().replace(b"\r\n", b"\n") for part in parts
+    )
     return hashlib.sha256(text).hexdigest()
 
 

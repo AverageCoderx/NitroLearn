@@ -124,16 +124,20 @@ def test_the_card_switches_the_copy_on_and_picks_folders_sizes_and_skill_checks(
 def test_the_resources_page_shows_the_kept_replays_and_starts_converting_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The Converted replays card on the Resources page: what the store holds, the folders to convert
-    (kept for next time), how many, and Convert, which starts `nitro convert-replays`."""
+    """The Converted replays card on the Resources page: what the store holds (the timing-fitted one, and
+    apart what was kept before without the fit), the folders to convert (kept for next time), how many, the
+    choice to convert the older ones again, and Convert, which starts `nitro convert-replays`."""
     sync_api = playwright_or_skip()
     from nitro import replays as replays_module
     from nitro.dashboard.app import page
 
     monkeypatch.setattr(replays_module, "OUT", tmp_path / "project-replays")
-    kept = replays_module.stored("old", 2)
+    kept = replays_module.stored("new", 2, replays_module.store_folder(True))
     kept.parent.mkdir(parents=True)
     kept.write_bytes(b"\0" * 2048)
+    older = replays_module.stored("old", 1)
+    older.parent.mkdir(parents=True)
+    older.write_bytes(b"\0" * 1024)
     runs = tmp_path / "runs"
     folder = tmp_path / "mine"
     folder.mkdir()
@@ -141,15 +145,16 @@ def test_the_resources_page_shows_the_kept_replays_and_starts_converting_only(
         (folder / f"{name}.replay").write_bytes(b"")
     api = Api(ROOT, runs)
     api.choose_replay_folder = lambda: {"folder": str(folder)}  # type: ignore[method-assign]  # no window
-    started: list[tuple[list[str], int]] = []
+    started: list[tuple[list[str], int, bool]] = []
 
-    def start(folders: list[str], limit: int = 0) -> dict[str, Any]:
-        started.append((folders, limit))
+    def start(folders: list[str], limit: int = 0, reconvert: bool = False) -> dict[str, Any]:
+        started.append((folders, limit, reconvert))
         return {"started": True}
 
     api.convert_start = start  # type: ignore[method-assign]  # not the real converter here
     view = api.converting()
     assert view["store"]["counts"] == {"2v2": 1} and view["state"] == "none" and view["folders"] == []
+    assert view["unfitted"] == {"1v1": 1}
     errors: list[str] = []
     with sync_api.sync_playwright() as p:
         browser = open_chromium(p)
@@ -165,13 +170,15 @@ def test_the_resources_page_shows_the_kept_replays_and_starts_converting_only(
             tab.click("[data-go=resources]")
             tab.wait_for_selector("#convert >> text=2v2: 1")
             tab.wait_for_selector("#convert >> text=None chosen")
+            tab.wait_for_selector("#convert >> text=Kept before without the timing fit: 1")
             tab.click("[data-act=cv-add]")
             tab.wait_for_selector("#convert >> text=2 replays")
             assert api.converting()["folders"] == [str(folder)], "kept for next time"
             tab.fill("#cv-limit", "1,000")
+            tab.check("#cv-reconvert")
             tab.click("[data-act=cv-start]")
             tab.wait_for_function("() => document.querySelector('#convert') !== null")
-            assert started == [([str(folder)], 1000)]
+            assert started == [([str(folder)], 1000, True)]
             tab.fill("#cv-limit", "lots")
             tab.click("[data-act=cv-start]")
             tab.wait_for_selector("text=a whole number")

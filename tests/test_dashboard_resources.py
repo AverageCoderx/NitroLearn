@@ -11,6 +11,7 @@ from browser import open_bot, open_chromium, playwright_or_skip
 from nitro.dashboard import resources
 from nitro.dashboard.api import Api
 from nitro.runs import RunFolder
+from test_dashboard import make_bot
 
 ROOT = Path(__file__).parents[1]
 PRESETS = ROOT / "configs" / "presets"
@@ -209,3 +210,30 @@ def test_the_resources_page_and_reward_sets_work_in_the_page(tmp_path: Path) -> 
         finally:
             browser.close()
     assert errors == []
+
+
+def test_a_file_saved_as_ansi_is_marked_not_breaking_every_list(tmp_path: Path) -> None:
+    """One settings file saved as ANSI (older Notepad) in the library or my-settings made the Resources page,
+    the new-bot form's list and every bot's Tools forms show only a decoding error."""
+    root = project(tmp_path)
+    runs = tmp_path / "runs"
+    api = Api(root, runs)
+    text = "# réglages\n" + (PRESETS / "1v1_starter.toml").read_text(encoding="utf-8")
+    added = tmp_path / "added.toml"
+    added.write_text(text, encoding="utf-8")
+    assert api.add_resource_paths([str(added)])["added"]
+    added.write_bytes(text.encode("cp1252"))  # saved again by an editor that writes ANSI
+    (root / "my-settings").mkdir()
+    (root / "my-settings" / "mine.toml").write_bytes(text.encode("cp1252"))
+    listed = api.resources()
+    assert "error" not in listed, listed
+    entry = next(e for e in resources.Library(runs).entries() if e["path"] == str(added.resolve()))
+    assert "UTF-8" in entry["problem"], entry
+    sources = api.settings_sources()
+    assert "error" not in sources and sources["sources"], sources
+    assert not any("mine" in s["title"] or "added" in s["title"] for s in sources["sources"])
+    assert "UTF-8" in resources.detect(root / "my-settings" / "mine.toml")["problem"]
+    make_bot(runs, "racer")
+    choices = api.tool_choices("racer")
+    assert "error" not in choices, choices
+    assert {f["title"]: f["broken"] for f in choices["files"]}["mine"], "listed, marked as having a mistake"

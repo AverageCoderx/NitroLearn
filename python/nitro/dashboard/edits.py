@@ -30,17 +30,21 @@ def convert(item: dict[str, Any], raw: Any) -> Any:
         return None
     if empty and kind != "bool":
         # Left empty, the line (and its comment) would go and the setting take its default unseen.
-        raise EditError("it needs a value (Undo puts back the one in the file)")
+        none = ": write [] for none" if kind in ("numbers", "words") else ""
+        raise EditError(f"it needs a value{none} (Undo puts back the one in the file)")
     try:
         if kind == "bool":
             return bool(raw)
         if kind == "int":
-            number = _finite(float(str(raw).replace("_", "").replace(",", "")))
+            digits = ungrouped(raw)
+            if re.fullmatch(r"[+-]?\d+", digits):
+                return _bounded(item, int(digits))  # exact, however many digits
+            number = _finite(float(digits))
             if number != int(number):
                 raise EditError("a whole number is needed")
             return _bounded(item, int(number))
         if kind == "float":
-            return _bounded(item, _finite(float(str(raw).replace("_", "").replace(",", ""))))
+            return _bounded(item, _finite(float(ungrouped(raw))))
         if kind == "numbers":
             text = raw if isinstance(raw, list) else str(raw).strip("[] ")
             if isinstance(text, str) and ", " in text and re.search(r"\d,\d", text):
@@ -68,6 +72,21 @@ def convert(item: dict[str, Any], raw: Any) -> Any:
     raise EditError("this setting is changed in the settings file itself for now")
 
 
+# A number written with commas between groups of three digits (1,000,000 or 1,000.5).
+_GROUPED = re.compile(r"[+-]?[1-9]\d{0,2}(,\d{3})+(\.\d*)?([eE][+-]?\d+)?")
+
+
+def ungrouped(raw: Any) -> str:
+    """`raw` without its digit-group marks (_ or a thousands comma). Any other comma is a decimal comma
+    (0,0003), which is refused rather than read as a much bigger number."""
+    text = str(raw).strip().replace("_", "")
+    if "," in text:
+        if not _GROUPED.fullmatch(text):
+            raise EditError("use a dot for the decimal point (0.0003, not 0,0003)")
+        text = text.replace(",", "")
+    return text
+
+
 def _finite(number: float) -> float:
     if not math.isfinite(number):
         raise EditError("a finite number is needed")
@@ -77,10 +96,15 @@ def _finite(number: float) -> float:
 def _bounded(item: dict[str, Any], number: float) -> Any:
     low, high = item.get("minimum"), item.get("maximum")
     if low is not None and number < low:
-        raise EditError(f"the smallest allowed is {low:g}")
+        raise EditError(f"the smallest allowed is {_limit(low)}")
     if high is not None and number > high:
-        raise EditError(f"the largest allowed is {high:g}")
+        raise EditError(f"the largest allowed is {_limit(high)}")
     return number
+
+
+def _limit(number: float) -> str:
+    """A limit as a person reads it: 1,000,000 rather than 1e+06 (a tiny one such as 1e-08 stays so)."""
+    return f"{int(number):,}" if float(number).is_integer() else f"{number:g}"
 
 
 def _kind_words(kind: str) -> str:

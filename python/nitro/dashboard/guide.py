@@ -241,7 +241,7 @@ MORE: dict[str, str] = {
         "\n"
         "How to use it: Set it to true; it can be switched on or off between stop and resume. Attention and transformer networks do not need it: they read every car the same way wherever it sits.\n"
         "\n"
-        "Watch out for: It needs env.obs_team_size above 0. Off by default and not measured yet: whether it helps learning has not been measured."
+        'Watch out for: It needs env.obs_team_size above 0 and the "native" or "nitro_v2" observation. Off by default and not measured yet: whether it helps learning has not been measured.'
     ),
     "env.opponents": (
         "What it does: Whether the Orange team exists. true is a normal game. false leaves only the Blue team on the field, with nobody to play against.\n"
@@ -284,11 +284,11 @@ MORE: dict[str, str] = {
         "Measured: in a real RLBot match the game's input delay was exactly 1 tick, with no variation, and a check of a logged match found no extra tick in the game's physics, so the exported bot sends its controls on the training rhythm."
     ),
     "env.observation": (
-        'What it does: What the bot sees each step, as a list of numbers. "native" is NitroLearn\'s own (112 numbers in 1v1). "nitro_v2" adds what strong bots use: things relative to the bot\'s car, the goals and the ball, speeds, the demo respawn timer and the time left to flip (148 numbers in 1v1).\n'
+        'What it does: What the bot sees each step, as a list of numbers. "native" is NitroLearn\'s own (112 numbers in 1v1). "nitro_v2" adds what strong bots use: things relative to the bot\'s car, the goals and the ball, speeds, the demo respawn timer and the time left to flip (148 numbers in 1v1). "gigalearn_advanced", "gigalearn_default" and "gigalearn_padder" are exact copies of GigaLearn\'s AdvancedObs and DefaultObs and of AdvancedObsPadderGGL (a community GigaLearn observation), for bots brought over from GigaLearn.\n'
         "\n"
-        'When to change it: Choose it when you start a new bot. The default, "nitro_v2", measured better than "native" (below); "native" is the smaller one.\n'
+        'When to change it: Choose it when you start a new bot. The default, "nitro_v2", measured better than "native" (below); "native" is the smaller one. The GigaLearn ones are for a bot that keeps training the network it had in GigaLearn.\n'
         "\n"
-        'How to use it: Write it before the first start. A padded observation (env.obs_team_size) needs "native" or "nitro_v2".\n'
+        'How to use it: Write it before the first start. A padded observation (env.obs_team_size) needs "native", "nitro_v2" or "gigalearn_padder" (whose room for players is env.obs_team_size). The GigaLearn ones cannot have ball prediction, shuffled car places or an attention or transformer network.\n'
         "\n"
         "Watch out for: Fixed once the bot has saves: change it by making a new bot from this one. The exported bot reads the observation's name from its file, so it needs no change. Transfer learning (start_from) needs the same observation in both runs.\n"
         "\n"
@@ -298,6 +298,17 @@ MORE: dict[str, str] = {
         "- Saves: no measurable difference, 0.883 against 0.867.\n"
         "Better on one task of three and worse on none, so it is the default."
     ),
+    "env.action_masks": (
+        'What it does: Decides which of the 90 actions the bot may pick at each moment, for example which count on the ground and which in the air; the others are masked out. "standard" is NitroLearn\'s rule set. "gigalearn" is GigaLearn\'s exact rule set, quirks included: one air action is never allowed, and the air yaw actions hold handbrake, which powerslides on landing.\n'
+        "\n"
+        "When to change it: Only for a bot brought over from GigaLearn, which learned with GigaLearn's rules. Choose it when you start the bot.\n"
+        "\n"
+        'How to use it: Keep "standard" for your own bots; write "gigalearn" for a GigaLearn bot.\n'
+        "\n"
+        "Watch out for: Fixed once the bot has saves: change it by making a new bot from this one. The exported bot reads the rule from its file. One small difference from GigaLearn: GigaLearn also lets a car jump whenever its body touches the floor, which the game does not tell a bot, so here only an upside-down car near the floor may jump without a flip left.\n"
+        "\n"
+        "Measured: not measured here."
+    ),
     "env.obs_team_size": (
         "What it does: Gives the observation room for this many players a side, whatever the game size. Places for missing cars are left empty and marked as empty, so one network fits every game up to that size. 0 means exactly team_size, with no padding.\n"
         "\n"
@@ -305,7 +316,7 @@ MORE: dict[str, str] = {
         "\n"
         "How to use it: Set it when you start a new bot, for example 3 for every mode. The presets show 3 as a commented line. Then team_size (and opponents) may change between stop and resume. A 1v1 bot with room for 3 can start a 3v3 run (start_from), and pretrain.team_sizes can copy replays of several sizes. An exported bot plays any match up to this size and sends no input in bigger ones.\n"
         "\n"
-        'Watch out for: Fixed once the bot has saves (but not with an attention network, whose networks do not depend on the room): change it by making a new bot from this one. It must be 0 or at least team_size, and it needs "native" or "nitro_v2". It costs a few numbers per car: the native observation grows from 112 (plain 1v1) to 173 numbers for room for 2 and 233 for room for 3. Not measured yet: how well a padded bot learns has not been compared.'
+        'Watch out for: Fixed once the bot has saves (but not with an attention network, whose networks do not depend on the room): change it by making a new bot from this one. It must be 0 or at least team_size, and it needs "native", "nitro_v2" or "gigalearn_padder" (which leaves its empty places as zeros, unmarked, as GigaLearn does). It costs a few numbers per car: the native observation grows from 112 (plain 1v1) to 173 numbers for room for 2 and 233 for room for 3. Not measured yet: how well a padded bot learns has not been compared.'
     ),
     "env.ball_prediction": (
         "What it does: Lets the bot see where the ball is going. For each time in the list (seconds ahead), the bot is told where the ball will be and how fast it will move, also compared with its own car: 12 numbers per time. The prediction follows the ball alone, bounces off the floor, walls and ceiling included; it cannot know that a car will hit the ball. Empty (the default) = off: the bot sees exactly what it saw before.\n"
@@ -316,7 +327,7 @@ MORE: dict[str, str] = {
         "\n"
         "Watch out for: Fixed once the bot has saves: change it by making a new bot from this one. Copying replays and replays in training work with it. RLBot's prediction and training's both come from RocketSim's physics but can differ slightly. Each game keeps a copy of the arena with only the ball in it and predicts afresh after a touch or a reset, so training runs somewhat slower.\n"
         "\n"
-        "Measured: on one PC (RTX 2060 SUPER, the 1v1 starter, Small, times [0.5, 1]) training ran at about 330,000 "
+        "Measured: on one mid-range graphics card (the 1v1 starter, Small, times [0.5, 1]) training ran at about 330,000 "
         "steps a second instead of about 387,000 (about 15% slower). Whether it helps the bot learn is not measured yet."
     ),
     "env.groups": (
@@ -795,11 +806,11 @@ MORE: dict[str, str] = {
         "\n"
         "When to change it: when a big network's learning steps do not fit in the card's memory, such as a 31M-parameter transformer on an 8 GB card. Unlike raising minibatches, it does not change how the bot learns.\n"
         "\n"
-        "How to use it: 0 = each step at once. Otherwise the most samples worked out at once, such as 4096 on an 8 GB card for the 2s transformer, or 16384 on a 24 GB card. A step is steps_per_iteration / minibatches samples.\n"
+        "How to use it: 0 = each step at once. Otherwise the most samples worked out at once, such as 4096 on an 8 GB card for a 31M-parameter transformer, or 16384 on a 24 GB card. A step is steps_per_iteration / minibatches samples.\n"
         "\n"
         "Watch out for: smaller parts are slower; pick the biggest that fits.\n"
         "\n"
-        "Measured: a test checks that a step in parts gives the same networks as the whole step. Memory, measured on the processor at full precision for the 2s transformer: about 0.6 GB per 1000 samples of a step."
+        "Measured: a test checks that a step in parts gives the same networks as the whole step. Memory, measured on the processor at full precision for a 31M-parameter transformer: about 0.6 GB per 1000 samples of a step."
     ),
     "ppo.policy_lr": (
         "What it does: how big a step the policy network (the part that picks actions) takes each time it learns. Higher learns faster but risks updates that overshoot and undo what the bot knew.\n"
@@ -1490,6 +1501,17 @@ MORE: dict[str, str] = {
         "\n"
         "Measured (12 real replays): making a replay ready from the store took 0.16-0.29 s against 5.5-8.6 s converting it, the samples the same bit for bit."
     ),
+    "pretrain.fit_timing": (
+        "What it does: a replay says what each player pressed and where the game's server put each car, but not always on exactly which tick. After the usual conversion, this fits those ticks: for each car it replays the moments between two of the server's position updates and moves jump presses and releases (up to 8 ticks), the updates themselves (up to 4) and throttle, steering, powerslide and boost changes (up to 4, at most 3 between two updates) to where the car best ends up where the replay says. What was pressed never changes, only when.\n"
+        "\n"
+        "When to change it: leave it on. Turn it off to use replays converted before without the fit as they are, instead of converting them again.\n"
+        "\n"
+        "How to use it: on or off, with the large replay mode and the nitro converter. Fitted conversions are kept in a store of their own (its folder name ends in -timing-fit-1), never mixed with unfitted ones; the bot's replays in training come from the same store. It is on for new bots; bots made before it existed keep it off unless it is turned on here. Turning it on or off for a copy in progress starts that copy over. The Converted replays card on the Resources page can convert the replays kept before without the fit again, with it.\n"
+        "\n"
+        "Watch out for: converting takes 2.5 to 3 times as long, and replays converted before without the fit are converted again for a copy that uses it.\n"
+        "\n"
+        "Measured (200 replays of high-level 1v1 and 2v2 games): where the simulated car is a moment later fell to under half as far from where the replay puts it at the median, and by about a third for the worst tenth, with the copy's labels as good as before. Whether a bot copied from fitted replays plays better is not measured yet."
+    ),
     "pretrain.skill_every": (
         "What it does: every this many rounds of the copy (and after the last), the copy so far plays two earlier versions of itself in the simulator: the copy where it started, and the version from the last check. Each point starts at a kickoff and ends at a goal, or without one (a draw). From the goals it gets a skill rating, shown on the bot's Overview tab with how it did against each.\n"
         "\n"
@@ -2140,7 +2162,17 @@ NERD: dict[str, str] = {
         'observation = "native"    # the smaller observation\n'
         "```\n"
         "\n"
-        "Sizes per other car: native 29, nitro_v2 38 numbers (plus a present flag with padding)."
+        "Sizes per other car: native 29, nitro_v2 38 numbers (plus a present flag with padding).\n"
+        "\n"
+        "The GigaLearn copies, in GigaLearn's own order and scales (ball, previous action, pads, own car, then the other cars): gigalearn_advanced (AdvancedObs) 109 numbers in 1v1, 29 per car, pads with their timers as GigaLearn reads them; gigalearn_default (DefaultObs) 89, 19 per car, pads as 0/1; gigalearn_padder (AdvancedObsPadderGGL) 109 in 1v1, 26 for the own car and 32 per other car, with env.obs_team_size - 1 teammate and env.obs_team_size opponent places (0 = the game's own size), empty places all zeros and cars beyond them left out."
+    ),
+    "env.action_masks": (
+        'Both rules allow the ground actions on the ground and the air actions in the air, and the jump actions while the car can jump (a flip is left, or it is upside down near the floor). "standard" never allows a boosting action on an empty tank. "gigalearn" (GigaLearn\'s DefaultAction masks) never allows action 24, picks the ground actions it allows in the air by yaw with handbrake, and adds the jump actions back after taking away the boosting ones, so a jump with boost stays allowed on an empty tank.\n'
+        "\n"
+        "```toml\n"
+        "[env]\n"
+        'action_masks = "gigalearn"\n'
+        "```"
     ),
     "env.obs_team_size": (
         "With room R (R >= team_size), the observation always has R - 1 teammate places and R opponent places. Each other-car block ends in a present flag (1 = a car is there, 0 = empty, with every number in the block 0). The size is fixed by R, so the same network reads any game up to R a side.\n"
@@ -3259,6 +3291,15 @@ NERD: dict[str, str] = {
         "[pretrain]\n"
         "batch_replays = 200\n"
         "keep_converted = false\n"
+        "```"
+    ),
+    "pretrain.fit_timing": (
+        "After replicar converts a replay, each car is simulated alone in RocketSim between its server updates, and the ticks of its jump presses and releases, its updates and its throttle, steer, powerslide and boost changes are moved by coordinate descent to bring the simulated car closest to each update. A fitted file's header says so (timing_fit, with what moved), and fitted files are kept in their own store.\n"
+        "\n"
+        "```toml\n"
+        "[pretrain]\n"
+        "batch_replays = 200\n"
+        "fit_timing = false\n"
         "```"
     ),
     "pretrain.skill_every": (

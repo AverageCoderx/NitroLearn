@@ -1,0 +1,331 @@
+{
+ "tick_skip": 8,
+ "gigalearn": [
+  {
+   "class": "AirReward",
+   "args": [],
+   "weight": 0.3,
+   "zero_sum": null
+  },
+  {
+   "class": "FaceBallReward",
+   "args": [],
+   "weight": 0.5,
+   "zero_sum": null
+  },
+  {
+   "class": "VelocityPlayerToBallReward",
+   "args": [],
+   "weight": 3.0,
+   "zero_sum": null
+  },
+  {
+   "class": "StrongTouchReward",
+   "args": [
+    25,
+    90
+   ],
+   "weight": 40.0,
+   "zero_sum": null
+  },
+  {
+   "class": "VelocityBallToGoalReward",
+   "args": [],
+   "weight": 2.5,
+   "zero_sum": [
+    1.0,
+    1.0
+   ]
+  },
+  {
+   "class": "VelocityBallToGoalReward",
+   "args": [
+    true
+   ],
+   "weight": -0.5,
+   "zero_sum": null
+  },
+  {
+   "class": "PickupBoostReward",
+   "args": [],
+   "weight": 8.0,
+   "zero_sum": null
+  },
+  {
+   "class": "SaveBoostReward",
+   "args": [
+    0.75
+   ],
+   "weight": 0.1,
+   "zero_sum": null
+  },
+  {
+   "class": "BumpReward",
+   "args": [],
+   "weight": 15.0,
+   "zero_sum": [
+    0.5,
+    0.8
+   ]
+  },
+  {
+   "class": "DemoReward",
+   "args": [],
+   "weight": 60.0,
+   "zero_sum": [
+    0.5,
+    1.0
+   ]
+  },
+  {
+   "class": "BumpedPenalty",
+   "args": [],
+   "weight": 4.0,
+   "zero_sum": null
+  },
+  {
+   "class": "DemoedPenalty",
+   "args": [],
+   "weight": 10.0,
+   "zero_sum": null
+  },
+  {
+   "class": "TouchAccelReward",
+   "args": [],
+   "weight": 12.0,
+   "zero_sum": null
+  },
+  {
+   "class": "VelocityReward",
+   "args": [],
+   "weight": 0.05,
+   "zero_sum": null
+  },
+  {
+   "class": "SpeedReward",
+   "args": [],
+   "weight": 0.02,
+   "zero_sum": null
+  },
+  {
+   "class": "WavedashReward",
+   "args": [],
+   "weight": 3.0,
+   "zero_sum": null
+  },
+  {
+   "class": "TouchBallReward",
+   "args": [],
+   "weight": 1.0,
+   "zero_sum": null
+  },
+  {
+   "class": "KickoffProximityReward",
+   "args": [],
+   "weight": 5.0,
+   "zero_sum": null
+  },
+  {
+   "class": "SpeedTowardsOpponentReward",
+   "args": [
+    1.5
+   ],
+   "weight": 2.0,
+   "zero_sum": null
+  },
+  {
+   "class": "GoalReward",
+   "args": [
+    -0.8
+   ],
+   "weight": 200.0,
+   "zero_sum": null
+  }
+ ],
+ "terms": [
+  {
+   "kind": {
+    "name": "air"
+   },
+   "weight": 0.3,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "face_ball"
+   },
+   "weight": 0.5,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "velocity_player_to_ball"
+   },
+   "weight": 3.0,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "custom",
+    "kind": "gigalearn_strong_touch",
+    "settings": {
+     "min_speed_kph": 25.0,
+     "max_speed_kph": 90.0
+    }
+   },
+   "weight": 40.0,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "velocity_ball_to_goal"
+   },
+   "weight": 2.5,
+   "zero_sum": {
+    "team_spirit": 1.0,
+    "opponent_scale": 1.0
+   }
+  },
+  {
+   "kind": {
+    "name": "custom",
+    "kind": "gigalearn_velocity_ball_to_goal",
+    "settings": {
+     "own_goal": true
+    }
+   },
+   "weight": -0.5,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "pickup_boost"
+   },
+   "weight": 8.0,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "save_boost",
+    "exponent": 0.75
+   },
+   "weight": 0.1,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "bump"
+   },
+   "weight": 15.0,
+   "zero_sum": {
+    "team_spirit": 0.5,
+    "opponent_scale": 0.8
+   }
+  },
+  {
+   "kind": {
+    "name": "demo"
+   },
+   "weight": 60.0,
+   "zero_sum": {
+    "team_spirit": 0.5,
+    "opponent_scale": 1.0
+   }
+  },
+  {
+   "kind": {
+    "name": "custom",
+    "kind": "gigalearn_bumped_penalty",
+    "settings": {}
+   },
+   "weight": 4.0,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "custom",
+    "kind": "gigalearn_demoed_penalty",
+    "settings": {}
+   },
+   "weight": 10.0,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "custom",
+    "kind": "gigalearn_touch_accel",
+    "settings": {}
+   },
+   "weight": 12.0,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "custom",
+    "kind": "gigalearn_velocity",
+    "settings": {
+     "negative": false
+    }
+   },
+   "weight": 0.05,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "custom",
+    "kind": "gigalearn_velocity",
+    "settings": {
+     "negative": false
+    }
+   },
+   "weight": 0.02,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "custom",
+    "kind": "gigalearn_wavedash",
+    "settings": {}
+   },
+   "weight": 3.0,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "touch_ball"
+   },
+   "weight": 1.0,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "custom",
+    "kind": "kickoff_proximity",
+    "settings": {
+     "zero_within_200": false
+    }
+   },
+   "weight": 5.0,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "custom",
+    "kind": "speed_towards_opponent",
+    "settings": {
+     "scale": 1.5
+    }
+   },
+   "weight": 2.0,
+   "zero_sum": null
+  },
+  {
+   "kind": {
+    "name": "goal",
+    "concede_scale": -0.8
+   },
+   "weight": 200.0,
+   "zero_sum": null
+  }
+ ]
+}

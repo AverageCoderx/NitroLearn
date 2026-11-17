@@ -1,0 +1,6 @@
+{
+    "return_stat": {"count": 4500, "mean": 0.25, "var": 9000.0},
+    "run_id": "fixture",
+    "total_iterations": 42,
+    "total_timesteps": 123456
+}

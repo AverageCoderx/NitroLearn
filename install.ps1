@@ -66,6 +66,11 @@
 
 .PARAMETER Progress
   Also print a line per step (for NitroLearn-Setup.exe's checklist).
+
+.NOTES
+  Run with -Parts and -NoLaunch but not by the setup wizard (as an update runs it), everything it prints is
+  also added to the end of install-log.txt in this folder, so it can be read after the window closes. The
+  setup wizard writes that log itself.
 #>
 param(
     [ValidateSet('auto', 'cpu', 'cu126', 'cu130', 'cu132')][string]$Torch = '',
@@ -88,7 +93,45 @@ param(
 # program merely writes to its error output, so cmdlets that must not fail say -ErrorAction Stop themselves.
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'  # Windows PowerShell's progress bar makes downloads many times slower
-Set-Location $PSScriptRoot
+
+# Logged runs (.NOTES): this script runs again with its output piped, and each line is shown and added to
+# install-log.txt as UTF-8 (Tee-Object of Windows PowerShell 5.1 writes UTF-16). Piped, its programs write
+# UTF-8 without buffering, as for the setup wizard.
+$Logged = $NoLaunch -and -not $Progress -and $PSBoundParameters.ContainsKey('Parts')
+if ($Logged -and -not $env:NITRO_INSTALL_LOGGED) {
+    $again = @()
+    foreach ($bound in $PSBoundParameters.GetEnumerator()) {
+        if ($bound.Value -is [switch]) {
+            if ($bound.Value) { $again += "-$($bound.Key)" }
+        } elseif ([string]$bound.Value) {
+            $again += @("-$($bound.Key)", [string]$bound.Value)
+        } elseif ($bound.Key -eq 'Parts') {
+            $again += @('-Parts', 'none')  # Windows PowerShell drops an empty argument
+        }
+    }
+    $log = Join-Path $PSScriptRoot 'install-log.txt'
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $env:NITRO_INSTALL_LOGGED = '1'
+    $env:PYTHONUNBUFFERED = '1'
+    $env:PYTHONIOENCODING = 'utf-8'
+    $console = [Console]::OutputEncoding
+    [Console]::OutputEncoding = $utf8
+    $nl = [Environment]::NewLine
+    try { [IO.File]::AppendAllText($log, "$nl---- install.ps1 $($again -join ' '), $(Get-Date -Format 'yyyy-MM-dd HH:mm') ----$nl", $utf8) } catch { }
+    $shell = (Get-Process -Id $PID).Path  # this PowerShell
+    & $shell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath @again 2>&1 | ForEach-Object {
+        $line = [string]$_
+        if ($line -match '^(#< CLIXML|<Objs Version=)') { return }  # Windows PowerShell's own progress records
+        if ($line.StartsWith('==> ')) { Write-Host $line -ForegroundColor Cyan }
+        elseif ($line.StartsWith('SETUP STOPPED')) { Write-Host $line -ForegroundColor Red }
+        else { Write-Host $line }
+        try { [IO.File]::AppendAllText($log, $line + $nl, $utf8) } catch { }
+    }
+    $code = $LASTEXITCODE
+    [Console]::OutputEncoding = $console
+    exit $code
+}
+Set-Location -LiteralPath $PSScriptRoot
 # PyPI needs TLS 1.2, which Windows PowerShell 5.1 does not always offer by default.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
@@ -199,8 +242,9 @@ if ($PSScriptRoot.Length -gt 80) {
     Write-Host "`nThis folder's path is long ($($PSScriptRoot.Length) characters). Windows can fail on very long file paths deep inside the install: move the folder somewhere short, like C:\NitroLearn, and run the installer there." -ForegroundColor Yellow
     $warned = $true
 }
-# Asked only of a person at the console: not of the setup wizard or an update (they pass -Parts).
-if ($warned -and -not $PSBoundParameters.ContainsKey('Parts') -and -not [Console]::IsInputRedirected) {
+# Asked only of a person at the console: not of the setup wizard or an update (they pass -Parts), nor when
+# the output is piped (a logged run), where the question would not show.
+if ($warned -and -not $PSBoundParameters.ContainsKey('Parts') -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
     Read-Host 'Press Enter to install here anyway, or close this window to move the folder first' | Out-Null
 }
 # Room for uv and Python; tools\install_steps.py checks the room for the rest once the parts are chosen.
@@ -218,15 +262,33 @@ if ($Progress) {
 
 # The release of this folder's version (Cargo.toml), and a folder of its files when there is one.
 $Version = ''
-$found = Select-String -Path (Join-Path $PSScriptRoot 'Cargo.toml') -Pattern '^version\s*=\s*"([^"]+)"' -ErrorAction SilentlyContinue | Select-Object -First 1
+$found = Select-String -LiteralPath (Join-Path $PSScriptRoot 'Cargo.toml') -Pattern '^version\s*=\s*"([^"]+)"' -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($found) { $Version = $found.Matches[0].Groups[1].Value }
 $ReleaseUrl = $Releases.Replace('{version}', $Version)
 $ReleaseFiles = ''
 if ($Bundles) {
     # A relative folder is taken from this folder (the script starts there).
     $ReleaseFiles = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Bundles)
-} elseif (Test-Path (Join-Path $PSScriptRoot 'release-files') -PathType Container) {
+} elseif (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'release-files') -PathType Container) {
     $ReleaseFiles = Join-Path $PSScriptRoot 'release-files'
+}
+
+function Save-Download([string]$Url, [string]$File) {
+    # Windows PowerShell 5.1's Invoke-WebRequest reads [ and ] in -OutFile as wildcards: in a folder with them
+    # in its name, the download is saved under a plain name in the user's temporary folder, then moved in place.
+    $plain = $File
+    if ($File -match '[\[\]]') {
+        $folder = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp'
+        New-Item -ItemType Directory -Force $folder -ErrorAction Stop | Out-Null
+        $plain = Join-Path $folder ('nitrolearn-download-' + [Guid]::NewGuid().ToString('N') + '.part')
+    }
+    try {
+        Invoke-WebRequest $Url -OutFile $plain -UseBasicParsing -TimeoutSec 600 -ErrorAction Stop
+        if ($plain -ne $File) { Move-Item -LiteralPath $plain -Destination $File -Force -ErrorAction Stop }
+    } catch {
+        if ($plain -ne $File) { Remove-Item -LiteralPath $plain -Force -ErrorAction SilentlyContinue }
+        throw
+    }
 }
 
 function Get-Pinned([string]$Name, [string]$Sha256, [string]$File, [string]$Original) {
@@ -235,9 +297,9 @@ function Get-Pinned([string]$Name, [string]$Sha256, [string]$File, [string]$Orig
     $result = 'missing'
     if ($ReleaseFiles) {
         $local = Join-Path $ReleaseFiles $Name
-        if (Test-Path $local -PathType Leaf) {
-            if ((Get-FileHash $local -Algorithm SHA256).Hash.ToLower() -eq $Sha256) {
-                Copy-Item $local $File -Force
+        if (Test-Path -LiteralPath $local -PathType Leaf) {
+            if ((Get-FileHash -LiteralPath $local -Algorithm SHA256).Hash.ToLower() -eq $Sha256) {
+                Copy-Item -LiteralPath $local -Destination $File -Force
                 return 'ok'
             }
             $result = 'mismatch'
@@ -246,12 +308,12 @@ function Get-Pinned([string]$Name, [string]$Sha256, [string]$File, [string]$Orig
     foreach ($from in @(($ReleaseUrl + $Name), $Original)) {
         if (-not $from) { continue }
         try {
-            Invoke-WebRequest $from -OutFile $File -UseBasicParsing -TimeoutSec 600 -ErrorAction Stop
+            Save-Download $from $File
         } catch {
             continue
         }
-        if ((Get-FileHash $File -Algorithm SHA256).Hash.ToLower() -eq $Sha256) { return 'ok' }
-        Remove-Item $File -Force
+        if ((Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash.ToLower() -eq $Sha256) { return 'ok' }
+        Remove-Item -LiteralPath $File -Force
         $result = 'mismatch'
     }
     return $result
@@ -260,7 +322,7 @@ function Get-Pinned([string]$Name, [string]$Sha256, [string]$File, [string]$Orig
 # uv in .tools\uv: NitroLearn's release's copy of its package, else the package on PyPI (never Astral's
 # install script, which edits the PATH).
 $haveUv = $false
-if (Test-Path $Uv) {
+if (Test-Path -LiteralPath $Uv) {
     $said = (& $Uv --version 2>$null) -join ' '
     $haveUv = $said -like "uv $UvVersion*"
 }
@@ -282,7 +344,7 @@ if (-not $haveUv) {
     } finally {
         $zip.Dispose()
     }
-    Remove-Item $wheel -Force
+    Remove-Item -LiteralPath $wheel -Force
 }
 
 StepState 'python' 'start'
@@ -291,7 +353,7 @@ Step "Python $PythonVersion (kept in .tools\python)"
 # python-build-standalone's releases, and checks it against the hash built into uv. Without a copy, uv
 # downloads it from python-build-standalone itself.
 $mirror = Join-Path $PSScriptRoot '.tmp\python-mirror'
-if (-not (Test-Path (Join-Path $env:UV_PYTHON_INSTALL_DIR "cpython-$PythonVersion.*"))) {
+if (@(Get-ChildItem -LiteralPath $env:UV_PYTHON_INSTALL_DIR -Filter "cpython-$PythonVersion.*" -ErrorAction SilentlyContinue).Count -eq 0) {
     $copy = Join-Path $mirror ($PythonMirrorPath.Replace('/', '\'))
     New-Item -ItemType Directory -Force (Split-Path $copy -Parent) -ErrorAction Stop | Out-Null
     if ((Get-Pinned $PythonAsset $PythonSha256 $copy '') -eq 'ok') {
@@ -300,16 +362,16 @@ if (-not (Test-Path (Join-Path $env:UV_PYTHON_INSTALL_DIR "cpython-$PythonVersio
 }
 Invoke-Uv 15 "Installing Python $PythonVersion" @('python', 'install', $PythonVersion)
 Remove-Item Env:\UV_PYTHON_INSTALL_MIRROR -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force $mirror -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $mirror -Recurse -Force -ErrorAction SilentlyContinue
 
 # A .venv that no longer runs (for example after the folder was moved), that was made from a Python outside
 # this folder, or that runs another Python than this version's (an older NitroLearn's), is made again; the
 # older Python itself is removed at the end of the install (tools\install_tidy.py).
 $venvPython = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-if (Test-Path (Join-Path $PSScriptRoot '.venv')) {
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.venv')) {
     $works = $false
     $config = Join-Path $PSScriptRoot '.venv\pyvenv.cfg'
-    if ((Test-Path $venvPython) -and (Test-Path $config)) {
+    if ((Test-Path -LiteralPath $venvPython) -and (Test-Path -LiteralPath $config)) {
         # UTF-8, as uv writes it: Windows PowerShell would read it in the ANSI code page, which alters a folder
         # name with other letters, and the .venv would be made again on every run.
         $base = (Get-Content -Encoding UTF8 -LiteralPath $config | Where-Object { $_ -match '^home\s*=' } | Select-Object -First 1) -replace '^home\s*=\s*', ''
@@ -318,10 +380,10 @@ if (Test-Path (Join-Path $PSScriptRoot '.venv')) {
     }
     if (-not $works) {
         Step "The private environment .venv does not work here, uses a Python outside this folder, or not Python ${PythonVersion}: making it again"
-        Remove-Item -Recurse -Force (Join-Path $PSScriptRoot '.venv') -ErrorAction Stop
+        Remove-Item -LiteralPath (Join-Path $PSScriptRoot '.venv') -Recurse -Force -ErrorAction Stop
     }
 }
-if (-not (Test-Path $venvPython)) {
+if (-not (Test-Path -LiteralPath $venvPython)) {
     Step 'Making the private environment .venv'
     Invoke-Uv 10 'Making .venv' @('venv', '--seed', '--python', $PythonVersion, '.venv')
 }

@@ -311,6 +311,7 @@ def widen_run(
             RunFolder(partial), folder, new_text, new_state, obs_size, num_actions, config, factor
         )
         partial.rename(final)
+        _move_settings_dir(RunFolder(final), partial)
     except BaseException:
         shutil.rmtree(partial, ignore_errors=True)
         raise
@@ -327,6 +328,22 @@ def widen_run(
     )
 
 
+def _inside(path: Any, root: Path) -> Path | None:
+    """`path` (a folder run.json names) relative to the run folder `root` when it is inside it, else None."""
+    if not isinstance(path, str) or not Path(path).resolve().is_relative_to(root.resolve()):
+        return None
+    return Path(path).resolve().relative_to(root.resolve())
+
+
+def _move_settings_dir(folder: RunFolder, partial: Path) -> None:
+    """Points run.json's settings folder at `folder` when it was inside `partial` (where it was built)."""
+    info = json.loads(folder.info.read_text(encoding="utf-8"))
+    own = _inside(info.get("settings_dir"), partial)
+    if own is not None and own.parts:
+        info["settings_dir"] = str(folder.root.resolve() / own)
+        folder.info.write_text(json.dumps(info), encoding="utf-8")
+
+
 def _write_run(
     new_folder: RunFolder,
     folder: RunFolder,
@@ -340,7 +357,12 @@ def _write_run(
     """Writes the widened run into `new_folder`; returns how many past versions of the pool it widened."""
     new_folder.checkpoints.mkdir(parents=True)
     new_folder.settings.write_text(settings_text, encoding="utf-8")
-    shutil.copyfile(folder.info, new_folder.info)
+    info = json.loads(folder.info.read_text(encoding="utf-8"))
+    own = _inside(info.get("settings_dir"), folder.root)
+    if own is not None and own.parts:  # an unpacked bot's settings read files in its folder: copied
+        shutil.copytree(folder.root / own.parts[0], new_folder.root / own.parts[0])
+        info["settings_dir"] = str(new_folder.root.resolve() / own)
+    new_folder.info.write_text(json.dumps(info), encoding="utf-8")
     if folder.metrics.is_file():
         shutil.copyfile(folder.metrics, new_folder.metrics)
     pool_versions = 0

@@ -30,6 +30,7 @@ import argparse
 import contextlib
 import errno
 import hashlib
+import http.client
 import importlib.metadata
 import importlib.util
 import json
@@ -806,6 +807,11 @@ def fetch(url: str, attempts: int = 4) -> bytes:
         except (urllib.error.URLError, OSError):
             if attempt == attempts - 1:
                 raise
+        except http.client.HTTPException as err:  # cut off part way (IncompleteRead): an OSError to callers
+            if attempt == attempts - 1:
+                raise ConnectionError(
+                    f"the connection closed before the download finished ({err!r})"
+                ) from None
         time.sleep(2 * (attempt + 1))
     raise AssertionError("unreachable")
 
@@ -1803,14 +1809,21 @@ def _load(path: Path, name: str) -> ModuleType | None:
 
 
 def shortcuts_made(root: Path) -> tuple[bool, bool]:
-    """(Start menu, desktop) shortcuts that tools/app_shortcuts.ps1 recorded (the desktop one is the second)
-    and that are still there: one deleted since counts as missing, so the install makes it again."""
+    """(Start menu, desktop) shortcuts that tools/app_shortcuts.ps1 recorded and that are still there: one
+    deleted since counts as missing, so the install makes it again. The record names the desktop one; in
+    a record without that name (older versions), the desktop one is the second."""
     try:
-        made = json.loads((root / SHORTCUTS_RECORD).read_text(encoding="utf-8")).get("shortcuts", [])
+        data = json.loads((root / SHORTCUTS_RECORD).read_text(encoding="utf-8"))
+        made = data.get("shortcuts", [])
+        desktop = data.get("desktop")
     except (OSError, ValueError, AttributeError):
         return False, False
-    links = made if isinstance(made, list) else []
-    there = [isinstance(link, str) and Path(link).is_file() for link in links[:2]]
+    listed = made if isinstance(made, list) else []
+    links = [link for link in listed if isinstance(link, str)]
+    if isinstance(desktop, str) and desktop in links:
+        start = any(Path(link).is_file() for link in links if link != desktop)
+        return start, Path(desktop).is_file()
+    there = [isinstance(link, str) and Path(link).is_file() for link in listed[:2]]
     there += [False] * (2 - len(there))
     return there[0], there[1]
 

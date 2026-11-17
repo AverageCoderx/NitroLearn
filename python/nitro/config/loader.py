@@ -122,6 +122,10 @@ class _Context:
         self.issues.append(ConfigIssue(path, message, self.locator.line_of(path), hint))
 
 
+# A file an editor saved in the system's code page (Notepad's "ANSI") instead of UTF-8.
+NOT_UTF8 = "the settings file is not saved as UTF-8 (an editor saved it as ANSI): save it again as UTF-8"
+
+
 def load_toml(file: Path, schema: type[T]) -> T:
     """Reads `file` and builds `schema` from it. Relative paths are resolved against the file's folder."""
     try:
@@ -133,6 +137,8 @@ def load_toml(file: Path, schema: type[T]) -> T:
         raise ConfigError(
             file, [ConfigIssue("", f"the settings file cannot be read ({err.strerror})")]
         ) from None
+    except UnicodeDecodeError:
+        raise ConfigError(file, [ConfigIssue("", NOT_UTF8)]) from None
     return parse_toml(text, schema, file=file, base_dir=file.resolve().parent)
 
 

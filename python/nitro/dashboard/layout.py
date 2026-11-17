@@ -111,6 +111,7 @@ SETTINGS: dict[str, Place] = {
     "env.observation": advanced("games", "What the bot sees (observation)"),
     "env.obs_team_size": advanced("games", "Observation room (players per team)"),
     "env.ball_prediction": advanced("games", "Ball prediction: seconds ahead the bot sees"),
+    "env.action_masks": advanced("games", "Which actions are allowed (action masks)"),
     "env.action_delay": advanced("games", "Delay before an action acts (ticks)"),
     "env.team_sizes": advanced("games", "Several game sizes in one bot"),
     "env.team_size_shares": advanced("games", "Share of games for each size"),
@@ -185,6 +186,7 @@ SETTINGS: dict[str, Place] = {
     "pretrain.workers": advanced("replays_first"),
     "pretrain.converter": advanced("replays_first", "What converts the replays"),
     "pretrain.keep_converted": advanced("replays_first"),
+    "pretrain.fit_timing": advanced("replays_first"),
     "pretrain.continue_from": advanced("replays_first", "Carry on another bot's copy"),
     "pretrain.new_only": advanced("replays_first", "Only replays not converted before"),
     "pretrain.value_warmup_steps": advanced("replays_first"),
@@ -293,7 +295,8 @@ PLAIN: dict[str, str] = {
     "env.tick_skip": "How often the bot decides: every this many physics ticks (the game runs 120 a second). "
     "4 = 30 decisions a second; 8 = 15.",
     "env.observation": "What the bot sees of the game. The detailed one ('nitro_v2', the default) tested "
-    "clearly better than the basic one ('native').",
+    "clearly better than the basic one ('native'). The 'gigalearn_' ones are for bots brought over from "
+    "GigaLearn.",
     "env.obs_team_size": "Room in what the bot sees for bigger teams, so one bot can later play 1v1, 2v2 and "
     "3v3. 0 = room for its own game size only.",
     "env.ball_prediction": "Let the bot see where the ball will be, this many seconds ahead (for example "

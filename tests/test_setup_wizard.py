@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import itertools
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -176,8 +177,8 @@ def test_uninstalling_removes_nitrolearns_folders_and_asks_before_the_users_own(
     listed = subprocess.run(["git", "ls-files"], cwd=PROJECT, capture_output=True, text=True, check=True)
     shipped = {path.split("/")[0] for path in listed.stdout.splitlines() if "/" in path}
     assert shipped <= deleted, f"an update can add files there: {sorted(shipped - deleted)}"
-    assert {".venv", ".tools", ".cache", ".tmp", "collision_meshes", "rocketsim_recordings"} <= deleted
-    assert "*" in deleted, "the files at the top of the folder"
+    assert {".venv", ".tools", ".cache", "collision_meshes", "rocketsim_recordings"} <= deleted
+    assert "*" not in deleted and ".tmp" not in deleted, "the code removes those, keeping the user's"
     users = re.search(r"UserFolders = '([^']+)'", _iss())
     assert users is not None and tuple(users[1].split(",")) == wizard.USER_FOLDERS
     assert {"runs", "my-settings", "packs", "replays"} <= set(wizard.USER_FOLDERS)
@@ -197,6 +198,72 @@ def test_uninstalling_removes_nitrolearns_folders_and_asks_before_the_users_own(
     named = [line for line in _iss().splitlines() if "RLBot5" in line]
     assert named == ["  RLBotFolder = 'RLBot5\\bin\\';"], "RLBot's folder: only looked for, never touched"
     assert "FileExists(AddBackslash(Dir) + 'Install NitroLearn.cmd')" in _iss(), "only into its own folder"
+
+
+def _const(name: str) -> str:
+    found = re.search(rf"^  {name} = '([^']+)';", _iss(), re.MULTILINE)
+    assert found is not None, name
+    return found[1]
+
+
+def _uninstall(app: Path, keep: bool) -> None:
+    """What uninstalling does to the folder, as the script says: its [UninstallDelete] entries, then the
+    code's RemoveTopFiles and RemoveTemporary, then the user's folders unless kept."""
+    for line in _section("UninstallDelete"):
+        kind, name = re.search(r'Type: (\w+); Name: "\{app\}\\([^"]+)"', line).groups()  # type: ignore[union-attr]
+        assert kind == "filesandordirs" and "*" not in name, line
+        shutil.rmtree(app / name.replace("\\", "/"), ignore_errors=True)
+    ends = _const("UserFileEnds").split(",")
+    for file in app.iterdir():
+        user = any(file.name.lower().endswith(end) and len(file.name) > len(end) for end in ends)
+        uninstaller = file.name.lower().startswith("unins") and file.name.find(".") == 8
+        if file.is_file() and not uninstaller and not (keep and user):
+            file.unlink()
+    backups = app / _const("UpdateBackups").replace("\\", "/")
+    if keep and backups.is_dir():
+        for folder, kept in ((app / ".tmp", "update"), (app / ".tmp" / "update", "replaced")):
+            for entry in folder.iterdir():
+                if entry.name.lower() != kept:
+                    shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
+    else:
+        shutil.rmtree(app / ".tmp", ignore_errors=True)
+    if not keep:
+        for name in _const("UserFolders").split(","):
+            shutil.rmtree(app / name, ignore_errors=True)
+
+
+def test_uninstalling_with_keep_leaves_every_file_of_the_users(tmp_path: Path) -> None:
+    """Kept: the user's folders, their packed bots and replays at the top of the folder (nitro pack writes
+    there), and an update's copies of the files they changed; everything of NitroLearn's goes. Not kept:
+    nothing is left but Setup's own uninstaller files."""
+    code = _iss()[_iss().index("[Code]") :]
+    post = code[code.index("if CurUninstallStep = usPostUninstall then") :]
+    assert post.index("RemoveTopFiles(App, KeepUserFiles);") < post.index("WriteKeptNote(App)")
+    assert "RemoveTemporary(App, KeepUserFiles);" in post
+    update = _load("update_for_wizard_test", PROJECT / "python" / "nitro" / "update.py")
+    listed = subprocess.run(["git", "ls-files"], cwd=PROJECT, capture_output=True, text=True, check=True)
+    ours = listed.stdout.splitlines()
+    mine = [
+        "runs/racer/run.json",
+        "my-settings/racer.toml",
+        "packs/racer.nitropack.zip",
+        "racer-2026-11-17-101010.nitropack.zip",
+        "Final Match.replay",
+        "game.rlpr.zst",
+        "game.rlpr",
+        ".tmp/update/replaced/1.0.2/configs/presets/starter.toml",
+    ]
+    kept = update.Kept.read(PROJECT / ".gitignore")
+    assert all(kept.covers(path) for path in mine), "the update keeps these as the user's too"
+    for keep in (True, False):
+        app = tmp_path / f"keep-{keep}"
+        made = ["unins000.exe", ".venv/pyvenv.cfg", ".tmp/release/x.whl", ".tmp/update/new/README.md"]
+        for rel in [*ours, *mine, *made]:
+            (app / rel).parent.mkdir(parents=True, exist_ok=True)
+            (app / rel).write_text("x", encoding="utf-8")
+        _uninstall(app, keep)
+        left = sorted(p.relative_to(app).as_posix() for p in app.rglob("*") if p.is_file())
+        assert left == sorted([*mine, "unins000.exe"] if keep else ["unins000.exe"]), keep
 
 
 def test_a_folder_an_uninstall_kept_bots_in_takes_nitrolearn_again() -> None:

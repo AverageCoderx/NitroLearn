@@ -20,7 +20,7 @@ function headFact(b) {
 }
 // The facts of a bot as small labelled figures: one row where they fit, else rows of equal length (the class
 // n<cells> says how many cells they take, the Start fact two).
-const OBSERVATION_WORDS = { nitro_v2: "Detailed", native: "Basic" };
+const OBSERVATION_WORDS = { nitro_v2: "Detailed", native: "Basic", gigalearn_advanced: "GigaLearn AdvancedObs", gigalearn_default: "GigaLearn DefaultObs", gigalearn_padder: "AdvancedObsPadderGGL" };
 function figuresHTML(b) {
   const running = b.status === "training" || b.status === "copying";
   const p = b.parameters;
@@ -192,7 +192,7 @@ async function loadBot(name) {
   return { data, tools: tools.error ? {} : tools };
 }
 async function openBot(name, tab) {
-  S.view = "bot"; S.bot = name; S.tab = tab || "overview"; S.data = null; S.tools = null; S.errors = {}; S.consoleText = ""; S.consoleNext = 0; S.showChanges = false; S.tfPick = null;
+  S.view = "bot"; S.bot = name; S.tab = tab || "overview"; S.data = null; S.tools = null; S.errors = {}; S.typed = {}; S.drafts = {}; S.consoleText = ""; S.consoleNext = 0; S.showChanges = false; S.tfPick = null;
   S.rw = null; S.rwNotesOpen = {}; S.rwAbout = {}; S.st = null; S.rm = null; S.span = "all"; S.ch = null; S.chHover = null;
   render();
   const { data, tools } = await loadBot(name);
@@ -269,7 +269,7 @@ function liveryModal() {
     <div class="livery">
       <div class="livery-show" id="lv-show"></div>
       <div class="livery-form">
-        <label class="f">Plate<input id="lv-number" class="field" type="text" maxlength="2" autocomplete="off" data-lv="number" value="${esc(S.livery.number)}"><span class="h">One or two letters or digits, like 07 or XM.</span></label>
+        <label class="f">Plate<input id="lv-number" class="field" type="text" maxlength="2" autocomplete="off" data-lv="number" value="${esc(S.livery.number)}"><span class="h">One or two letters or digits, like 07 or AB.</span></label>
         ${pairs.length ? `<div class="f">Ready-made colours<div class="swatches">${pairs.map(([main, second]) => `<button type="button" class="swatch" data-lv-pair="${esc(main)},${esc(second)}" style="--a:${esc(main)};--b:${esc(second)};" aria-label="Main ${esc(main)}, second ${esc(second)}"></button>`).join("")}</div></div>` : ""}
         <div class="livery-two">
           <label class="f">Main colour<span class="colour"><input type="color" id="lv-main-pick" data-lv="main" value="${esc(S.livery.main)}" aria-label="Pick the main colour"><input id="lv-main" class="field mono" type="text" maxlength="7" autocomplete="off" data-lv="main" value="${esc(S.livery.main)}"></span></label>

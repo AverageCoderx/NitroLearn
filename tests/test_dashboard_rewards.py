@@ -429,3 +429,18 @@ def test_the_reward_lists_sort_by_how_often_rewards_fire_and_hide_some(tmp_path:
         finally:
             browser.close()
     assert errors == []
+
+
+def test_a_reward_weight_with_a_decimal_comma_is_refused_not_made_bigger(tmp_path: Path) -> None:
+    """A weight typed as 0,5 was written as 5."""
+    runs = tmp_path / "runs"
+    RunFolder.create(runs, "r", PRESET)
+    api = Api(ROOT, runs)
+    entries = [{"from": e["from"], "view": e["view"]} for e in api.rewards("r")["rewards"]]
+    entries[0]["view"]["weight"] = "0,5"
+    staged = api.stage_rewards("r", entries)
+    assert staged["rewards"][0]["problems"], "the weight is named as wrong"
+    assert "fix these first" in api.apply("r")["error"]
+    entries[0]["view"]["weight"] = "1,000"
+    assert not api.stage_rewards("r", entries)["rewards"][0]["problems"], "a thousands comma still reads"
+    assert rewards.data_of(entries[0]["view"])["weight"] == 1000

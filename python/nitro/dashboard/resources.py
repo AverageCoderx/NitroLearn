@@ -87,7 +87,13 @@ def detect(path: Path) -> dict[str, Any]:
 
 
 def _toml(path: Path, out: dict[str, Any]) -> dict[str, Any]:
-    text = path.read_text(encoding="utf-8-sig")
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        return {
+            **out,
+            "problem": "It is not saved as UTF-8 (an editor saved it as ANSI): save it again as UTF-8.",
+        }
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as err:

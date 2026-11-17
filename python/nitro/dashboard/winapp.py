@@ -6,6 +6,7 @@ The Windows calls are made through `_dll`, and every one of them is optional: wh
 system, an older Windows or pywebview) the dashboard opens as before.
 
     python -m nitro.dashboard.winapp shortcuts --root <NitroLearn folder> --record <file.lnk> ...
+    python -m nitro.dashboard.winapp shortcuts --root <NitroLearn folder> --claim <file.lnk> [--desktop]
     python -m nitro.dashboard.winapp shortcuts --root <NitroLearn folder> --remove
     pythonw -m nitro.dashboard.winapp open
 
@@ -21,10 +22,11 @@ import contextlib
 import ctypes
 import inspect
 import json
+import ntpath
 import os
 import sys
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +39,12 @@ LOCK = "window.lock"  # held by the open dashboard; holds its process id and win
 SHOW_REQUEST = "show.request"  # a second start asks the open dashboard to come to the front
 POLL_SECONDS = 1.0
 SHORTCUTS = Path(".tools") / "shortcuts.json"  # in NitroLearn's folder
+# What the shortcuts open (tools/app_shortcuts.ps1 makes them so: keep them equal).
+OPEN_TARGET = Path(".venv") / "Scripts" / "pythonw.exe"
+OPEN_ARGUMENTS = "-m nitro.dashboard.winapp open"
+# Set by tools/app_shortcuts.ps1: what the shortcuts it looked at open (JSON), as Windows reads them.
+FOUND_VARIABLE = "NITRO_SHORTCUTS_FOUND"
+LEAVE_ALONE = 3  # `shortcuts --claim`'s exit code for a shortcut of that name that opens something else
 ROOT = Path(__file__).resolve().parents[3]  # NitroLearn's folder (python/nitro/dashboard/winapp.py)
 _LOCK_AT = 1 << 20  # the byte locked on Windows, past the record so others can still read it
 _SW_RESTORE = 9
@@ -250,30 +258,96 @@ def start(webview: Any, debug: bool) -> None:
     webview.start(**options)
 
 
-def record_shortcuts(root: Path, paths: Sequence[Path]) -> list[str]:
-    """Adds `paths` (shortcut files about to be made outside `root`) to the record in `root`; the record."""
+def record_shortcuts(root: Path, paths: Sequence[Path], desktop: bool = False) -> list[str]:
+    """Adds `paths` (shortcut files about to be made outside `root`) to the record in `root`; the record.
+    `desktop`: the path is the desktop shortcut (told apart from the Start menu one by the installer)."""
     file = root / SHORTCUTS
-    known = _recorded(file)
+    known, on_desktop = _recorded(file), _recorded_desktop(file)
     for path in paths:
         text = str(Path(path).absolute())
         if text not in known:
             known.append(text)
-    file.parent.mkdir(parents=True, exist_ok=True)
-    file.write_text(json.dumps({"shortcuts": known}, indent=2) + "\n", encoding="utf-8")
+        if desktop:
+            on_desktop = text
+    _write_record(file, known, on_desktop)
     return known
 
 
-def remove_shortcuts(root: Path) -> tuple[list[str], list[str]]:
-    """Deletes the shortcut files recorded in `root` and their record: (removed, could not be removed). Only
-    .lnk files are deleted; one already gone is dropped from the record without being reported as removed.
-    What could not be removed stays recorded."""
+def _same_path(one: str, other: str) -> bool:
+    return ntpath.normcase(ntpath.normpath(one)) == ntpath.normcase(ntpath.normpath(other))
+
+
+def own_shortcut(root: Path, target: str, arguments: str) -> bool:
+    """Whether a shortcut opening `target` with `arguments` is the one tools/app_shortcuts.ps1 makes for
+    `root`, or the one it made for a NitroLearn folder that is not there any more (moved)."""
+    if arguments.split() != OPEN_ARGUMENTS.split():
+        return False
+    if _same_path(target, str(root / OPEN_TARGET)):
+        return True
+    return _key(target).endswith("\\" + _key(OPEN_TARGET)) and not Path(target).exists()
+
+
+def found_shortcuts(text: str | None) -> dict[str, tuple[str, str]]:
+    """What the shortcuts tools/app_shortcuts.ps1 looked at open, from its JSON ({path: {target,
+    arguments}}): {normalized path: (target, arguments)}. Shortcuts it could not read are not in it."""
+    try:
+        data = json.loads(text or "{}")
+    except ValueError:
+        return {}
+    found: dict[str, tuple[str, str]] = {}
+    if isinstance(data, dict):
+        for path, link in data.items():
+            if isinstance(link, dict):
+                found[_key(path)] = (str(link.get("target") or ""), str(link.get("arguments") or ""))
+    return found
+
+
+def _key(path: object) -> str:
+    return ntpath.normcase(ntpath.normpath(str(path)))
+
+
+def _elsewhere(root: Path, path: str, found: Mapping[str, tuple[str, str]]) -> bool:
+    """Whether the shortcut at `path` was found opening something other than NitroLearn in `root`."""
+    link = found.get(_key(path))
+    return link is not None and not own_shortcut(root, *link)
+
+
+def claim_shortcut(
+    root: Path, link: Path, found: Mapping[str, tuple[str, str]], desktop: bool = False
+) -> bool:
+    """Whether to make the shortcut `link`: when it is missing or still NitroLearn's own, it is recorded and
+    made. A shortcut of that name that opens something else (the user's) is left alone and not recorded."""
+    text = str(Path(link).absolute())
+    if _elsewhere(root, text, found):
+        file = root / SHORTCUTS
+        known = [path for path in _recorded(file) if not _same_path(path, text)]
+        on_desktop = _recorded_desktop(file)
+        if known != _recorded(file):
+            _write_record(file, known, on_desktop if on_desktop in known else None)
+        return False
+    record_shortcuts(root, [link], desktop)
+    return True
+
+
+def remove_shortcuts(
+    root: Path, found: Mapping[str, tuple[str, str]] | None = None
+) -> tuple[list[str], list[str], list[str]]:
+    """Deletes the shortcut files recorded in `root` and their record: (removed, could not be removed, left
+    alone). Only .lnk files are deleted; one already gone is dropped from the record without being reported
+    as removed. One found opening something else (`found`: changed by the user) is left in place and
+    dropped from the record. What could not be removed stays recorded."""
     file = root / SHORTCUTS
     removed: list[str] = []
     kept: list[str] = []
+    left: list[str] = []
+    on_desktop = _recorded_desktop(file)
     for text in _recorded(file):
         path = Path(text)
         if path.suffix.lower() != ".lnk":
             continue  # not a shortcut: never deleted, and dropped from the record
+        if _elsewhere(root, text, found or {}):
+            left.append(text)
+            continue
         try:
             if path.exists():
                 path.unlink()
@@ -282,10 +356,18 @@ def remove_shortcuts(root: Path) -> tuple[list[str], list[str]]:
             kept.append(text)
     with contextlib.suppress(OSError):
         if kept:
-            file.write_text(json.dumps({"shortcuts": kept}, indent=2) + "\n", encoding="utf-8")
+            _write_record(file, kept, on_desktop if on_desktop in kept else None)
         else:
             file.unlink(missing_ok=True)
-    return removed, kept
+    return removed, kept, left
+
+
+def _write_record(file: Path, links: Sequence[str], desktop: str | None) -> None:
+    data: dict[str, object] = {"shortcuts": list(links)}
+    if desktop:
+        data["desktop"] = desktop
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 def _recorded(file: Path) -> list[str]:
@@ -294,6 +376,14 @@ def _recorded(file: Path) -> list[str]:
         return [str(item) for item in data.get("shortcuts", []) if isinstance(item, str)]
     except (OSError, ValueError, AttributeError):
         return []
+
+
+def _recorded_desktop(file: Path) -> str | None:
+    try:
+        desktop = json.loads(file.read_text(encoding="utf-8")).get("desktop")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return desktop if isinstance(desktop, str) else None
 
 
 def open_dashboard(root: Path = ROOT, start: Callable[[Sequence[str]], int] | None = None) -> int:
@@ -317,16 +407,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     shortcuts.add_argument("--root", type=Path, required=True, help="NitroLearn's folder")
     what = shortcuts.add_mutually_exclusive_group(required=True)
     what.add_argument("--record", type=Path, nargs="+", metavar="LNK", help="shortcut files about to be made")
+    what.add_argument(
+        "--claim",
+        type=Path,
+        metavar="LNK",
+        help=f"exit 0 and record LNK when it is to be made, {LEAVE_ALONE} when another shortcut is there",
+    )
     what.add_argument("--remove", action="store_true", help="delete the recorded shortcuts")
+    shortcuts.add_argument("--desktop", action="store_true", help="the shortcut is the desktop one")
     args = parser.parse_args(argv)
     if args.command == "open":
         return open_dashboard()
     if args.record:
-        record_shortcuts(args.root, args.record)
+        record_shortcuts(args.root, args.record, args.desktop)
         return 0
-    removed, kept = remove_shortcuts(args.root)
+    found = found_shortcuts(os.environ.get(FOUND_VARIABLE))
+    if args.claim:
+        return 0 if claim_shortcut(args.root, args.claim, found, args.desktop) else LEAVE_ALONE
+    removed, kept, left = remove_shortcuts(args.root, found)
     for text in removed:
         print(f"Removed {text}")
+    for text in left:
+        print(f"Left {text} in place: it was changed to open something else.")
     for text in kept:
         print(f"Could not remove {text}: delete it by hand.", file=sys.stderr)
     return 1 if kept else 0

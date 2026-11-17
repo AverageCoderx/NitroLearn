@@ -26,7 +26,7 @@ from nitro.model import build_networks
 from nitro.replay_mix import ReplayMix, shown
 from nitro.runs import RunFolder
 from nitro.training import TrainingRun
-from test_pretrain_large import lean_file
+from test_pretrain_large import lean_file, mark_fitted
 from test_replays import replicar_file
 
 MESHES = Path(os.environ.get("NITRO_TEST_MESHES", Path(__file__).parents[1] / "collision_meshes"))
@@ -61,10 +61,10 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(replays, "STORE_MIN_FREE", 0)
     replicar_file(tmp_path / "one.parquet")
     lean_file(tmp_path / "one.lean", *replays.read_replicar(tmp_path / "one.parquet"))
-    data = (tmp_path / "one.lean").read_bytes()
+    data = mark_fitted((tmp_path / "one.lean").read_bytes())  # as new conversions are
     for name in ("r0", "r1", "r2"):
-        assert replays.keep(data, name, 1)
-    return replays.store_folder()
+        assert replays.keep(data, name, 1, replays.store_folder(fit_timing=True))
+    return replays.store_folder(fit_timing=True)
 
 
 def settings(tmp_path: Path, mix: ReplayMixConfig = MIX, **sections: Any) -> NitroConfig:
@@ -491,10 +491,10 @@ def test_replays_of_a_size_that_cannot_fit_are_never_made_ready_and_failed_ones_
     from nitro import replay_mix
 
     for name in ("t0", "t1", "t2", "t3", "t4"):  # in a 2v2 folder: an unpadded 1v1 bot cannot use them
-        target = replays.stored(name, 2)
+        target = replays.stored(name, 2, store)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(replays.stored("r0", 1).read_bytes())
-    replays.stored("broken", 1).write_bytes(b"not a replay")
+        target.write_bytes(replays.stored("r0", 1, store).read_bytes())
+    replays.stored("broken", 1, store).write_bytes(b"not a replay")
     made: list[str] = []
     prepare = replay_mix._prepare
 

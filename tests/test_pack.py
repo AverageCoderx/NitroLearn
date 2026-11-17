@@ -728,3 +728,86 @@ def test_a_pack_names_no_folder_of_a_windows_computer() -> None:
     }
     for name in ("D:", "C:", "Temp", "pytest-of-sam", "Users", "Games", "\\"):
         assert name.lower() not in carried.lower(), name
+
+
+def test_a_replaced_bot_leaves_none_of_its_waiting_changes_to_the_one_added(tmp_path: Path) -> None:
+    """Replacing a bot by a packed one dropped only its waiting settings changes: its waiting reward and
+    start changes stayed and Apply would have written them into the added bot."""
+    from nitro.dashboard.api import Api
+    from test_dashboard import ROOT, make_bot
+
+    runs = tmp_path / "runs"
+    folder = make_bot(runs, "shown", saves=1)
+    archive, _ = pack.pack(folder.root, tmp_path / "shown.nitropack.zip")
+    api = Api(ROOT, runs)
+    assert "pending" in api.stage("shown", "ppo.policy_lr", "0.0002")
+    entries = [{"from": e["from"], "view": e["view"]} for e in api.rewards("shown")["rewards"]]
+    api.stage_rewards("shown", entries[1:])
+    api.stage_starts("shown", [])
+    waiting = api.bot("shown")
+    assert waiting["pending"] and waiting["reward_changes"] and waiting["start_changes"]
+    assert api.unpack_bot(str(archive), True)["unpacked"] == "shown"
+    added = api.bot("shown")
+    assert (added["pending"], added["reward_changes"], added["start_changes"]) == ({}, [], [])
+    assert Api(ROOT, runs).bot("shown")["reward_changes"] == [], "nor kept for the next window"
+
+
+def test_a_save_cut_short_is_not_the_one_a_pack_carries(tmp_path: Path) -> None:
+    """A newest save that does not read (a power cut while saving) is passed over, as a resume here passes
+    over it: the pack carries the newest save that reads, so the bot carries on there."""
+    from test_export import _saved_run
+
+    folder = _saved_run(tmp_path)
+    good = folder.load_latest()
+    assert good is not None
+    folder.save_checkpoint({**good, "agent_steps": 3_000_000}, 3_000_000, keep=5, milestone_steps=0)
+    newest = folder.complete_checkpoints()[-1] / "state.pt"
+    newest.write_bytes(newest.read_bytes()[:1000])
+    out, notes = pack.pack(folder.root, tmp_path / "bot.nitropack.zip")
+    assert pack.manifest(out)["saves"] == ["000002000000"]
+    assert any("3,000,000 agent steps cannot be read" in note for note in notes), notes
+    done = pack.unpack(out, tmp_path / "server" / "runs", project=tmp_path / "server", meshes=MESHES)
+    state = RunFolder(done.folder).load_latest()
+    assert state is not None and state["agent_steps"] == 2_000_000
+
+
+def test_a_pack_that_cannot_be_written_says_why_without_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from nitro.cli import main
+    from test_export import _saved_run
+
+    _saved_run(tmp_path)
+    to = tmp_path / "no-such-folder" / "bot.nitropack.zip"
+    assert main(["pack", "my-bot", "--runs", str(tmp_path / "runs"), "--to", str(to)]) == 1
+    assert "Cannot pack my-bot:" in capsys.readouterr().err
+    assert not to.parent.exists()
+
+
+def test_a_file_whose_name_cannot_travel_is_left_out_so_the_pack_unpacks(tmp_path: Path) -> None:
+    """A name with : or \\ (allowed on Linux, not on Windows) would make the other computer refuse the whole
+    pack: such a file is left out, with a note."""
+    from test_export import _saved_run
+
+    folder = _saved_run(tmp_path)
+    (folder.root / "notes: v2.txt").write_text("mine", encoding="utf-8")
+    (folder.root / "back\\slash.txt").write_text("mine", encoding="utf-8")
+    out, notes = pack.pack(folder.root, tmp_path / "bot.nitropack.zip")
+    assert any("notes: v2.txt" in note for note in notes) and any("back\\slash.txt" in n for n in notes)
+    done = pack.unpack(out, tmp_path / "server" / "runs", project=tmp_path / "server", meshes=MESHES)
+    assert RunFolder(done.folder).complete_checkpoints() and not (done.folder / "notes: v2.txt").exists()
+
+
+def test_a_data_file_whose_name_cannot_travel_is_refused_when_packing(tmp_path: Path) -> None:
+    """The settings need the file, so a name every unpack would refuse stops the pack here, not there."""
+    from test_export import _saved_run
+
+    folder = _saved_run(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "match 12:30.rlpr.zst").write_bytes(b"a recording")
+    starts = '[[state_setters]]\nname = "kickoff"\n[[state_setters]]\nname = "replay"\n'
+    starts += 'files = ["data/*.rlpr.zst"]\n'
+    folder.settings.write_text(folder.settings.read_text(encoding="utf-8") + starts, encoding="utf-8")
+    with pytest.raises(pack.PackError, match="match 12:30"):
+        pack.pack(folder.root, tmp_path / "bot.nitropack.zip")
+    assert not (tmp_path / "bot.nitropack.zip").exists()

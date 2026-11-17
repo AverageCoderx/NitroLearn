@@ -218,7 +218,7 @@ def _header(
             # The ball prediction's times: the bot asks RLBot for its prediction. Left out when off, so a
             # policy without it is written exactly as before.
             **({"ball_prediction": list(config.env.ball_prediction)} if config.env.ball_prediction else {}),
-            "action_masks": "standard",
+            "action_masks": config.env.action_masks,
             "team_size": config.env.team_size,
             "opponents": config.env.opponents,
             "tick_skip": config.env.tick_skip,
@@ -245,14 +245,22 @@ def _write(path: Path, header: dict[str, Any], weights: list[torch.Tensor]) -> N
     partial.replace(path)
 
 
+def _toml_string(text: str) -> str:
+    """`text` as a TOML basic string: quotes, backslashes and control characters escaped."""
+    escaped = "".join(
+        f"\\u{ord(c):04x}" if ord(c) < 0x20 or ord(c) == 0x7F else "\\" + c if c in '"\\' else c for c in text
+    )
+    return f'"{escaped}"'
+
+
 def _bot_toml(name: str, agent_id: str, description: str, team_size: int) -> str:
     tags = '["1v1"]' if team_size == 1 else '["teamplay"]'
     return f"""#:schema https://rlbot.org/schemas/agent.json
 # RLBot v5 bot settings, written by `nitro export`. RLBot reads this file to list and start the bot.
 
 [settings]
-name = "{name}"
-agent_id = "{agent_id}"
+name = {_toml_string(name)}
+agent_id = {_toml_string(agent_id)}
 loadout_file = "loadout.toml"
 # The bot program and the policy file next to this file; RLBot runs the command from this folder.
 run_command = "{BOT_CRATE}.exe policy.nwt"
@@ -261,7 +269,7 @@ run_command_linux = "./{BOT_CRATE} policy.nwt"
 hivemind = true
 
 [details]
-description = "{description}"
+description = {_toml_string(description)}
 developer = "NitroLearn"
 language = "rust"
 tags = {tags}

@@ -321,3 +321,29 @@ def test_the_transfer_switch_and_the_start_button_on_the_page(runs: Path) -> Non
             browser.close()
     assert errors == []
     assert bots.summary(RunFolder(runs / "second"))["start_word"] == "Carry on training"
+
+
+def test_a_copy_of_an_unpacked_bot_keeps_its_settings_files_when_the_original_is_renamed(
+    tmp_path: Path,
+) -> None:
+    """An unpacked bot's settings read files in its own folder (settings-files): the copy gets its own, so
+    it still reads them once the original is renamed or deleted."""
+    from nitro import pack
+    from test_export import _saved_run
+
+    folder = _saved_run(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "match.rlpr.zst").write_bytes(b"a recording")
+    starts = '[[state_setters]]\nname = "kickoff"\n[[state_setters]]\nname = "replay"\n'
+    starts += 'files = ["data/match.rlpr.zst"]\n'
+    folder.settings.write_text(folder.settings.read_text(encoding="utf-8") + starts, encoding="utf-8")
+    out, _ = pack.pack(folder.root, tmp_path / "bot.nitropack.zip")
+    runs = tmp_path / "server" / "runs"
+    pack.unpack(out, runs, project=tmp_path / "server", meshes=tmp_path / "meshes")
+    api = Api(ROOT, runs)
+    assert api.copy_bot("my-bot", "second", False)["made"] == "second"
+    assert api.rename_bot("my-bot", "renamed") == {"renamed": "renamed"}
+    second = RunFolder(runs / "second")
+    files = [file for setter in second.load_settings().state_setters for file in getattr(setter, "files", ())]
+    assert files and all(file.is_relative_to(second.root.resolve()) for file in files)
+    assert files[0].read_bytes() == b"a recording"

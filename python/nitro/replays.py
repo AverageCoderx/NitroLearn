@@ -461,11 +461,12 @@ def replicar_tool() -> Path:
     return tool
 
 
-def convert(tool: Path, replay: Path, parquet: Path, meshes: Path) -> str | None:
+def convert(tool: Path, replay: Path, parquet: Path, meshes: Path, fit_timing: bool = False) -> str | None:
     """None when it worked, else the reason: the tool's last line (which never holds a player's name), without
-    the replay's folder or name."""
+    the replay's folder or name. `fit_timing`: nitro-replicar's timing fit after the conversion."""
     done: subprocess.CompletedProcess[str] = subprocess.run(
-        [str(tool), "convert", str(replay), "-o", str(parquet), "--meshes", str(meshes)],
+        [str(tool), "convert", str(replay), "-o", str(parquet), "--meshes", str(meshes)]
+        + (["--fit-timing"] if fit_timing else []),
         capture_output=True,
         text=True,
         check=False,
@@ -617,10 +618,25 @@ NO_KICKOFF = "no-kickoff"  # a replay whose teams cannot be told apart: never co
 
 # The converted replays: each replay as nitro-replicar converted it, compressed, in its game size's
 # folder, so no copy and no bot converts a replay twice. It holds no bot's settings: every bot makes its own
-# samples from it in a moment. A new replicar version starts a new folder.
-def store_folder() -> Path:
-    """The store: replays\\store\\replicar-<version>, its game sizes' folders inside."""
-    return OUT / "store" / f"replicar-{REPLICAR_VERSION}"
+# samples from it in a moment. A new replicar version starts a new folder, and so do conversions with the
+# timing fit (its version in the name), so fitted and unfitted conversions are never mixed.
+TIMING_FIT_VERSION = 1  # crates/nitro_replicar/src/fit.rs VERSION
+
+
+def store_folder(fit_timing: bool = False) -> Path:
+    """The store: replays\\store\\replicar-<version>[-timing-fit-<n>], its game sizes' folders inside."""
+    fitted = f"-timing-fit-{TIMING_FIT_VERSION}" if fit_timing else ""
+    return OUT / "store" / f"replicar-{REPLICAR_VERSION}{fitted}"
+
+
+def timing_fitted(data: bytes) -> bool:
+    """Whether a nitro-replicar file's bytes were made with the timing fit (its header says so)."""
+    size = struct.unpack_from("<I", data, 8)[0]
+    return "timing_fit" in json.loads(data[12 : 12 + size])
+
+
+def _store_fitted(store: Path) -> bool:
+    return store.name.endswith(f"-timing-fit-{TIMING_FIT_VERSION}")
 
 
 STORED = ".nrpl.zst"  # 8 bytes (the file's size, little-endian) and then a zstd frame of the file
@@ -650,6 +666,8 @@ def keep(data: bytes, stem: str, size: int, store: Path | None = None) -> bool:
 
     import pyarrow as pa
 
+    if timing_fitted(data) != _store_fitted(store or store_folder()):
+        raise ValueError("a conversion kept in the store of the other timing (fitted or not)")
     folder = (store or store_folder()) / f"{size}v{size}"
     folder.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(folder).free < STORE_MIN_FREE + len(data):
@@ -662,13 +680,16 @@ def keep(data: bytes, stem: str, size: int, store: Path | None = None) -> bool:
     return True
 
 
-def read_stored(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """A kept conversion as `read_lean` reads the file it was made from."""
+def read_stored(path: Path, fit_timing: bool | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A kept conversion as `read_lean` reads the file it was made from; with `fit_timing` set, refused when
+    it was made otherwise."""
     import pyarrow as pa
 
     data = path.read_bytes()
-    raw = pa.Codec("zstd").decompress(data[8:], struct.unpack_from("<Q", data)[0], asbytes=True)
-    return lean_arrays(bytes(raw))
+    raw = bytes(pa.Codec("zstd").decompress(data[8:], struct.unpack_from("<Q", data)[0], asbytes=True))
+    if fit_timing is not None and timing_fitted(raw) != fit_timing:
+        raise ValueError("a kept conversion of the other timing (fitted or not)")
+    return lean_arrays(raw)
 
 
 def store_summary(store: Path | None = None) -> dict[str, Any]:
@@ -876,6 +897,9 @@ class Job:
     softness: float
     lean: bool = False  # `tool` is nitro-replicar (pretrain.converter = "nitro")
     store: Path | None = None  # where a nitro-replicar conversion is kept for later copies
+    # nitro-replicar's timing fit (pretrain.fit_timing): a kept conversion of the other timing is refused;
+    # None takes any (replays in training, from folders the user may name).
+    fit_timing: bool | None = None
 
 
 # What `_core.replay_samples` takes per car (the layout in nitro_core::replicar): replicar's columns and their
@@ -972,7 +996,7 @@ def prepare(job: Job) -> Prepared:
     try:
         if job.kept.is_file() and job.kept.name.endswith(STORED):
             out.size = job.kept_size
-            arrays, players = read_stored(job.kept)
+            arrays, players = read_stored(job.kept, job.fit_timing)
             part = _core.replay_samples(
                 *core_columns(arrays, players), "the replay", job.settings_json, job.softness
             )
@@ -985,7 +1009,7 @@ def prepare(job: Job) -> Prepared:
             part = _core.demonstrations(str(job.kept), job.settings_json, job.softness, compact=True)
         else:
             converted = job.work / f"{job.replay.stem}{'.lean' if job.lean else '.parquet'}"
-            problem = convert(job.tool, job.replay, converted, job.meshes)
+            problem = convert(job.tool, job.replay, converted, job.meshes, bool(job.fit_timing))
             if problem:
                 out.problem = problem
                 for left in (converted, converted.with_name(converted.name + ".partial")):
@@ -1065,10 +1089,17 @@ class Converting:
         }
 
 
-def converted_before(stem: str, sizes: Sizes, store: Path | None = None) -> bool:
-    """In the store, kept as a recording, or known to have no kickoff."""
+def converted_before(stem: str, sizes: Sizes, store: Path | None = None, reconvert: bool = False) -> bool:
+    """In the store, kept as a recording, or known to have no kickoff. For the store of fitted conversions,
+    a replay kept without the fit (in the other store or as a recording) counts as converted too, unless
+    `reconvert`: then only a fitted conversion counts."""
+    store = store or store_folder()
+    if sizes.known.get(stem) == NO_KICKOFF or find_stored(stem, store=store) is not None:
+        return True
+    if _store_fitted(store) and reconvert:
+        return False
     recorded = any((OUT / f"{n}v{n}" / f"{stem}.rlpr.zst").is_file() for n in (1, 2, 3, 4))
-    return recorded or sizes.known.get(stem) == NO_KICKOFF or find_stored(stem, store=store) is not None
+    return recorded or (_store_fitted(store) and find_stored(stem, store=store_folder()) is not None)
 
 
 def lower_priority() -> None:
@@ -1085,9 +1116,10 @@ def lower_priority() -> None:
 def _convert_one(
     tool: Path, replay: Path, work: Path, meshes: Path, store: Path
 ) -> tuple[str, str | None, bool]:
-    """Converts one replay into the store: (its game size or why not, the reason it failed, kept)."""
+    """Converts one replay into the store (with the timing fit when it is the fitted store): (its game size or
+    why not, the reason it failed, kept)."""
     converted = work / f"{replay.stem}.lean"
-    problem = convert(tool, replay, converted, meshes)
+    problem = convert(tool, replay, converted, meshes, _store_fitted(store))
     if problem:
         converted.unlink(missing_ok=True)
         converted.with_name(converted.name + ".partial").unlink(missing_ok=True)
@@ -1099,6 +1131,8 @@ def _convert_one(
         return "", f"unreadable converted file: {type(err).__name__} {str(err)[:150]}", False
     finally:
         converted.unlink(missing_ok=True)
+    if timing_fitted(data) != _store_fitted(store):
+        return "", "the converter did not make the timing asked for (fitted or not)", False
     size = team_size(players)
     if not has_kickoff(arrays, players):
         return NO_KICKOFF, None, False
@@ -1137,15 +1171,19 @@ def convert_to_store(
     store: Path | None = None,
     say: Callable[[str], None] = print,
     live: Path | None = None,
+    fit_timing: bool = False,
+    reconvert: bool = False,
 ) -> Converting:
     """Converts the replays in `sources` (newest first, at most `limit`, 0 = all) that are not in the store
     yet, `workers` at once (0 = every thread of this PC), keeping each in the store and noting its size.
-    Refused while another pass converts into the same store."""
+    `fit_timing`: with the timing fit, into its own store; a replay kept before without the fit is left as
+    it is unless `reconvert`, which converts it again with the fit. Refused while another pass converts
+    into the same store."""
     if not (meshes / "soccar").is_dir():
         raise ReplayError(f"the arena meshes were not found in {meshes} (paths.collision_meshes)")
-    store = store or store_folder()
+    store = store or store_folder(fit_timing)
     with _one_pass(store / "pass.lock"):
-        return _convert_to_store(sources, meshes, limit, workers, store, say, live)
+        return _convert_to_store(sources, meshes, limit, workers, store, say, live, reconvert)
 
 
 def _convert_to_store(
@@ -1156,6 +1194,7 @@ def _convert_to_store(
     store: Path,
     say: Callable[[str], None],
     live: Path | None,
+    reconvert: bool = False,
 ) -> Converting:
     import concurrent.futures
 
@@ -1165,7 +1204,7 @@ def _convert_to_store(
     status.found = len(found)
     OUT.mkdir(parents=True, exist_ok=True)
     sizes = Sizes(OUT)
-    todo = [p for p in found if not converted_before(p.stem, sizes, store)]
+    todo = [p for p in found if not converted_before(p.stem, sizes, store, reconvert)]
     before = len(found) - len(todo)
     todo = todo[:limit] if limit else todo
     status.todo = len(todo)
@@ -1187,7 +1226,7 @@ def _convert_to_store(
         return status
     tool = nitro_replicar_tool()
     # Its own folder: pretraining converts into OUT / "converted" at the same time.
-    work = OUT / "converted" / "store-pass"
+    work = OUT / "converted" / ("store-pass-fitted" if _store_fitted(store) else "store-pass")
     work.mkdir(parents=True, exist_ok=True)
     for left in [*work.glob("*.partial"), *work.glob("*.lean")]:
         left.unlink(missing_ok=True)  # a stopped pass's files

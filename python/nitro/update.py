@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
+import http.client
 import importlib.util
 import io
 import json
@@ -286,7 +287,7 @@ def latest(get: Fetch | None = None) -> Release:
         answer = (get or fetch)(LATEST, CHECK_SECONDS)
     except urllib.error.HTTPError as err:
         raise UpdateError(_http_problem(err, what)) from None
-    except (urllib.error.URLError, OSError) as err:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
         raise UpdateError(
             f"{what}: GitHub cannot be reached ({_reason(err)}). Check the connection."
         ) from None
@@ -536,19 +537,20 @@ def copy_release(root: Path, new: Path, old: Path | None, backup: Path, say: Say
     differs from the new release only in them is left as it is. Without `old` nothing is removed."""
     kept = Kept.read(root / ".gitignore", new / ".gitignore")
     out = Copied(backup=str(backup))
-    for file in sorted(path for path in new.rglob("*") if path.is_file()):
+
+    def copy(file: Path) -> None:
         rel = file.relative_to(new).as_posix()
         if kept.covers(rel):
             out.kept.append(rel)
-            continue
+            return
         target = root / rel
         if target.is_dir() or any(parent.is_file() for parent in target.parents if root in parent.parents):
             out.kept.append(rel)  # a file or folder of the user's stands where the release has one
-            continue
+            return
         if target.is_file():
             current = target.read_bytes()
             if same_content(current, file.read_bytes()):
-                continue
+                return
             base = None if old is None else old / rel
             if base is None or not base.is_file() or not same_content(base.read_bytes(), current):
                 saved = backup / rel
@@ -559,8 +561,16 @@ def copy_release(root: Path, new: Path, old: Path | None, backup: Path, say: Say
         else:
             out.added.append(rel)
         _write(target, file)
+
+    # The file that says the folder's version (Cargo.toml) goes last, after the removals: an update stopped
+    # part way leaves the folder at its old version, so the next update finishes it.
+    version = new / "Cargo.toml"
+    for file in sorted(path for path in new.rglob("*") if path.is_file() and path != version):
+        copy(file)
     if old is not None:
         remove_dropped(root, new, old, kept, backup, out)
+    if version.is_file():
+        copy(version)
     gone = f"removed {len(out.removed)} the new version no longer has" if out.removed else "removed none"
     say(f"Copied {len(out.changed)} changed and {len(out.added)} new files; {gone}.")
     return out
@@ -606,7 +616,7 @@ def update_files(
         new = unpack(get(ARCHIVE.format(version=release.version), DOWNLOAD_SECONDS), work / "new")
     except urllib.error.HTTPError as err:
         raise UpdateError(_http_problem(err, "The release could not be downloaded")) from None
-    except (urllib.error.URLError, OSError) as err:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
         raise UpdateError(
             f"The release could not be downloaded ({_reason(err)}). Check the connection. Nothing was "
             "changed."
@@ -614,7 +624,7 @@ def update_files(
     old: Path | None
     try:
         old = unpack(get(ARCHIVE.format(version=installed), DOWNLOAD_SECONDS), work / "old")
-    except (urllib.error.URLError, OSError, UpdateError):
+    except (urllib.error.URLError, OSError, http.client.HTTPException, UpdateError):
         old = None
         say(
             f"The files of {installed} could not be downloaded to compare with: every file of NitroLearn's "
@@ -622,6 +632,13 @@ def update_files(
         )
     try:
         return copy_release(root, new, old, root / REPLACED / installed, say)
+    except OSError as err:
+        where = Path(err.filename).name if err.filename else "a file"
+        raise UpdateError(
+            f"The update stopped part way: {where} could not be written ({err.strerror or err}). Close "
+            "any program that may be using it (an editor, for example), then update again: that finishes the "
+            "update. Your bots and settings were not touched."
+        ) from None
     finally:
         for folder in (work / "new", work / "old"):
             shutil.rmtree(folder, ignore_errors=True)
@@ -715,7 +732,9 @@ def installer_command(root: Path, windows: bool = WINDOWS, dev: bool = False) ->
 
 
 def _quoted(text: str) -> str:
-    return "'" + text.replace("'", "''") + "'"
+    """`text` as a PowerShell '...' string. PowerShell takes the typographic quotes U+2018 to U+201B for '
+    too (a folder named with one), so each of them is doubled as well."""
+    return "'" + re.sub("(['\u2018-\u201b])", r"\1\1", text) + "'"
 
 
 def finisher_command(

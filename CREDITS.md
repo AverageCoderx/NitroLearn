@@ -64,6 +64,21 @@ next to the release's ready-made programs, and in every exported bot folder (`NO
   (c) 2026 samuelkassi; the licence's text is in `LICENSES/walldashcoach-MIT.txt`. The `wall_dash` reward
   (`crates/nitro_core/src/custom/library/wall_dash.rs`) uses its rules: what counts as a made dash,
   the timing and flip angle bands, the speed window, the wall types, chains and the spam guard.
+- **GigaLearn** (GigaLearnCPP-Leak, ZealanL, commit 86e11c3; no licence file; its use was cleared:
+  "gigalearn is open source and you can use it how you like"; `LICENSES/GigaLearn-notice.md`) — for bots
+  brought over from GigaLearn: the `AdvancedObs` and `DefaultObs` layouts and scales (`obs.rs`,
+  `gigalearn_advanced`, `gigalearn_default`, with the boost pads in `CommonValues::BOOST_LOCATIONS`' order),
+  `DefaultAction`'s masks (`actions.rs`, `gigalearn`), and the `CommonRewards.h` formulas NitroLearn lacked
+  (VelocityReward, VelocityBallToGoalReward's ownGoal, StrongTouchReward, TouchAccelReward, WavedashReward,
+  BumpedPenalty, DemoedPenalty: `custom/library/gigalearn_common.rs`), all written again in Rust; and for
+  `nitro import-gigalearn` (`python/nitro/gigalearn_import.py`): the save format and the policy's masking
+  rule (`Util/Models.cpp`, `PPO/PPOLearner.cpp`, `Learner.cpp`, `Util/WelfordStat.h`) and the settings'
+  defaults (`LearnerConfig.h`, `PPOLearnerConfig.h`).
+- **AdvancedObsPadderGGL, a community GigaLearn observation** — its author let it be used: the
+  `gigalearn_padder` observation (`obs.rs`), and the same bots' KickoffProximityReward and
+  SpeedTowardsOpponentReward (`custom/library/kickoff_proximity.rs`, `speed_towards_opponent.rs`), written
+  again in Rust, their C++ copied unchanged into the import's test project (`tests/fixtures/gigalearn/`;
+  `LICENSES/GigaLearn-notice.md`).
 - **Muon** (`python/nitro/muon.py`) — Keller Jordan's optimizer, written from its public description; the
   Newton-Schulz coefficients (3.4445, −4.7750, 2.0315) are the published ones.
 - **Game constants** shared with RLGym's common values: max car speed 2300, max ball speed 6000, back of the

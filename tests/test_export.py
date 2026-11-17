@@ -168,6 +168,15 @@ def test_export_copies_the_release_s_ready_made_bot_program(
     assert "could not be built" not in (out / "README.md").read_text(encoding="utf-8")
 
 
+def test_bot_toml_keeps_any_name_and_description_as_written() -> None:
+    import tomllib
+
+    for name in ['The "Fast" Bot', "back\\slash", "tab\there", "plain"]:
+        settings = tomllib.loads(export._bot_toml(name, "nitrolearn/x", f"run {name}", 2))
+        assert settings["settings"]["name"] == name
+        assert settings["details"]["description"] == f"run {name}"
+
+
 def test_export_without_a_save_is_refused(tmp_path: Path) -> None:
     settings = tmp_path / "bot.toml"
     settings.write_text("[run]\n", encoding="utf-8")

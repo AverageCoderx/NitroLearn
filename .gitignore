@@ -51,3 +51,4 @@ python/nitro/THIRD_PARTY_NOTICES.md
 # A folder of the release's files for an offline install (the installers read it), and the setup's log
 /release-files/
 /install-log.txt
+tools/gigalearn_fixture/make_fixture

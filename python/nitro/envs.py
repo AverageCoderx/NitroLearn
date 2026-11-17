@@ -103,7 +103,7 @@ def core_settings(config: NitroConfig) -> str:
             "observation": env.observation,
             "obs_team_size": observation_room(config),
             **({"ball_prediction": list(env.ball_prediction)} if env.ball_prediction else {}),
-            "action_masks": "standard",
+            "action_masks": env.action_masks,
             "terminals": dataclasses.asdict(config.terminals),
             "rewards": [core_reward(reward) for reward in config.active_rewards],
             "state_setters": setters,

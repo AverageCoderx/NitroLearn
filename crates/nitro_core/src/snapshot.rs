@@ -185,6 +185,9 @@ pub struct CarEvents {
     pub touched_ball: bool,
     pub bumped_opponent: bool,
     pub demoed_opponent: bool,
+    /// Was bumped, or demolished, by an opponent (the other car of `bumped_opponent`, `demoed_opponent`).
+    pub bumped_by_opponent: bool,
+    pub demoed_by_opponent: bool,
     /// Bumped a teammate, or was bumped by one (both cars of the bump).
     pub bumped_teammate: bool,
     /// On some tick the car was on the floor: a wheel on an arena surface facing up (normal z > 0.7) less

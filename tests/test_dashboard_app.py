@@ -333,7 +333,7 @@ def test_shortcut_record_and_removal(tmp_path: Path) -> None:
     record = root / winapp.SHORTCUTS
     assert json.loads(record.read_text(encoding="utf-8")) == {"shortcuts": [str(start), str(desktop)]}
     desktop.unlink()  # already deleted by the user: dropped from the record, not reported as removed
-    assert winapp.remove_shortcuts(root) == ([str(start)], [])
+    assert winapp.remove_shortcuts(root) == ([str(start)], [], [])
     assert not start.exists() and not record.exists()
     assert winapp.main(["shortcuts", "--root", str(root), "--remove"]) == 0  # nothing recorded: nothing to do
 
@@ -345,10 +345,93 @@ def test_shortcut_removal_deletes_only_shortcuts(tmp_path: Path) -> None:
     stuck = tmp_path / "folder.lnk"
     stuck.mkdir()  # cannot be deleted as a file
     winapp.record_shortcuts(root, [keep, stuck])
-    removed, kept = winapp.remove_shortcuts(root)
+    removed, kept, _ = winapp.remove_shortcuts(root)
     assert removed == [] and kept == [str(stuck)]
     assert keep.read_text(encoding="utf-8") == "mine"
     assert json.loads((root / winapp.SHORTCUTS).read_text(encoding="utf-8")) == {"shortcuts": [str(stuck)]}
+
+
+def _found(target: str, arguments: str = winapp.OPEN_ARGUMENTS) -> dict[str, str]:
+    return {"target": target, "arguments": arguments}
+
+
+def test_a_shortcut_named_nitrolearn_that_opens_something_else_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tools/app_shortcuts.ps1 reads what the shortcuts there open (Windows only) and asks before making
+    each: a missing one, or one that still opens this NitroLearn, is recorded and made; one that opens
+    something else is left alone and not recorded, so uninstalling never deletes it."""
+    root = tmp_path / "NitroLearn"
+    ours = str(root / winapp.OPEN_TARGET)
+    start, desktop = tmp_path / "Start" / "NitroLearn.lnk", tmp_path / "Desktop" / "NitroLearn.lnk"
+    for link in (start, desktop):
+        link.parent.mkdir()
+        link.write_bytes(b"lnk")
+    record = root / winapp.SHORTCUTS
+
+    def claim(link: Path, found: dict[str, dict[str, str]], *more: str) -> int:
+        monkeypatch.setenv(winapp.FOUND_VARIABLE, json.dumps(found))
+        return winapp.main(["shortcuts", "--root", str(root), "--claim", str(link), *more])
+
+    # The user's own shortcut of that name: kept and not recorded.
+    assert claim(start, {str(start): _found("C:/Games/other.exe")}) == winapp.LEAVE_ALONE
+    assert not record.exists()
+    # The same program with other arguments is not NitroLearn's either.
+    assert claim(start, {str(start): _found(ours, "-m something else")}) == winapp.LEAVE_ALONE
+    # Missing, or still NitroLearn's (letter case and spacing aside): recorded, to be made.
+    assert claim(desktop, {}, "--desktop") == 0
+    assert claim(start, {str(start): _found(ours.upper(), "  -m nitro.dashboard.winapp   open ")}) == 0
+    assert json.loads(record.read_text(encoding="utf-8")) == {
+        "shortcuts": [str(desktop), str(start)],
+        "desktop": str(desktop),
+    }
+    # Changed by the user since: the next install forgets it rather than replacing it.
+    assert claim(start, {str(start): _found("C:/Games/other.exe")}) == winapp.LEAVE_ALONE
+    assert json.loads(record.read_text(encoding="utf-8"))["shortcuts"] == [str(desktop)]
+    assert start.exists()
+
+
+def test_removing_leaves_a_recorded_shortcut_the_user_changed(tmp_path: Path) -> None:
+    root = tmp_path / "NitroLearn"
+    start, desktop = tmp_path / "Start" / "NitroLearn.lnk", tmp_path / "Desktop" / "NitroLearn.lnk"
+    for link in (start, desktop):
+        link.parent.mkdir()
+        link.write_bytes(b"lnk")
+    winapp.record_shortcuts(root, [start])
+    winapp.record_shortcuts(root, [desktop], desktop=True)
+    found = winapp.found_shortcuts(json.dumps({str(desktop).upper(): _found("C:/elsewhere.exe")}))
+    assert winapp.remove_shortcuts(root, found) == ([str(start)], [], [str(desktop)])
+    assert not start.exists() and desktop.exists() and not (root / winapp.SHORTCUTS).exists()
+    # Unreadable (not in what was found): NitroLearn's, removed as before.
+    assert winapp.found_shortcuts("not json") == {} and winapp.found_shortcuts(None) == {}
+
+
+def test_a_shortcut_left_by_a_moved_folder_is_replaced_and_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The folder was moved (as the installer advises for a OneDrive folder or a long path): its shortcuts
+    still open NitroLearn's dashboard from the old place, where nothing is any more. They are NitroLearn's,
+    so the install replaces them and uninstalling deletes them; another NitroLearn copy that is still there
+    is left alone."""
+    root, old, other = tmp_path / "NitroLearn", tmp_path / "Old NitroLearn", tmp_path / "Other NitroLearn"
+    (other / winapp.OPEN_TARGET).parent.mkdir(parents=True)
+    (other / winapp.OPEN_TARGET).write_bytes(b"exe")
+    start = tmp_path / "Start" / "NitroLearn.lnk"
+    start.parent.mkdir()
+    start.write_bytes(b"lnk")
+    moved = {str(start): _found(str(old / winapp.OPEN_TARGET))}
+    monkeypatch.setenv(winapp.FOUND_VARIABLE, json.dumps(moved))
+    assert winapp.main(["shortcuts", "--root", str(root), "--claim", str(start)]) == 0
+    assert winapp.remove_shortcuts(root, winapp.found_shortcuts(json.dumps(moved))) == ([str(start)], [], [])
+    assert not start.exists()
+    start.write_bytes(b"lnk")
+    there = {str(start): _found(str(other / winapp.OPEN_TARGET))}
+    monkeypatch.setenv(winapp.FOUND_VARIABLE, json.dumps(there))
+    assert winapp.main(["shortcuts", "--root", str(root), "--claim", str(start)]) == winapp.LEAVE_ALONE
+    # Something else that is not there any more is not NitroLearn's.
+    gone = {str(start): _found(str(tmp_path / "gone.exe"))}
+    monkeypatch.setenv(winapp.FOUND_VARIABLE, json.dumps(gone))
+    assert winapp.main(["shortcuts", "--root", str(root), "--claim", str(start)]) == winapp.LEAVE_ALONE
 
 
 def test_scripts_agree_with_the_app() -> None:
@@ -357,7 +440,10 @@ def test_scripts_agree_with_the_app() -> None:
     assert f"$AppId = '{winapp.APP_ID}'" in script
     assert "python\\nitro\\brand\\icon.ico" in script
     # Windowless: pythonw.exe itself is the target, never cmd.exe with a console window behind the app.
-    assert "::Make($Link, $Windowless, '-m nitro.dashboard.winapp open', $Root, $icon" in script
+    assert "::Make($Link, $Windowless, $OpenArguments, $Root, $icon" in script
+    assert f"$OpenArguments = '{winapp.OPEN_ARGUMENTS}'" in script
+    assert f"$LeaveAlone = {winapp.LEAVE_ALONE}" in script and f"$env:{winapp.FOUND_VARIABLE} = " in script
+    assert "$Windowless = Join-Path $Root '" + str(winapp.OPEN_TARGET).replace("/", "\\") + "'" in script
     assert "cmd.exe" not in script
     # Add-Type's compiler cannot write into a TEMP whose path has letters outside the ANSI code page: it
     # compiles in a plain-letter TEMP, and TEMP is put back.

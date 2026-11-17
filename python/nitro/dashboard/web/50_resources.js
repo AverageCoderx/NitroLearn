@@ -97,6 +97,7 @@ function convertHTML() {
   const c = S.conv, n = x => Number(x || 0).toLocaleString("en-US"), gb = b => (Number(b || 0) / 2 ** 30).toFixed(1);
   const counts = Object.entries((c.store || {}).counts || {}).filter(([, v]) => v > 0);
   const kept = counts.reduce((a, [, v]) => a + v, 0);
+  const counts0 = Object.entries(c.unfitted || {}).filter(([, v]) => v > 0), older = counts0.reduce((a, [, v]) => a + v, 0);
   const list = c.folders || [], key = JSON.stringify(list), counted = S.cvCount && S.cvCount.key === key ? S.cvCount.out : null;
   if (!counted && S.cvCounting !== key) countConvert(list);
   const rows = list.map((f, i) => { const one = counted && counted.folders[i]; return `<div class="cp-folder"><span class="mono grow" title="${esc(f)}">${esc(f)}</span><span class="muted">${one ? (one.missing ? "not found" : n(one.replays) + " replays") : "counting…"}</span><button type="button" class="btn small" data-act="cv-remove" data-i="${i}" ${c.state === "running" ? "disabled" : ""}>Remove</button></div>`; }).join("");
@@ -114,10 +115,12 @@ function convertHTML() {
   const stat = (k, v) => `<div class="stat"><div class="k">${k}</div><div class="v display">${v}</div></div>`;
   return `<section id="convert"><div class="heading"><h2 class="display">Converted replays</h2><span class="muted grow">Replays are converted once and kept, for every bot that learns from them.</span></div>
    <div class="card pad rw-panel res-card">
-    <div class="row" style="gap:12px 34px;align-items:flex-end;">${stat("Kept", n(kept))}${stat("Their size", gb((c.store || {}).bytes) + " GB")}${stat("Free on the disk", gb((c.store || {}).free) + " GB")}</div>
-    <div class="ink2" style="font-size:13px;max-width:110ch;">Converting a replay (re-simulating it to recover every press) is the slow part of learning from replays. Every replay converted, here or by any bot's replay copy, is kept by game size, and every copy uses the kept ones first, so no replay is ever converted twice. Converting here learns nothing: it uses all ${n(c.threads)} threads of this PC at low priority, so the PC stays usable. About 8-10 MB a 5-minute replay.</div>
+    <div class="row" style="gap:12px 34px;align-items:flex-end;">${stat("Kept (timing fit)", n(kept))}${stat("Their size", gb((c.store || {}).bytes) + " GB")}${stat("Free on the disk", gb((c.store || {}).free) + " GB")}</div>
+    <div class="ink2" style="font-size:13px;max-width:110ch;">Converting a replay (re-simulating it to recover every press, then fitting on which tick each press and update took effect) is the slow part of learning from replays. Every replay converted, here or by any bot's replay copy, is kept by game size, and every copy uses the kept ones first, so no replay is converted twice. Converting here learns nothing: it uses all ${n(c.threads)} threads of this PC at low priority, so the PC stays usable. About 8-10 MB a 5-minute replay.</div>
     ${counts.length ? `<div class="chips">${counts.map(([k, v]) => `<span class="chip">${esc(k)}: ${n(v)}</span>`).join("")}</div>` : ""}
     <div class="cp-list" style="max-width:860px;"><span class="cap muted">Folders to convert</span>${rows}${own}<div class="row"><button type="button" class="btn small" data-act="cv-add" ${running ? "disabled" : ""}>Add a folder…</button>${counted && list.length > 1 ? `<span class="muted">${n(counted.total)} replays in all</span>` : ""}</div></div>
+    ${older ? `<div class="muted" style="font-size:13px;max-width:110ch;">Kept before without the timing fit: ${n(older)} (${counts0.map(([k, v]) => esc(k) + " " + n(v)).join(", ")}), for the bots made before it. Converting leaves them as they are unless you tick the box below.</div>
+    <label class="row" style="font-size:13px;gap:8px;"><input type="checkbox" id="cv-reconvert" data-act="cv-reconvert" ${c.reconvert ? "checked" : ""} ${running ? "disabled" : ""}> Also convert those again, with the timing fit, so new bots can use them. This takes hours for a big store: roughly 10 seconds a replay on a fast PC converting 10 at once (about 12 hours for 40,000).</label>` : ""}
     <div class="row"><label class="muted" for="cv-limit" style="font-size:13px;">How many (newest first; empty for all)</label><input id="cv-limit" class="field" style="width:110px;" inputmode="numeric" value="${esc(c.limit || "")}" ${running ? "disabled" : ""}>
       <span class="grow"></span>${running ? '<button type="button" class="btn" data-act="cv-stop">Stop</button>' : '<button type="button" class="btn primary" data-act="cv-start">Convert</button>'}</div>
     ${words ? `<div class="${c.state === "failed" ? "banner bad" : "muted"}" style="font-size:13px;">${esc(words)}</div>` : ""}
@@ -163,12 +166,15 @@ ACTIONS["cv-start"] = async () => {
   const raw = ($("#cv-limit").value || "").trim().replace(/[,_ ]/g, "");
   if (raw && !/^\d+$/.test(raw)) return toast("How many: a whole number, or empty for all.", true);
   S.conv.limit = raw;
-  const out = await call("convert_start", S.conv.folders || [], Number(raw || 0));
+  const again = $("#cv-reconvert");
+  S.conv.reconvert = !!(again && again.checked);
+  const out = await call("convert_start", S.conv.folders || [], Number(raw || 0), S.conv.reconvert);
   if (out.error) return toast(out.error, true);
   toast("Converting replays (learning nothing)…");
   S.conv.state = "running"; S.conv.text = ""; S.conv.next = 0; S.conv.progress = null;
   return renderConvert();
 };
+ACTIONS["cv-reconvert"] = el => { S.conv.reconvert = el.checked; };
 ACTIONS["cv-stop"] = async () => { const out = await call("stop_job", ".convert", "convert"); if (out.error) return toast(out.error, true); toast("Stopped. What was converted is kept."); return loadConverting(); };
 ACTIONS["res-build"] = async () => {
   const out = await call("build_rust");

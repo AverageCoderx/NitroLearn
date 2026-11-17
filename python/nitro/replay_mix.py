@@ -99,10 +99,12 @@ def team_sizes(config: NitroConfig) -> tuple[int, ...]:
 
 
 def folders(config: NitroConfig) -> list[Path]:
-    """The folders the replays come from: those named, or the store's folder of each game size."""
+    """The folders the replays come from: those named, or the store's folder of each game size (the store of
+    timing-fitted conversions with pretrain.fit_timing)."""
     if config.replay_mix.replays:
         return list(config.replay_mix.replays)
-    return [replays.store_folder() / f"{n}v{n}" for n in team_sizes(config)]
+    store = replays.store_folder(config.pretrain.fit_timing)
+    return [store / f"{n}v{n}" for n in team_sizes(config)]
 
 
 def files_in(places: list[Path]) -> list[Path]:

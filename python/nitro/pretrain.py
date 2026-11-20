@@ -569,7 +569,7 @@ def _measure_packed(
 
 def previous_action(config: NitroConfig) -> slice:
     """Where the previous action (8 numbers) sits in the run's observation (nitro_core::obs)."""
-    if config.env.observation.startswith("gigalearn"):
+    if config.env.is_gigalearn:
         return slice(9, 17)  # GigaLearn's observations: the ball (9 numbers), then the previous action
     start = config_parts(config)[0] + 34  # the ball (and its prediction), then the 34 boost pads
     return slice(start, start + 8)

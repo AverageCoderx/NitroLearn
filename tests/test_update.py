@@ -712,7 +712,7 @@ def test_the_installer_runs_as_the_install_scripts_run_it(tmp_path: Path) -> Non
     assert "'C:/Sam\u2019\u2019s \u2018\u2018bots\u201b\u201b'" in curly
 
     assert update.reopen_command(["dashboard", "--runs", "runs"], "/v/bin/python") == [
-        "/v/bin/python",
+        str(Path("/v/bin/python")),
         "-m",
         "nitro",
         "dashboard",

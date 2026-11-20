@@ -210,7 +210,7 @@ def test_every_library_file_opens_with_what_it_pays_and_its_credits() -> None:
         assert "Adapted from Necto" in text and "CC BY-NC-SA 4.0" in text, name
         assert "https://creativecommons.org/licenses/by-nc-sa/4.0/" in text, name
     apache = sorted(name for name, text in headers.items() if "rlgym-sim" in text)
-    assert apache == ["align_ball_goal.rs", "ball_y_coordinate.rs"]
+    assert apache == ["align_ball_goal.rs", "ball_y_coordinate.rs", "rlgym_common.rs"]
     for name in apache:
         assert "Apache License, Version 2.0" in headers[name] and "Modified:" in headers[name], name
     credited = {

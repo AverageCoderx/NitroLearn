@@ -1520,6 +1520,72 @@ MORE: dict[str, str] = {
         "\n"
         "Measured: not measured."
     ),
+    "rlgym_goal": (
+        "What it does: pays team_goal on the step the car's team scores and concede on the step the other team scores (use a negative concede to punish it).\n"
+        "\n"
+        "When to use it: a bot brought over from RLGym-PPO with nitro import-rlgym, where it was EventReward's team_goal and concede parts.\n"
+        "\n"
+        "How to use it:\n"
+        "- team_goal: paid when the car's team scores.\n"
+        "- concede: paid when the other team scores, usually negative.\n"
+        "- Weight: an event reward, around 10 next to small every-step rewards.\n"
+        "\n"
+        "Watch out for: every car of the team is paid, whoever scored. From rlgym-sim's EventReward. Changed: nothing.\n"
+        "\n"
+        "Measured: unit tests."
+    ),
+    "rlgym_touch_start": (
+        "What it does: pays 1 on a step the car touches the ball after a step it did not, so holding the ball on the car (a dribble) pays only once.\n"
+        "\n"
+        "When to use it: a bot brought over from RLGym-PPO, where it was EventReward's touch part.\n"
+        "\n"
+        "How to use it:\n"
+        "- No settings of its own; the weight is all there is.\n"
+        "- Weight: per touch; the import writes EventReward's touch weight times its CombinedReward weight.\n"
+        "\n"
+        "Watch out for: for a reward of every touch, use 'touch_ball'. From rlgym-sim's EventReward. Changed: nothing.\n"
+        "\n"
+        "Measured: unit tests."
+    ),
+    "rlgym_boost_gain": (
+        "What it does: pays the boost the car picked up this step as a share of a full tank: a big pad up to 1, a small pad 0.12; using boost pays nothing.\n"
+        "\n"
+        "When to use it: a bot brought over from RLGym-PPO, where it was EventReward's boost_pickup part.\n"
+        "\n"
+        "How to use it:\n"
+        "- No settings of its own; the weight is all there is.\n"
+        "- Weight: small, around 0.1 to 1.\n"
+        "\n"
+        "Watch out for: a big pad picked up with a nearly full tank pays only what was gained. From rlgym-sim's EventReward. Changed: nothing.\n"
+        "\n"
+        "Measured: unit tests."
+    ),
+    "rlgym_liu_distance_player_to_ball": (
+        "What it does: pays every step: exp(-0.5 x (the car's distance to the ball less the ball's radius, 92.75) / 2,300), 1 at the ball's surface and falling off with distance.\n"
+        "\n"
+        "When to use it: a bot brought over from RLGym-PPO, where it was LiuDistancePlayerToBallReward.\n"
+        "\n"
+        "How to use it:\n"
+        "- No settings of its own; the weight is all there is.\n"
+        "- Weight: every step, so keep it small, around 0.01 to 0.1.\n"
+        "\n"
+        "Watch out for: it pays being near the ball, not doing anything with it. From rlgym-sim. Changed: nothing.\n"
+        "\n"
+        "Measured: unit tests."
+    ),
+    "rlgym_liu_distance_ball_to_goal": (
+        "What it does: pays every step: exp(-0.5 x the ball's distance to the back of the net the car attacks / 6,000), less the net's depth and the ball's radius; with own_goal = true, the net it defends.\n"
+        "\n"
+        "When to use it: a bot brought over from RLGym-PPO, where it was LiuDistanceBallToGoalReward.\n"
+        "\n"
+        "How to use it:\n"
+        "- own_goal: false aims at the net the car attacks (RLGym's default), true at the one it defends (use a negative weight).\n"
+        "- Weight: every step, small.\n"
+        "\n"
+        "Watch out for: it pays whoever is on the car's team for where the ball is, touched or not. From rlgym-sim. Changed: nothing.\n"
+        "\n"
+        "Measured: unit tests."
+    ),
 }
 
 
@@ -2610,6 +2676,53 @@ NERD: dict[str, str] = {
         'name = "speed_towards_opponent"\n'
         "weight = 1\n"
         "scale = 1\n"
+        "```"
+    ),
+    "rlgym_goal": (
+        "On the step a goal is scored: team_goal when the car's team scored it, concede when the other team did (rlgym-sim's EventReward: the rise of each team's score); else 0.\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "rlgym_goal"\n'
+        "team_goal = 1.0\n"
+        "concede = -1.0\n"
+        "weight = 1.0\n"
+        "```"
+    ),
+    "rlgym_touch_start": (
+        "1 on a step the car touches the ball after a step it did not (EventReward's touch: the rise of ball_touched, remembered per car); else 0.\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "rlgym_touch_start"\n'
+        "weight = 1.0\n"
+        "```"
+    ),
+    "rlgym_boost_gain": (
+        "max(0, (boost now - boost a step ago) / 100): a big pad up to 1, a small one 0.12 (EventReward's boost_pickup).\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "rlgym_boost_gain"\n'
+        "weight = 1.0\n"
+        "```"
+    ),
+    "rlgym_liu_distance_player_to_ball": (
+        "Every step: exp(-0.5 x (|ball - car| - 92.75) / 2300) (rlgym-sim's LiuDistancePlayerToBallReward).\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "rlgym_liu_distance_player_to_ball"\n'
+        "weight = 1.0\n"
+        "```"
+    ),
+    "rlgym_liu_distance_ball_to_goal": (
+        "Every step: exp(-0.5 x (|ball - back of the net| - (6000 - 5120 + 92.75)) / 6000), the net the car attacks, or the one it defends with own_goal = true (rlgym-sim's LiuDistanceBallToGoalReward).\n"
+        "\n"
+        "```toml\n"
+        "[[rewards]]\n"
+        'name = "rlgym_liu_distance_ball_to_goal"\n'
+        "weight = 1.0\n"
         "```"
     ),
 }

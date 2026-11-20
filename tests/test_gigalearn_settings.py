@@ -52,7 +52,7 @@ def test_the_padders_room_is_obs_team_size_and_the_other_copies_take_none() -> N
     assert observation_size(config) == 237
     for observation in ("gigalearn_advanced", "gigalearn_default"):
         issues = issues_of(f'[env]\nobs_team_size = 2\nobservation = "{observation}"\n')
-        assert "'native', 'nitro_v2' or 'gigalearn_padder'" in issues["env.obs_team_size"], issues
+        assert "'native', 'nitro_v2' or a padder observation" in issues["env.obs_team_size"], issues
     with pytest.raises(ValueError, match="gigalearn_padder"):
         _core.observation_layout_of("gigalearn_default", 1, True, 2)
 

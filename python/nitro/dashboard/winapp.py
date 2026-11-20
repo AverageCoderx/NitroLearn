@@ -44,6 +44,7 @@ OPEN_TARGET = Path(".venv") / "Scripts" / "pythonw.exe"
 OPEN_ARGUMENTS = "-m nitro.dashboard.winapp open"
 # Set by tools/app_shortcuts.ps1: what the shortcuts it looked at open (JSON), as Windows reads them.
 FOUND_VARIABLE = "NITRO_SHORTCUTS_FOUND"
+CARRY_ON_ENTRY = "NitroLearn carry on training"  # nitro.keeper's start-up entries are named so
 LEAVE_ALONE = 3  # `shortcuts --claim`'s exit code for a shortcut of that name that opens something else
 ROOT = Path(__file__).resolve().parents[3]  # NitroLearn's folder (python/nitro/dashboard/winapp.py)
 _LOCK_AT = 1 << 20  # the byte locked on Windows, past the record so others can still read it
@@ -306,10 +307,25 @@ def _key(path: object) -> str:
     return ntpath.normcase(ntpath.normpath(str(path)))
 
 
+def _carry_on_entry(root: Path, path: str, target: str, arguments: str) -> bool:
+    """Whether `path` is the start-up entry nitro.keeper made for `root` (run.auto_restart): it runs `nitro
+    carry-on` with root's nitro.cmd or Python, or with one that is not there any more (moved)."""
+    if (
+        not ntpath.basename(path).lower().startswith(CARRY_ON_ENTRY.lower())
+        or "carry-on" not in arguments.split()[:3]
+    ):
+        return False
+    if any(
+        _same_path(target, str(root / own)) for own in ("nitro.cmd", Path(".venv") / "Scripts" / "python.exe")
+    ):
+        return True
+    return not Path(target).exists()
+
+
 def _elsewhere(root: Path, path: str, found: Mapping[str, tuple[str, str]]) -> bool:
     """Whether the shortcut at `path` was found opening something other than NitroLearn in `root`."""
     link = found.get(_key(path))
-    return link is not None and not own_shortcut(root, *link)
+    return link is not None and not own_shortcut(root, *link) and not _carry_on_entry(root, path, *link)
 
 
 def claim_shortcut(
@@ -333,9 +349,9 @@ def remove_shortcuts(
     root: Path, found: Mapping[str, tuple[str, str]] | None = None
 ) -> tuple[list[str], list[str], list[str]]:
     """Deletes the shortcut files recorded in `root` and their record: (removed, could not be removed, left
-    alone). Only .lnk files are deleted; one already gone is dropped from the record without being reported
-    as removed. One found opening something else (`found`: changed by the user) is left in place and
-    dropped from the record. What could not be removed stays recorded."""
+    alone). Only shortcuts (.lnk) and start-up entries (.desktop) are deleted; one already gone is dropped
+    from the record without being reported as removed. One found opening something else (`found`: changed
+    by the user) is left in place and dropped from the record. What could not be removed stays recorded."""
     file = root / SHORTCUTS
     removed: list[str] = []
     kept: list[str] = []
@@ -343,7 +359,7 @@ def remove_shortcuts(
     on_desktop = _recorded_desktop(file)
     for text in _recorded(file):
         path = Path(text)
-        if path.suffix.lower() != ".lnk":
+        if path.suffix.lower() not in (".lnk", ".desktop"):
             continue  # not a shortcut: never deleted, and dropped from the record
         if _elsewhere(root, text, found or {}):
             left.append(text)
@@ -368,6 +384,22 @@ def _write_record(file: Path, links: Sequence[str], desktop: str | None) -> None
         data["desktop"] = desktop
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def forget_shortcut(root: Path, path: Path) -> None:
+    """Drops `path` (deleted, or never made) from the record in `root`."""
+    file = root / SHORTCUTS
+    text = str(Path(path).absolute())
+    known = _recorded(file)
+    if text not in known:
+        return
+    kept = [item for item in known if item != text]
+    on_desktop = _recorded_desktop(file)
+    with contextlib.suppress(OSError):
+        if kept:
+            _write_record(file, kept, on_desktop if on_desktop in kept else None)
+        else:
+            file.unlink(missing_ok=True)
 
 
 def _recorded(file: Path) -> list[str]:

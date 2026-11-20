@@ -7,6 +7,7 @@ iteration ten and at iteration a million.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import html
 import json
@@ -232,14 +233,7 @@ class MetricsLog:
                             continue
                         writer.writerow(row)
                         self._sample(row)
-        for attempt in range(10):  # Windows refuses the swap while another program has it open for a moment
-            try:
-                os.replace(partial, path)
-                break
-            except PermissionError:
-                if attempt == 9:
-                    raise
-                time.sleep(0.1)
+        _swap(partial, path)
         self._file = path.open("a", newline="", encoding="utf-8")
         self._writer = csv.DictWriter(self._file, fieldnames=columns)
 
@@ -255,6 +249,39 @@ class MetricsLog:
         self._file.flush()
         self._sample(row)
 
+    def compact(self, max_bytes: float) -> bool:
+        """When the file is over `max_bytes`, keeps every other row (the first and the newest always),
+        unchanged (run.metrics_max_mb). The report's thinned samples keep the same points: they are the
+        rows at a power-of-two stride, which halving the rows halves. True when it compacted."""
+        self._file.flush()
+        if self.path.stat().st_size <= max_bytes:
+            return False
+        self._file.close()
+        partial = self.path.with_name(self.path.name + ".partial")
+        samples = {column: _Sample() for column in self.samples}
+        done = False
+        try:
+            with self.path.open(encoding="utf-8") as file:
+                rows = [row for row in csv.DictReader(file) if None not in row.values()]
+            kept = [row for i, row in enumerate(rows) if i % 2 == 0 or i == len(rows) - 1]
+            with partial.open("w", newline="", encoding="utf-8") as out:
+                writer = csv.DictWriter(out, fieldnames=self.columns, extrasaction="ignore")
+                writer.writeheader()
+                for row in kept:
+                    writer.writerow(row)
+            _swap(partial, self.path)
+            done = True
+        except OSError:  # held open by another program (Windows), or a full disk: left as it is, tried again
+            with contextlib.suppress(OSError):  # at the next save; training goes on
+                partial.unlink(missing_ok=True)
+        if done:
+            self.samples = samples
+            for row in kept:
+                self._sample(row)
+        self._file = self.path.open("a", newline="", encoding="utf-8")
+        self._writer = csv.DictWriter(self._file, fieldnames=self.columns)
+        return done
+
     def close(self) -> None:
         self._file.close()
 
@@ -263,6 +290,17 @@ class MetricsLog:
         partial = path.with_name(path.name + ".partial")
         partial.write_text(_report(title, list(notes), list(warnings), self.samples), encoding="utf-8")
         os.replace(partial, path)
+
+
+def _swap(partial: Path, path: Path) -> None:
+    for attempt in range(10):  # Windows refuses the swap while another program has it open for a moment
+        try:
+            os.replace(partial, path)
+            return
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(0.1)
 
 
 def _nice(value: float) -> str:

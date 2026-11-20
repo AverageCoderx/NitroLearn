@@ -24,13 +24,14 @@ from nitro.config import NitroConfig
 from nitro.envs import EnvPool, probe_config
 from nitro.model import attention_encoder, build_networks
 from nitro.ppo import masked_log_probs
-from nitro.runs import actions_problem
+from nitro.runs import actions_problem, numbered
 from nitro.viewer import feed
 from nitro.viewer import recording as layouts
 
 # The frame layout the core writes (nitro_core::capture): a head, then one block per car.
 LAYOUT = layouts.FORMAT
 HEAD, CAR = layouts.HEAD, layouts.CAR
+MOMENT = layouts.MOMENT  # numbers in a car's moment (nitro_core::snapshots::COLUMNS)
 
 
 @dataclass
@@ -41,6 +42,8 @@ class Recording:
     tick_skip: int
     decisions: list[list[Any]]  # per decision: [frame, [value, sure, randomness, action(, looks)] per car]
     attention: dict[str, Any] | None = None  # with an attention network: {"labels": what each share is}
+    rewards: Rewards | None = None  # with `rewards`: what each reward paid each car in every step
+    moments: np.ndarray | None = None  # with `moments`: [decisions, cars, 41] each car's moment at a decision
 
     @property
     def cars(self) -> int:
@@ -57,7 +60,23 @@ class Recording:
             title=title,
             subtitle=subtitle,
             attention=self.attention,
+            rewards=self.rewards.data() if self.rewards is not None else None,
+            moments=self.moments,
         )
+
+
+@dataclass
+class Rewards:
+    """What each of the run's rewards paid each car in every step of a watched game (after zero-sum and
+    weight, as the learner is paid): `pay[step, reward, car]`, the step ending at frame `frames[step]`."""
+
+    labels: list[str]
+    frames: list[int]
+    pay: np.ndarray  # [steps, rewards, cars] float32
+    total: np.ndarray  # [steps, cars] float32: each car's reward for the step, as the learner got it
+
+    def data(self) -> dict[str, Any]:
+        return {"labels": self.labels, "frames": self.frames, "pay": layouts.pack_floats(self.pay)}
 
 
 class WatchError(Exception):
@@ -68,7 +87,9 @@ class Game:
     """One arena played on the CPU by the policy in `state` (a checkpoint), one decision at a time; captured
     `fps` times per second of game time (at most 120, the physics rate). `start` holds the first frame."""
 
-    def __init__(self, config: NitroConfig, state: dict[str, Any], seed: int, fps: int = 60) -> None:
+    def __init__(
+        self, config: NitroConfig, state: dict[str, Any], seed: int, fps: int = 60, rewards: bool = False
+    ) -> None:
         if problem := actions_problem(state["learner"]["model"]):
             raise ValueError(f"{problem}.")
         self.envs = EnvPool(probe_config(config, seed), pin_memory=False)
@@ -100,6 +121,9 @@ class Game:
                 "NitroLearn again to rebuild the core)."
             )
         self.frames = 1  # captured so far
+        self.reward_labels = numbered(self.envs.reward_labels) if rewards else None
+        if rewards:
+            self.envs.keep_reward_parts(0)
         self.attention: dict[str, Any] | None = None
         if encoder is not None:
             labels = encoder.attention_labels()
@@ -109,6 +133,16 @@ class Game:
                 "talk": hasattr(encoder, "talk_weights"),
                 "targets": [attention_targets(labels, teams, c) for c in range(self.cars)],
             }
+
+    def moments(self) -> list[list[float]]:
+        """Every car's moment now (`EnvPool.moments`): call before `decide` for the moment it decides in."""
+        return self.envs.moments(0)
+
+    def step_pay(self) -> tuple[np.ndarray, np.ndarray]:
+        """What each reward paid each car in the step `decide` just played, [rewards, cars], and each car's
+        reward as the learner got it, [cars]."""
+        parts = np.asarray(self.envs.reward_parts(0), dtype=np.float32)
+        return parts.reshape(-1, self.cars), self.tensors.reward.numpy().copy()
 
     @torch.no_grad()
     def decide(self) -> tuple[list[Any], list[float]]:
@@ -142,18 +176,56 @@ class Game:
         return decision, new
 
 
-def record(config: NitroConfig, state: dict[str, Any], seconds: float, seed: int, fps: int = 60) -> Recording:
+def record(
+    config: NitroConfig,
+    state: dict[str, Any],
+    seconds: float,
+    seed: int,
+    fps: int = 60,
+    rewards: bool = False,
+    moments: bool = False,
+) -> Recording:
     """One game of `seconds`, played on the CPU with the policy in `state` (a checkpoint), captured `fps`
-    times per second of game time (at most 120, the physics rate)."""
-    game = Game(config, state, seed, fps)
+    times per second of game time (at most 120, the physics rate). With `rewards`, the recording keeps what
+    each reward paid each car in every step; with `moments`, each car's whole moment at every decision (what
+    a `snapshots` start holds). Neither changes the game played."""
+    game = Game(config, state, seed, fps, rewards=rewards)
     flat = list(game.start)
     decisions = []
+    pay: list[np.ndarray] = []
+    totals: list[np.ndarray] = []
+    ends: list[int] = []
+    kept: list[list[list[float]]] = []
     for _ in range(round(seconds * 120 / game.tick_skip)):
+        if moments:
+            kept.append(game.moments())
         decision, frames = game.decide()
         decisions.append(decision)
         flat += frames
+        if rewards:
+            parts, total = game.step_pay()
+            pay.append(parts)
+            totals.append(total)
+            ends.append(game.frames - 1)
     frames_array = np.asarray(flat, dtype=np.float32).reshape(-1, game.width)
-    return Recording(frames_array, game.pads, game.every, game.tick_skip, decisions, game.attention)
+    timeline = None
+    if game.reward_labels is not None:
+        timeline = Rewards(
+            game.reward_labels,
+            ends,
+            np.asarray(pay, dtype=np.float32).reshape(len(ends), len(game.reward_labels), game.cars),
+            np.asarray(totals, dtype=np.float32).reshape(len(ends), game.cars),
+        )
+    return Recording(
+        frames_array,
+        game.pads,
+        game.every,
+        game.tick_skip,
+        decisions,
+        game.attention,
+        timeline,
+        np.asarray(kept, dtype=np.float32).reshape(-1, game.cars, MOMENT) if moments else None,
+    )
 
 
 class Live:
@@ -238,13 +310,17 @@ def page(
     follow: bool = False,
     arena: str | None = None,
     arena_src: str | None = None,
+    run: str | None = None,
 ) -> str:
     """The viewer's page for `recording`; with `follow`, the page loads itself again at the end of each
     game so it picks up the newest recording (`nitro watch --follow`). `arena` and `arena_src` are
-    `nitro.viewer.page`'s: the arena's meshes inside the page, or the address of their script file."""
+    `nitro.viewer.page`'s: the arena's meshes inside the page, or the address of their script file.
+    `run`: the run's name, for the practice command the page offers."""
     data = recording.data(title, subtitle)
     if follow:
         data["follow"] = True
+    if run:
+        data["run"] = run  # for the practice command the page offers
     return viewer.page(data, arena=arena, arena_src=arena_src)
 
 

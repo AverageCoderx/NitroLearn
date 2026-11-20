@@ -323,9 +323,12 @@ def test_the_space_needed_is_said_the_same_everywhere() -> None:
     menu = steps.part_text(found, {}, "gpu")
     assert "(9 GB on disk; off: for the processor, 1.5 GB)" in menu
     readme = (PROJECT / "README.md").read_text(encoding="utf-8")
-    assert menu.replace(found.card, "<your NVIDIA card>") in readme, "the README shows the menu's line"
-    assert "About 10 GB of free disk space (about 2 GB without an NVIDIA card)" in readme
-    assert "3.5 GB to download and 10 GB on disk" in readme and "about 9 GB or 1.5 GB" in readme
+    install = (PROJECT / "docs" / "guide" / "getting-started.md").read_text(encoding="utf-8")
+    assert menu.replace(found.card, "<your NVIDIA card>") in install, "the handbook shows the menu's line"
+    for text in (readme, install):
+        assert "About 10 GB of free disk space (about 2 GB without an NVIDIA card)" in text
+        assert "3.5 GB to download and 10 GB on disk" in text
+    assert "about 9 GB or 1.5 GB" in install
 
 
 def test_the_licence_page_puts_fair_play_and_the_short_terms_first(tmp_path: Path) -> None:

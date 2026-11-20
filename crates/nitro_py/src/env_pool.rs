@@ -113,6 +113,14 @@ pub(crate) struct PyEpisodeRecord {
     goal: i8,
     ball_first_touch: f32,
     kickoff: i8,
+    start_ball_x: f32,
+    start_ball_y: f32,
+    start_ball_z: f32,
+    start_ball_speed: f32,
+    start_car_speed: f32,
+    start_car_z: f32,
+    start_facing: f32,
+    start_distance: f32,
 }
 
 impl From<EpisodeRecord> for PyEpisodeRecord {
@@ -130,6 +138,14 @@ impl From<EpisodeRecord> for PyEpisodeRecord {
             goal: record.goal,
             ball_first_touch: record.ball_first_touch,
             kickoff: record.kickoff,
+            start_ball_x: record.start.ball_x,
+            start_ball_y: record.start.ball_y,
+            start_ball_z: record.start.ball_z,
+            start_ball_speed: record.start.ball_speed,
+            start_car_speed: record.start.car_speed,
+            start_car_z: record.start.car_z,
+            start_facing: record.start.facing,
+            start_distance: record.start.distance,
         }
     }
 }
@@ -455,6 +471,13 @@ impl PyEnvPool {
         self.submit(py, group, Work::Step)
     }
 
+    /// Every arena of `group`'s whole game state, one after another (`nitro_core::env::Env::write_state`'s
+    /// layout), for checks made outside the core. Call between steps.
+    fn game_states(&self, group: usize) -> PyResult<Vec<f32>> {
+        self.shape(group)?;
+        Ok(self.pool.game_states(group))
+    }
+
     /// Waits until `group` has finished; until then its tensors must not be read or written. With the card
     /// starting the group's steps, wait for the card first (its host node has then run).
     fn wait(&self, py: Python<'_>, group: usize) -> PyResult<()> {
@@ -501,6 +524,28 @@ impl PyEnvPool {
             .map_err(PyValueError::new_err)
     }
 
+    /// Hands arena `arena`'s cars of team `team` (0 Blue, 1 Orange) to the scripted benchmark opponent
+    /// `script` (`nitro_core::scripted`), or back to the policy with None. Call between steps.
+    #[pyo3(signature = (arena, team, script=None))]
+    fn set_scripted(&self, arena: usize, team: u8, script: Option<&str>) -> PyResult<()> {
+        let team = match team {
+            0 => nitro_core::snapshot::Team::Blue,
+            1 => nitro_core::snapshot::Team::Orange,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "team {other}: 0 (Blue) or 1 (Orange)"
+                )));
+            }
+        };
+        let script = script
+            .map(nitro_core::scripted::Script::parse)
+            .transpose()
+            .map_err(PyValueError::new_err)?;
+        self.pool
+            .set_scripted(arena, team, script)
+            .map_err(PyValueError::new_err)
+    }
+
     /// Starts writing viewer frames for `arena` every `every_ticks` physics ticks, beginning with
     /// the current state; returns the boost pads as (x, y, z, big). Call between steps.
     fn start_capture(
@@ -518,6 +563,28 @@ impl PyEnvPool {
     fn take_capture(&self, py: Python<'_>, arena: usize) -> PyResult<Vec<f32>> {
         let pool = &self.pool;
         py.detach(|| pool.take_capture(arena))
+            .map_err(PyValueError::new_err)
+    }
+
+    /// Every car's moment in `arena` now, as a `snapshots` start holds it (41 numbers, as Blue sees it).
+    fn moments(&self, py: Python<'_>, arena: usize) -> PyResult<Vec<Vec<f32>>> {
+        let pool = &self.pool;
+        py.detach(|| pool.moments(arena))
+            .map(|all| all.iter().map(|m| m.to_vec()).collect())
+            .map_err(PyValueError::new_err)
+    }
+
+    /// Keeps each reward term's pay to each car of `arena`'s steps, or stops.
+    fn keep_reward_parts(&self, py: Python<'_>, arena: usize, on: bool) -> PyResult<()> {
+        let pool = &self.pool;
+        py.detach(|| pool.keep_reward_parts(arena, on))
+            .map_err(PyValueError::new_err)
+    }
+
+    /// Each reward term's pay to each car of `arena` in its last step, flat `[term * cars + car]`.
+    fn reward_parts(&self, py: Python<'_>, arena: usize) -> PyResult<Vec<f32>> {
+        let pool = &self.pool;
+        py.detach(|| pool.reward_parts(arena))
             .map_err(PyValueError::new_err)
     }
 

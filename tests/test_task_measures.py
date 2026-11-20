@@ -77,7 +77,7 @@ def test_every_task_file_loads_and_matches_its_task(name: str) -> None:
     task = TASKS[name]
     config = task.settings()
     assert config.problems() == []
-    assert config.env.opponents == task.against_untrained
+    assert config.env.opponents == task.duel
     assert len(task.metrics) >= 1 and task.smallest_difference > 0 and task.steps > 0
     setters = {type(setter) for setter in config.state_setters}
     if name == "shot":

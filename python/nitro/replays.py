@@ -977,8 +977,11 @@ def compact_arrays(part: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
 
 def _reason(err: BaseException, job: Job) -> str:
     """Why a replay failed, grouped by reason in the copy's details: without its name or folders."""
-    text = str(err).replace(str(job.kept), "its kept recording")
-    names = {str(job.replay), str(job.replay.parent)} | (
+    text = str(err)
+    for kept in (str(job.kept), job.kept.as_posix()):
+        text = text.replace(kept, "its kept recording")
+    # Both slash styles: on Windows some libraries' messages write the path with forward slashes.
+    names = {str(job.replay), str(job.replay.parent), job.replay.as_posix(), job.replay.parent.as_posix()} | (
         {job.replay.stem} if len(job.replay.stem) >= 8 else set()
     )
     for spelling in sorted(names, key=len, reverse=True):  # the longest first: the path before its folder

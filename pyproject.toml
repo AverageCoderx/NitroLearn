@@ -53,6 +53,8 @@ include = [{ path = "python/nitro/THIRD_PARTY_NOTICES.md", format = "wheel" }]
 testpaths = ["tests"]
 
 [tool.ruff]
+# Copied third-party code and its test project keep their own style.
+extend-exclude = ["python/nitro/rlgym_reference", "tests/fixtures/rlgym"]
 line-length = 110
 target-version = "py311"
 src = ["python", "tests"]
@@ -67,6 +69,12 @@ extend-immutable-calls = ["nitro.config.loader.setting", "nitro.config.loader.se
 [tool.mypy]
 strict = true
 files = ["python/nitro", "tools"]
+exclude = ["^python/nitro/rlgym_reference/"]
+
+[[tool.mypy.overrides]]
+# RLGym's own code, copied unchanged for the import's parity check (python/nitro/rlgym_reference), is untyped.
+module = ["nitro.rlgym_import"]
+disallow_untyped_calls = false
 
 [[tool.mypy.overrides]]
 # pyarrow ships no type information (tools/replays.py only).

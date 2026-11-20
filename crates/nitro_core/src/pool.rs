@@ -507,6 +507,17 @@ impl EnvPool {
         self.shared.groups.len()
     }
 
+    /// Every arena of `group` as `Env::write_state` writes it, one after another. Call between steps.
+    pub fn game_states(&self, group: usize) -> Vec<f32> {
+        let mut out = Vec::new();
+        for env in &self.shared.groups[group] {
+            env.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .write_state(&mut out);
+        }
+        out
+    }
+
     pub fn shape(&self, group: usize) -> BufferShape {
         BufferShape {
             agents: self.shared.rows[group].last().copied().unwrap_or(0),
@@ -613,6 +624,24 @@ impl EnvPool {
             .set_counted(counted)
     }
 
+    /// Hands arena `arena`'s cars of `team` to a scripted benchmark opponent, or back to the policy
+    /// with None. Call between steps.
+    pub fn set_scripted(
+        &self,
+        arena: usize,
+        team: crate::snapshot::Team,
+        script: Option<crate::scripted::Script>,
+    ) -> Result<(), String> {
+        let groups = &self.shared.groups;
+        let env = groups[arena % groups.len()]
+            .get(arena / groups.len())
+            .ok_or_else(|| format!("there is no arena {arena}"))?;
+        env.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_scripted(team, script);
+        Ok(())
+    }
+
     pub fn snapshot(&self, arena: usize) -> Result<GameSnapshot, String> {
         let groups = &self.shared.groups;
         let env = groups[arena % groups.len()]
@@ -646,6 +675,21 @@ impl EnvPool {
     /// The viewer frames `arena` wrote since the last call (`capture`).
     pub fn take_capture(&self, arena: usize) -> Result<Vec<f32>, String> {
         self.with_env(arena, Env::take_capture)
+    }
+
+    /// Every car's moment in `arena` now (`Env::moments`); call between steps.
+    pub fn moments(&self, arena: usize) -> Result<Vec<[f32; 41]>, String> {
+        self.with_env(arena, |env| env.moments())
+    }
+
+    /// Keeps each reward term's pay to each car of `arena`'s steps, or stops (`Env::keep_reward_parts`).
+    pub fn keep_reward_parts(&self, arena: usize, on: bool) -> Result<(), String> {
+        self.with_env(arena, |env| env.keep_reward_parts(on))
+    }
+
+    /// Each reward term's pay to each car of `arena` in its last step, `[term * cars + car]`.
+    pub fn reward_parts(&self, arena: usize) -> Result<Vec<f32>, String> {
+        self.with_env(arena, |env| env.reward_parts())
     }
 
     pub fn num_actions(&self) -> usize {

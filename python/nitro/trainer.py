@@ -184,6 +184,8 @@ class Trainer:
         self.device = device
         self.fp16 = fp16
         self.selfplay = selfplay
+        # Rows learned from without self-play (None: all); a practice drill leaves its scripted cars out.
+        self.learner_rows: torch.Tensor | None = None
         self.pipelined = pipelined
         self.concurrent = concurrent
         self.card_starts = card_starts
@@ -277,7 +279,7 @@ class Trainer:
 
     def iteration(self) -> IterationReport:
         times = self.collect()
-        rows = self.selfplay.learner_rows if self.selfplay else None
+        rows = self.selfplay.learner_rows if self.selfplay else self.learner_rows
         stats, copy, times.learn = self._learn(rows)
         return self._report(self.steps * self.rollout.agents, times, stats, copy)
 

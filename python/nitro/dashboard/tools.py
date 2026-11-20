@@ -41,6 +41,9 @@ SKILLS = {
     "shot": "Score in an empty net",
     "save": "Save a shot",
     "aerial_touch": "Touch a ball in the air",
+    "kickoff_duel": "Win the kickoff against a scripted rusher",
+    "fifty_fifty": "Win a 50/50 against a scripted chaser",
+    "wall_read": "Reach a ball coming off a side wall",
 }
 MEASURES = {
     "time_to_touch": "seconds until it touches",
@@ -49,6 +52,8 @@ MEASURES = {
     "goal_rate": "share of tries scored",
     "save_rate": "share of shots kept out",
     "time_to_first_touch": "seconds until the first touch",
+    "first_touch_share": "share of kickoffs touched first",
+    "win_share": "share of 50/50s won",
 }
 SPANS = {"hour": 3600.0, "minutes": 600.0}  # the Overview's ranges besides "all", in seconds of training
 _TREND = "touches_per_minute"

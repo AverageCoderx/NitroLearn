@@ -78,6 +78,49 @@ class _ReLU(nn.Module):
         return torch.relu_(x)
 
 
+class InputMap(nn.Module):
+    """The numbers a network imported from another framework was trained on, made from NitroLearn's
+    observation (`model.input_map`): number i = clamp((obs[index_i] * scale_i - offset_i) / divisor_i,
+    -clip, clip), no clamp when clip is 0. Fixed: buffers kept in the save, never learned. The exported bot's
+    `input_map` layer (nitro_core::policy) computes the same."""
+
+    index: torch.Tensor
+    scale: torch.Tensor
+    offset: torch.Tensor
+    divisor: torch.Tensor
+    clip: torch.Tensor
+
+    def __init__(self, inputs: int, outputs: int) -> None:
+        super().__init__()
+        self.inputs = inputs
+        self.register_buffer("index", torch.arange(outputs) % max(inputs, 1))
+        self.register_buffer("scale", torch.ones(outputs))
+        self.register_buffer("offset", torch.zeros(outputs))
+        self.register_buffer("divisor", torch.ones(outputs))
+        self.register_buffer("clip", torch.zeros(()))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mapped = (x.float()[..., self.index] * self.scale - self.offset) / self.divisor
+        clip = self.clip
+        return torch.where(clip > 0, mapped.clamp(-clip, clip), mapped)
+
+
+class MappedSequential(nn.Sequential):
+    """A shared trunk (possibly empty) that reads its input through an `InputMap` first. The map belongs to
+    the model (`ActorCritic.input_map`), not to the trunk, so the trunk's layers keep their numbers in a
+    save."""
+
+    def __init__(self, input_map: InputMap, trunk: nn.Sequential) -> None:
+        super().__init__(*trunk)
+        object.__setattr__(self, "input_map", input_map)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mapped: torch.Tensor = self.__dict__["input_map"](x)
+        for layer in self:
+            mapped = layer(mapped)
+        return mapped
+
+
 class ResidualBlock(nn.Module):
     """`x + layer(x)` (`model.residual`): `branch` is one hidden layer as `mlp` makes it (linear,
     LayerNorm, activation), so the LayerNorm sits inside the branch after the linear, as in every plain
@@ -1137,8 +1180,13 @@ class ActorCritic(nn.Module):
                 assert isinstance(encoded, ENCODERS)
                 features = encoded.outputs
         else:
-            self.shared = mlp(obs_size, config.shared, None, config)
-            features = config.shared[-1] if config.shared else obs_size
+            inputs = config.input_map or obs_size
+            shared = mlp(inputs, config.shared, None, config)
+            if config.input_map:
+                self.input_map = InputMap(obs_size, config.input_map)
+                shared = MappedSequential(self.input_map, shared)
+            self.shared = shared
+            features = config.shared[-1] if config.shared else inputs
             self.policy = mlp(features, config.policy, num_actions, config)
             self.value = mlp(features, config.value, value_outputs, config)
         # The value heads on the critic trunk; empty, so nothing in a save, without them.

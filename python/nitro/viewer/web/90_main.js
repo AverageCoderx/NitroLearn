@@ -57,6 +57,7 @@ NV.start = async function start(data, options) {
   const rec = await NV.data.open(data);
   if (NV.stopped) return;
   NV.rec = rec;
+  NV.recData = data;
   // A page that follows a run loads itself again when its game ends: its file then holds the newest game.
   if (data.follow && !options.embedded) NV.on("end", () => setTimeout(() => location.reload(), 1500));
   // A live game starts with no frames: the scene is built once the first ones are here.
@@ -76,6 +77,8 @@ NV.start = async function start(data, options) {
   NV.fx.build(NV.scene);
   NV.cams.build();
   NV.ui.build();
+  NV.rewards.build();
+  NV.practice.build();
   const player = NV.player;
   if (NV.prefs.speed) player.speed = NV.prefs.speed;
   if (rec.live) player.goLive();
@@ -143,6 +146,7 @@ NV.start = async function start(data, options) {
     NV.fx.update(world, dt);
     NV.cams.update(world, real);
     NV.ui.update(world, real);
+    NV.rewards.update();
     NV.post.render(NV.scene, NV.camera, real);
     NV.frames = (NV.frames || 0) + 1;
     if (NV.frames === 1) NV.emit("drawn");

@@ -768,7 +768,7 @@ def test_a_resumed_run_missing_past_versions_says_so_and_learns_bit_for_bit_as_b
 
 
 # Self-play read apart from the scripted starts (one car placed, the rest parked).
-UNEVEN = {"shot", "save", "aerial_ball"}
+UNEVEN = {"shot", "save", "aerial_ball", "wall_read", "snapshots"}
 
 
 def test_every_start_says_whether_it_places_every_car_alike() -> None:

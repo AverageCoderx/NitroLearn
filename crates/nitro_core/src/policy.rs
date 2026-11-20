@@ -36,9 +36,11 @@ use crate::team::Team;
 
 pub const MAGIC: &[u8; 8] = b"NITROPOL";
 /// The newest format this bot reads; every lower one loads too (but `UNUSED_FORMATS`).
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 /// The first format that may hold residual blocks (`residual_start`, `residual_add`).
 pub const RESIDUAL_FORMAT: u32 = 8;
+/// The first format that may start with an `input_map` (bots brought over from other frameworks).
+pub const INPUT_MAP_FORMAT: u32 = 9;
 /// The format plain networks are written in (no attention encoder): the first one.
 pub const PLAIN_FORMAT: u32 = 1;
 const OLDEST_FORMAT: u32 = 1;
@@ -64,6 +66,15 @@ pub enum LayerSpec {
     Relu,
     LeakyRelu,
     Tanh,
+    /// Format 9, first only: the numbers a network imported from another framework was trained on, made
+    /// from the observation: `outputs` numbers, number `i` = clamp((x[index_i] * scale_i - offset_i) /
+    /// divisor_i, -clip, clip), no clamp when `clip` is 0. Its weights: the indices (as floats), then the
+    /// scales, offsets and divisors.
+    InputMap {
+        inputs: usize,
+        outputs: usize,
+        clip: f32,
+    },
     /// Format 8: keeps the vector here (no weights); the next `residual_add` adds it back. Not nested.
     ResidualStart,
     /// Format 8: adds the vector kept at the last `residual_start` (it must be the same size).
@@ -230,6 +241,7 @@ enum Layer {
     Relu,
     LeakyRelu,
     Tanh,
+    InputMap(Box<InputMap>),
     ResidualStart,
     ResidualAdd,
     Encoder(Box<Encoder>),
@@ -246,6 +258,37 @@ impl Layer {
             Self::Transformer(t) => Some((t.own, t.block)),
             _ => None,
         }
+    }
+}
+
+/// `LayerSpec::InputMap`'s numbers.
+struct InputMap {
+    index: Vec<usize>,
+    scale: Vec<f32>,
+    offset: Vec<f32>,
+    divisor: Vec<f32>,
+    clip: f32,
+}
+
+impl InputMap {
+    /// `current` (rows of `width` numbers) replaced by the mapped rows; returns their width.
+    fn apply(&self, current: &mut Vec<f32>, width: usize) -> usize {
+        let mapped: Vec<f32> = current
+            .chunks_exact(width)
+            .flat_map(|row| {
+                (0..self.index.len()).map(move |i| {
+                    let value =
+                        (row[self.index[i]] * self.scale[i] - self.offset[i]) / self.divisor[i];
+                    if self.clip > 0.0 {
+                        value.clamp(-self.clip, self.clip)
+                    } else {
+                        value
+                    }
+                })
+            })
+            .collect();
+        *current = mapped;
+        self.index.len()
     }
 }
 
@@ -1019,6 +1062,7 @@ impl Net {
                     .iter_mut()
                     .for_each(|x| *x = if *x >= 0.0 { *x } else { LEAKY_SLOPE * *x }),
                 Layer::Tanh => current.iter_mut().for_each(|x| *x = x.tanh()),
+                Layer::InputMap(map) => width = map.apply(&mut current, width),
                 Layer::ResidualStart => keep(&mut skip, &current),
                 Layer::ResidualAdd => add_back(&mut current, &skip),
                 Layer::Encoder(_) | Layer::Talker(_) | Layer::Transformer(_) => {
@@ -1103,6 +1147,10 @@ impl Net {
                     .iter_mut()
                     .for_each(|x| *x = if *x >= 0.0 { *x } else { LEAKY_SLOPE * *x }),
                 Layer::Tanh => current.iter_mut().for_each(|x| *x = x.tanh()),
+                Layer::InputMap(map) => {
+                    let width = current.len();
+                    map.apply(&mut current, width);
+                }
                 Layer::ResidualStart => keep(&mut skip, &current),
                 Layer::ResidualAdd => add_back(&mut current, &skip),
                 Layer::Encoder(encoder) => {
@@ -1167,6 +1215,7 @@ impl Net {
                     .iter_mut()
                     .for_each(|x| *x = if *x >= 0.0 { *x } else { LEAKY_SLOPE * *x }),
                 Layer::Tanh => current.iter_mut().for_each(|x| *x = x.tanh()),
+                Layer::InputMap(map) => width = map.apply(&mut current, width),
                 Layer::ResidualStart => keep(&mut skip, &current),
                 Layer::ResidualAdd => add_back(&mut current, &skip),
                 Layer::Transformer(transformer) => {
@@ -1240,6 +1289,41 @@ fn assemble_net(
             LayerSpec::Relu => Layer::Relu,
             LayerSpec::LeakyRelu => Layer::LeakyRelu,
             LayerSpec::Tanh => Layer::Tanh,
+            LayerSpec::InputMap { .. } if format < INPUT_MAP_FORMAT => {
+                return Err(PolicyError::BadHeader(format!(
+                    "an input map needs format {INPUT_MAP_FORMAT}"
+                )));
+            }
+            LayerSpec::InputMap {
+                inputs,
+                outputs,
+                clip,
+            } => {
+                if index != 0 || inputs != size || outputs == 0 || clip.is_nan() || clip < 0.0 {
+                    return Err(PolicyError::Shape(format!(
+                        "the input map must come first and read all {size} observation numbers"
+                    )));
+                }
+                let positions = take(outputs)?;
+                let mut index = Vec::with_capacity(outputs);
+                for &at in &positions {
+                    if !(at >= 0.0 && at.fract() == 0.0 && (at as usize) < inputs) {
+                        return Err(PolicyError::Shape(format!(
+                            "the input map reads number {at}, beyond the observation's {inputs}"
+                        )));
+                    }
+                    index.push(at as usize);
+                }
+                let (scale, offset, divisor) = (take(outputs)?, take(outputs)?, take(outputs)?);
+                size = outputs;
+                Layer::InputMap(Box::new(InputMap {
+                    index,
+                    scale,
+                    offset,
+                    divisor,
+                    clip,
+                }))
+            }
             LayerSpec::ResidualStart | LayerSpec::ResidualAdd if format < RESIDUAL_FORMAT => {
                 return Err(PolicyError::BadHeader(format!(
                     "a residual block needs format {RESIDUAL_FORMAT}"
@@ -1934,6 +2018,47 @@ mod tests {
     }
 
     #[test]
+    fn an_input_map_picks_scales_standardises_and_clips_before_the_network() {
+        let layers = r#"{"kind": "input_map", "inputs": 3, "outputs": 2, "clip": 1.0},
+            {"kind": "linear", "inputs": 2, "outputs": 2}"#;
+        // Index 2 then 0; scales 2, 1; offsets 0, 1; divisors 1, 2; then the identity.
+        let weights = [
+            2.0, 0.0, 2.0, 1.0, 0.0, 1.0, 1.0, 2.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+        ];
+        let made = |format: u32, weights: &[f32]| {
+            let text =
+                header(layers, 3, 2).replace(r#""format": 1"#, &format!(r#""format": {format}"#));
+            let mut bytes = file(&text, weights);
+            bytes[8] = format as u8;
+            bytes
+        };
+        let at = |format: u32| Policy::from_bytes(&made(format, &weights));
+        let err = at(8).err().unwrap().to_string();
+        assert!(err.contains("needs format 9"), "{err}");
+        let policy = at(INPUT_MAP_FORMAT).unwrap();
+        let mut out = [0.0; 2];
+        policy.logits(&[0.5, 9.0, 0.3], &mut out);
+        assert!(
+            (out[0] - 0.6).abs() < 1e-6 && (out[1] + 0.25).abs() < 1e-6,
+            "{out:?}"
+        );
+        policy.logits(&[-5.0, 0.0, 5.0], &mut out);
+        assert_eq!(out, [1.0, -1.0], "clipped");
+        let mut rows = [0.0; 4];
+        policy.logits_rows(&[0.5, 9.0, 0.3, -5.0, 0.0, 5.0], 2, &mut rows, &Team::ALONE);
+        assert!(
+            (rows[0] - 0.6).abs() < 1e-6 && rows[2..] == [1.0, -1.0],
+            "{rows:?}"
+        );
+        let mut beyond = weights;
+        beyond[0] = 3.0;
+        assert!(
+            Policy::from_bytes(&made(INPUT_MAP_FORMAT, &beyond)).is_err(),
+            "an index beyond the observation"
+        );
+    }
+
+    #[test]
     fn game_settings_ignore_keys_this_version_does_not_read() {
         // Game keys the bot does not read are left alone.
         let old = header("", 4, 90).replace(
@@ -2608,10 +2733,10 @@ mod tests {
             PolicyError::NotAPolicyFile
         ));
         let mut wrong_version = file(&good, &[0.0; 6]);
-        wrong_version[8] = 9;
+        wrong_version[8] = 10;
         assert!(matches!(
             Policy::from_bytes(&wrong_version).unwrap_err(),
-            PolicyError::UnsupportedVersion(9)
+            PolicyError::UnsupportedVersion(10)
         ));
         assert!(matches!(
             Policy::from_bytes(&file(&good, &[0.0; 5])).unwrap_err(),

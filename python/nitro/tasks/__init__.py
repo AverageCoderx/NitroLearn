@@ -17,6 +17,17 @@ Metrics:
 - aerial_touch: mean time to touch a ball in the air, counting a miss as 6 s; touch rate.
 - touch_mix: half ball-touch, half aerial-touch episodes: mean time to touch over all of them, a miss
   counting as the task's 10 s limit; the two kinds' times; touch rate.
+
+Drills against a scripted opponent. Their bars are not from a trained bot: each is what a scripted player
+(`Task.reference`) reaches driving Blue in the same situations (`reference_score`), so a bot at the bar
+plays the situation as well as that script does:
+- kickoff_duel: against the kickoff rusher: share of kickoffs the bot touches first (the same tick counts
+  half); time to its first touch, a miss counting 6 s; ball position toward the opponent's goal 2 s after
+  the first touch (uu).
+- fifty_fifty: against the chaser from equal distances: share of 50/50s won (the ball 2 s after the first
+  touch more than 500 uu nearer the opponent's goal than it started; as far the other way lost; anything
+  else, or no touch, half); share touched first; mean ball progress (uu).
+- wall_read: a ball rolled or bounced off a side wall: mean time to touch, a miss counting 6 s; touch rate.
 """
 
 from __future__ import annotations
@@ -29,7 +40,9 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+import torch
 
 from nitro import _core
 from nitro.config import NitroConfig, load_config
@@ -51,6 +64,13 @@ _LEARNING_ENV = (
 _TASK_ENV = ("team_size", "team_sizes", "team_size_shares", "shuffle_slots", "opponents", "num_arenas")
 
 Records = list[_core.EpisodeRecord]
+# The drills' bars : what each task's reference script reaches (`reference_score`, 512 situations,
+# both evaluation seeds): the kickoff rusher against itself always touches on the same tick (0.5); the
+# chaser against itself wins 0.52 and 0.47 of the 50/50s (a fair split by design, so 0.5); the chaser
+# touches the wall ball in 4.69 and 4.70 s.
+KICKOFF_DUEL_BAR = 0.5
+FIFTY_FIFTY_BAR = 0.5
+WALL_READ_BAR = 4.7
 
 
 def _mean(values: list[float]) -> float:
@@ -148,6 +168,64 @@ def _kickoff(records: Records) -> dict[str, float]:
     }
 
 
+def _pairs(records: Records) -> list[tuple[_core.EpisodeRecord, _core.EpisodeRecord]]:
+    """Each arena's episodes of Blue's first car (car 0) with Orange's first car (car 1), in order."""
+    cars: dict[tuple[int, int], Records] = {}
+    for record in records:
+        cars.setdefault((record.env, record.car), []).append(record)
+    return [
+        (blue, orange)
+        for (env, car), blues in cars.items()
+        if car == 0
+        for blue, orange in zip(blues, cars.get((env, 1), []), strict=True)
+    ]
+
+
+def _first(blue: _core.EpisodeRecord, orange: _core.EpisodeRecord) -> float:
+    """1 when Blue touched first, 0.5 on the same tick, 0 when Orange did or nobody touched."""
+    if math.isnan(blue.first_touch):
+        return 0.0
+    if math.isnan(orange.first_touch) or blue.first_touch < orange.first_touch:
+        return 1.0
+    return 0.5 if blue.first_touch == orange.first_touch else 0.0
+
+
+def _kickoff_duel(records: Records) -> dict[str, float]:
+    limit = 6.0
+    pairs = _pairs(records)
+    return {
+        "first_touch_share": _mean([_first(b, o) for b, o in pairs]),
+        "time_to_first_touch": _mean(
+            [b.first_touch if not math.isnan(b.first_touch) else limit for b, _ in pairs]
+        ),
+        "ball_y_after_touch": _mean(
+            [b.ball_y_after_touch for b, _ in pairs if not math.isnan(b.ball_y_after_touch)]
+        ),
+    }
+
+
+FIFTY_FIFTY_MARGIN = 500.0  # uu the ball must move toward a goal for a 50/50 to be won or lost
+
+
+def _fifty_fifty(records: Records) -> dict[str, float]:
+    pairs = _pairs(records)
+    progress = [b.ball_y_after_touch - b.start_ball_y for b, _ in pairs]
+
+    def won(moved: float) -> float:
+        if math.isnan(moved):
+            return 0.5
+        return 1.0 if moved > FIFTY_FIFTY_MARGIN else 0.0 if moved < -FIFTY_FIFTY_MARGIN else 0.5
+
+    return {
+        "win_share": _mean([won(p) for p in progress]),
+        "first_touch_share": _mean([_first(b, o) for b, o in pairs]),
+        "ball_progress": _mean([p for p in progress if not math.isnan(p)]),
+    }
+
+
+_wall_read = _touch_within(6.0)
+
+
 @dataclass(frozen=True)
 class Task:
     name: str
@@ -160,10 +238,21 @@ class Task:
     steps: int  # agent steps of training per run
     episodes: int  # evaluation episodes per arena
     against_untrained: bool = False  # evaluated against the untrained policy instead of alone
+    opponent: str = ""  # a scripted player (nitro.gauntlet) on Orange, in evaluation and training
+    reference: str = ""  # the scripted player whose score driving Blue set the bar
 
     @property
     def metric(self) -> str:
         return self.metrics[0]
+
+    @property
+    def duel(self) -> bool:
+        """Measured on Blue's and Orange's first cars together."""
+        return self.against_untrained or bool(self.opponent)
+
+    def scripted(self) -> list[tuple[int, str]]:
+        """The scripted players `evaluate` hands Orange's cars to."""
+        return [(1, self.opponent)] if self.opponent else []
 
     def settings(self) -> NitroConfig:
         return load_config(Path(__file__).with_name(f"{self.name}.toml"))
@@ -274,8 +363,75 @@ TASKS = {
             episodes=2,
             against_untrained=True,
         ),
+        # Drills : bars from the reference script driving Blue (`reference_score`, 512 situations,
+        # seed EVAL_SEEDS[0]), not from a trained bot. Budgets as the other one-skill tasks', unpiloted.
+        Task(
+            name="kickoff_duel",
+            metrics=("first_touch_share", "time_to_first_touch", "ball_y_after_touch"),
+            measure=_kickoff_duel,
+            unit="",
+            higher_is_better=True,
+            smallest_difference=0.05,
+            bar=KICKOFF_DUEL_BAR,
+            steps=10_000_000,
+            episodes=2,
+            opponent="kickoff",
+            reference="kickoff",
+        ),
+        Task(
+            name="fifty_fifty",
+            metrics=("win_share", "first_touch_share", "ball_progress"),
+            measure=_fifty_fifty,
+            unit="",
+            higher_is_better=True,
+            smallest_difference=0.05,
+            bar=FIFTY_FIFTY_BAR,
+            steps=10_000_000,
+            episodes=1,
+            opponent="chaser",
+            reference="chaser",
+        ),
+        Task(
+            name="wall_read",
+            metrics=("time_to_touch", "touch_rate"),
+            measure=_wall_read,
+            unit="s",
+            higher_is_better=False,
+            smallest_difference=0.1,
+            bar=WALL_READ_BAR,
+            steps=10_000_000,
+            episodes=1,
+            reference="chaser",
+        ),
     )
 }
+
+
+def reference_score(
+    task: Task, meshes: Path, games: int = 512, seed: int = EVAL_SEEDS[0], script: str = ""
+) -> dict[str, float]:
+    """The task's measure with a scripted player (`script`, else the task's reference) driving Blue in the
+     task's own situations and game, against the task's opponent, on the CPU: how the drills' bars were set
+    . Re-run it to remake a bar; the same seed and games give the same numbers."""
+    from nitro.gauntlet import _Unused  # imported here: nitro.gauntlet needs nitro.training
+
+    config = task.settings()
+    arenas = max(1, min(config.env.num_arenas, games))
+    config = dataclasses.replace(
+        config,
+        paths=dataclasses.replace(config.paths, collision_meshes=meshes),
+        env=dataclasses.replace(config.env, num_arenas=arenas, groups=min(config.env.groups, arenas)),
+    )
+    records = evaluate(
+        cast(Any, _Unused(_core.num_actions())),
+        config,
+        seed,
+        math.ceil(games / arenas),
+        torch.device("cpu"),
+        False,
+        scripted=[(0, script or task.reference), *task.scripted()],
+    )
+    return task.measure(records if task.duel else [r for r in records if r.car == 0])
 
 
 def practice_config(task: Task, settings: NitroConfig, seed: int, with_rewards: bool = False) -> NitroConfig:
@@ -301,6 +457,24 @@ def practice_config(task: Task, settings: NitroConfig, seed: int, with_rewards: 
     )
 
 
+def _scripted_orange(setup: Any, config: NitroConfig, script: str, device: torch.device) -> None:
+    """Training against a scripted opponent : every arena's Orange cars are the script's and are
+    left out of learning and of the statistics."""
+    envs = setup.envs
+    cars = config.env.team_size * 2
+    group_agents = [tensors.reward.numel() for tensors in envs.groups]
+    rows = torch.ones(sum(group_agents), dtype=torch.bool, device=device)
+    blue = [k % 2 == 0 for k in range(cars)]
+    for arena in range(config.env.num_arenas):
+        envs.set_scripted(arena, 1, script)
+        envs.set_counted(arena, blue)
+        # Arena i sits in group i % groups at position i // groups.
+        start = sum(group_agents[: arena % envs.num_groups]) + (arena // envs.num_groups) * cars
+        for k, row in enumerate(range(start, start + cars)):
+            rows[row] = blue[k]
+    setup.trainer.learner_rows = rows
+
+
 def practise(
     task: Task,
     config: NitroConfig,
@@ -320,11 +494,23 @@ def practise(
     device = next(setup.model.parameters()).device
     fp16 = config.run.precision == "fp16" and device.type == "cuda"
     opponent = copy.deepcopy(setup.model) if task.against_untrained else None
+    if task.opponent:
+        _scripted_orange(setup, config, task.opponent, device)
 
     def evaluation(
         stage: str, at: int, eval_seed: int, pick: tuple[float, float] = (1.0, 1.0)
     ) -> dict[str, Any]:
-        records = evaluate(setup.model, config, eval_seed, task.episodes, device, fp16, opponent, pick=pick)
+        records = evaluate(
+            setup.model,
+            config,
+            eval_seed,
+            task.episodes,
+            device,
+            fp16,
+            opponent,
+            pick=pick,
+            scripted=task.scripted(),
+        )
         measured = {name: round(value, 5) for name, value in task.measure(records).items()}
         return {
             "stage": stage,

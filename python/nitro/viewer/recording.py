@@ -35,6 +35,51 @@ _CAR_SCALES = (
     [1] + [4] * 3 + [1] * 3 + [10_000] * 6 + [3_000] * 3 + [100, 1] + [10_000] * 8 + [1, 10_000, 1, 100]
 )
 SUFFIX = ".nlrec"
+# A car's moment, as a `snapshots` start holds it (nitro_core::snapshots::COLUMNS, in that order).
+MOMENT_COLUMNS = [
+    "cx",
+    "cy",
+    "cz",
+    "cvx",
+    "cvy",
+    "cvz",
+    "cwx",
+    "cwy",
+    "cwz",
+    "fx",
+    "fy",
+    "fz",
+    "rx",
+    "ry",
+    "rz",
+    "ux",
+    "uy",
+    "uz",
+    "onGround",
+    "hasJumped",
+    "hasDoubleJumped",
+    "hasFlipped",
+    "isJumping",
+    "jumpTime",
+    "isFlipping",
+    "flipTime",
+    "ftx",
+    "fty",
+    "ftz",
+    "airTime",
+    "airTimeSinceJump",
+    "boost",
+    "bx",
+    "by",
+    "bz",
+    "bvx",
+    "bvy",
+    "bvz",
+    "bwx",
+    "bwy",
+    "bwz",
+]
+MOMENT = len(MOMENT_COLUMNS)
 
 
 def width(cars: int) -> int:
@@ -48,8 +93,8 @@ def scales(cars: int) -> list[int]:
 
 def quantize(frames: np.ndarray, cars: int) -> np.ndarray:
     """The frames ([frames, width], real numbers) as the 16-bit numbers the viewer reads; a value beyond
-    16 bits is held at the limit."""
-    scaled = np.rint(frames.astype(np.float64) * np.asarray(scales(cars), dtype=np.float64))
+    16 bits is held at the limit, one that is not a number (a broken recording) is 0."""
+    scaled = np.rint(np.nan_to_num(frames.astype(np.float64)) * np.asarray(scales(cars), dtype=np.float64))
     return np.clip(scaled, -32768, 32767).astype("<i2")
 
 
@@ -68,6 +113,16 @@ def unpack(text: str, columns: int) -> np.ndarray:
     return np.cumsum(by_column.T.astype(np.int32), axis=0).astype("<i2")
 
 
+def pack_floats(values: np.ndarray) -> str:
+    """32-bit floats exactly, in C order, deflated, base64 (the reward timeline and the moments)."""
+    return base64.b64encode(zlib.compress(np.ascontiguousarray(values, "<f4").tobytes(), 6)).decode("ascii")
+
+
+def unpack_floats(text: str) -> np.ndarray:
+    """`pack_floats` undone, flat."""
+    return np.frombuffer(zlib.decompress(base64.b64decode(text)), dtype="<f4")
+
+
 def raw(quantized: np.ndarray) -> str:
     """16-bit frames as plain base64, frame after frame: how live frames reach the page."""
     return base64.b64encode(np.ascontiguousarray(quantized).tobytes()).decode("ascii")
@@ -83,8 +138,12 @@ def data(
     title: str = "",
     subtitle: str = "",
     attention: dict[str, Any] | None = None,
+    rewards: dict[str, Any] | None = None,
+    moments: np.ndarray | None = None,
 ) -> dict[str, Any]:
-    """The page data of a recording of `frames` ([frames, width], real numbers)."""
+    """The page data of a recording of `frames` ([frames, width], real numbers); `rewards`: the reward
+    timeline (`nitro.watch.Rewards.data`); `moments`: [decisions, cars, MOMENT] each car's moment at each
+    decision."""
     cars = (frames.shape[1] - HEAD) // CAR
     if frames.shape[1] != width(cars):
         raise ValueError(f"{frames.shape[1]} numbers a frame do not fit format {FORMAT}")
@@ -103,6 +162,12 @@ def data(
         "decisions": decisions,
         "decisionsPerSecond": decisions_per_second,
         "attention": attention,
+        **({"rewards": rewards} if rewards else {}),
+        **(
+            {"moments": {"columns": MOMENT_COLUMNS, "values": pack_floats(moments)}}
+            if moments is not None
+            else {}
+        ),
     }
 
 

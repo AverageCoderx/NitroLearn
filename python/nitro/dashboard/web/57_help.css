@@ -1,0 +1,34 @@
+/* ---------- the Help page: the handbook's list and reader, and the coach tab ---------- */
+.help-split { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 18px; margin: 14px 0 22px; align-items: start; }
+.guide-list { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 8px; }
+.guide-nav { text-align: left; padding: 7px 10px; border: 0; border-left: 4px solid transparent; background: transparent; color: var(--dim); font-size: 13px; font-weight: 600; }
+.guide-nav:hover { color: var(--text); background: var(--panel); }
+.guide-nav.on { color: var(--text); border-left-color: var(--yellow); background: var(--panel); }
+.md { padding: 18px 24px 24px; max-height: 70vh; overflow: auto; font-size: 14px; line-height: 1.55; }
+.md > :first-child { margin-top: 0; }
+.md p, .md ul, .md ol { margin: 0 0 10px; max-width: 80ch; }
+.md ul, .md ol { padding-left: 22px; }
+.md li { margin-bottom: 3px; }
+.md .md-h { margin: 18px 0 8px; line-height: 1.25; }
+.md h2.md-h { font-size: 24px; }
+.md h3.md-h { font-size: 18px; padding-bottom: 4px; border-bottom: 1px solid var(--rule); }
+.md h4.md-h, .md h5.md-h { font-size: 15px; }
+.md code { background: var(--raised); padding: 0 4px; font-size: 12.5px; }
+.md .btn.link { font-size: inherit; }
+.md-code { margin: 0 0 10px; padding: 10px 12px; background: var(--code); color: var(--text); font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+.md-table { overflow-x: auto; margin: 0 0 10px; }
+.md table { border-collapse: collapse; font-size: 13px; }
+.md th, .md td { text-align: left; vertical-align: top; padding: 5px 10px; border-bottom: 1px solid var(--rule); }
+.md th { color: var(--dim); font-weight: 700; }
+.coach-stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 12px 0 18px; }
+.coach-stage { padding: 14px 16px; border-top: 4px solid var(--rule2); display: flex; flex-direction: column; gap: 8px; }
+.coach-stage.now { border-top-color: var(--yellow); }
+.coach-stage.done { border-top-color: var(--good); }
+.coach-skill { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.coach-skill .ok { color: var(--good-text); font-weight: 700; }
+.coach-hint { padding: 12px 16px; display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+@media (max-width: 900px) {
+  .help-split { grid-template-columns: minmax(0, 1fr); }
+  .guide-list { position: static; flex-direction: row; flex-wrap: wrap; }
+  .coach-stages { grid-template-columns: minmax(0, 1fr); }
+}

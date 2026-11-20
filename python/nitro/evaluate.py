@@ -108,6 +108,7 @@ def evaluate(
     decide_every: tuple[int, int] = (1, 1),
     pick: tuple[float, float] = SAMPLED,
     entropy: list[float] | None = None,
+    scripted: Sequence[tuple[int, str]] = (),
 ) -> list[_core.EpisodeRecord]:
     """Plays `config`'s environments, seeded with `seed`, with the policy sampled as in training (by
     default).
@@ -125,6 +126,8 @@ def evaluate(
     0 = its likeliest action (as nitro_bot plays), else softmax(logits / T) (`apply_pick`). With
     `entropy`, each side's mean normalised entropy over the decisions it made (every step played) is
     appended to it, Blue's then Orange's (NaN for a side without cars).
+    Each (team, name) of `scripted` gives that team's cars (0 Blue, 1 Orange) in every arena to a scripted
+    benchmark opponent (`nitro.gauntlet`); the actions chosen for them are ignored.
     """
     if bot_cars is not None and opponent is None:
         raise ValueError("bot_cars needs an opponent policy for the other cars")
@@ -147,6 +150,9 @@ def evaluate(
         ),
         pin_memory=device.type == "cuda",
     )
+    for arena in range(config.env.num_arenas):
+        for team, name in scripted:
+            envs.set_scripted(arena, team, name)
     cars = sum(tensors.obs.shape[0] for tensors in envs.groups) // config.env.num_arenas
     generator = torch.Generator(device=device).manual_seed(seed)
     # Temperatures between 0 and 1 (or above) draw from a second stream, not the T=1 side's.

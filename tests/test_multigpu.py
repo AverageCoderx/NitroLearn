@@ -172,6 +172,8 @@ def _card(rank: int, size: int, store: str, case: str, out: str, device: str) ->
 
 
 def _loopback_available() -> bool:
+    if sys.platform == "win32":
+        return False  # run.cards is Linux-only (gloo finds no loopback device on Windows)
     try:
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))

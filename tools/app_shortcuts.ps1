@@ -60,6 +60,8 @@ function Test-Elsewhere([string]$Link) {
         Initialize-ShellLink
         $read = [NitroLearn.Shortcut]::Read($Link)
         if (-not $read[0]) { return $true }
+        # nitro.keeper's start-up entry (run.auto_restart): nitro.cmd carry-on, from here or a moved folder.
+        if ((Split-Path -Leaf $Link).StartsWith('NitroLearn carry on training') -and ($read[1] -split '\s+') -contains 'carry-on' -and ((-not (Test-Path -LiteralPath $read[0])) -or [IO.Path]::GetFullPath($read[0]).StartsWith($Root + '\', [StringComparison]::OrdinalIgnoreCase))) { return $false }
         $same = [IO.Path]::GetFullPath($read[0]) -eq [IO.Path]::GetFullPath($Windowless)
         # NitroLearn's own from a folder that is not there any more (moved): as nitro.dashboard.winapp decides.
         if (-not $same -and $read[0].ToLower().EndsWith('\.venv\scripts\pythonw.exe') -and -not (Test-Path -LiteralPath $read[0])) { $same = $true }

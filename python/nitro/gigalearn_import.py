@@ -1348,6 +1348,71 @@ def plan_import(checkpoint: Path, source_path: Path | None, activation: str | No
     return _read_and_plan(checkpoint, source_path, activation)[1]
 
 
+def checked_name(name: str, runs: Path) -> None:
+    """Refuses a name that is not one folder name, or a run that exists already."""
+    if not name or Path(name).name != name or name in (".", ".."):
+        raise GigaLearnImportError(f"'{name}' cannot name a bot: use one folder name, such as my-bot")
+    if (runs / name).exists():
+        raise GigaLearnImportError(f"a run called '{name}' already exists in {runs}; choose another name")
+
+
+def checked_settings(toml: str, runs: Path, meshes: Path | None) -> tuple[str, NitroConfig]:
+    """The new bot's whole settings file and its settings, checked. Without `meshes` the bot uses
+    NitroLearn's own arena meshes, as every bot does (nothing written)."""
+    paths = f"[paths]\ncollision_meshes = {json.dumps(meshes.resolve().as_posix())}\n\n" if meshes else ""
+    text = paths + toml
+    try:
+        return text, parse_toml(text, NitroConfig, file=Path("settings.toml"), base_dir=runs.resolve())
+    except ConfigError as err:
+        raise GigaLearnImportError(
+            f"the settings made for this bot do not check out (please report this): {err}"
+        ) from None
+
+
+def imported_state(
+    learner: dict[str, Any], config: NitroConfig, steps: int, iterations: int, origin: dict[str, Any]
+) -> dict[str, Any]:
+    """A NitroLearn save of an imported bot at `steps` agent steps, as `nitro resume` reads it."""
+    return {
+        "learner": learner,
+        "agent_steps": steps,
+        "iterations": iterations,
+        "checkpoint": 0,
+        "device": "cpu",
+        "fp16": False,
+        "rng_cpu": torch.get_rng_state(),
+        "settings": fixed_settings(config),
+        "all_settings": all_settings(config),
+        "imported": origin,
+        "nitro_version": __version__,
+    }
+
+
+def write_run(
+    runs: Path, name: str, text: str, config: NitroConfig, state: dict[str, Any], report: list[str]
+) -> Path:
+    """Writes the imported bot as run `name`: its settings, its one save and imported.txt (the report); built
+    under a temporary name and renamed last, so a failure leaves nothing behind."""
+    final = runs / name
+    partial = runs / f".{name}.import-partial"
+    settings_file = runs / f".{name}.import.toml"
+    shutil.rmtree(partial, ignore_errors=True)
+    try:
+        settings_file.write_text(text, encoding="utf-8")
+        folder = RunFolder.create(runs, partial.name, settings_file)
+        settings_file.unlink()
+        steps = int(state["agent_steps"])
+        folder.save_checkpoint(state, steps, config.run.keep_checkpoints, config.run.milestone_steps)
+        (folder.root / "imported.txt").write_text("\n".join(report) + "\n", encoding="utf-8")
+        folder.load_settings(state)  # the settings and the save agree
+        os.replace(partial, final)
+    except BaseException:
+        shutil.rmtree(partial, ignore_errors=True)
+        settings_file.unlink(missing_ok=True)
+        raise
+    return final
+
+
 def import_bot(
     checkpoint: Path,
     source_path: Path | None,
@@ -1361,25 +1426,13 @@ def import_bot(
     say: Callable[[str], None] = print,
 ) -> Report:
     """Imports the GigaLearn save at `checkpoint` as run `name` in `runs`; refuses (GigaLearnImportError)
-    before    writing anything when a part cannot be brought over or the parity check fails."""
-    if not name or Path(name).name != name or name in (".", ".."):
-        raise GigaLearnImportError(f"'{name}' cannot name a bot: use one folder name, such as my-bot")
-    final = runs / name
-    if final.exists():
-        raise GigaLearnImportError(f"a run called '{name}' already exists in {runs}; choose another name")
+    before writing anything when a part cannot be brought over or the parity check fails."""
+    checked_name(name, runs)
     save, plan = _read_and_plan(checkpoint, source_path, activation, keep_action_delay)
     if plan.refused:
         return Report(plan, None, None, 0)
     runs.mkdir(parents=True, exist_ok=True)
-    # Without --meshes the bot uses NitroLearn's own arena meshes, as every bot does (nothing written).
-    paths = f"[paths]\ncollision_meshes = {json.dumps(meshes.resolve().as_posix())}\n\n" if meshes else ""
-    text = paths + plan.toml
-    try:
-        config = parse_toml(text, NitroConfig, file=Path("settings.toml"), base_dir=runs.resolve())
-    except ConfigError as err:
-        raise GigaLearnImportError(
-            f"the settings made for this bot do not check out (please report this): {err}"
-        ) from None
+    text, config = checked_settings(plan.toml, runs, meshes)
     model = build_model(config, plan, save)
     say("Checking the imported bot against the GigaLearn networks on real game states...")
     obs, mask = game_states(config, model, check_steps)
@@ -1390,34 +1443,8 @@ def import_bot(
         )
         return Report(plan, parity, None, 0)
     steps = int(save.stats.get("total_timesteps", 0))
-    state = {
-        "learner": learner_state(model, config, save, plan),
-        "agent_steps": steps,
-        "iterations": int(save.stats.get("total_iterations", 0)),
-        "checkpoint": 0,
-        "device": "cpu",
-        "fp16": False,
-        "rng_cpu": torch.get_rng_state(),
-        "settings": fixed_settings(config),
-        "all_settings": all_settings(config),
-        "imported": {"from": str(save.folder), "gigalearn_steps": steps},
-        "nitro_version": __version__,
-    }
-    partial = runs / f".{name}.import-partial"
-    shutil.rmtree(partial, ignore_errors=True)
-    try:
-        settings_file = runs / f".{name}.import.toml"
-        settings_file.write_text(text, encoding="utf-8")
-        folder = RunFolder.create(runs, partial.name, settings_file)
-        settings_file.unlink()
-        folder.save_checkpoint(state, steps, config.run.keep_checkpoints, config.run.milestone_steps)
-        (folder.root / "imported.txt").write_text(
-            "\n".join(Report(plan, parity, None, steps).lines()) + "\n", encoding="utf-8"
-        )
-        folder.load_settings(state)  # the settings and the save agree
-        os.replace(partial, final)
-    except BaseException:
-        shutil.rmtree(partial, ignore_errors=True)
-        (runs / f".{name}.import.toml").unlink(missing_ok=True)
-        raise
-    return Report(plan, parity, final, steps)
+    origin = {"from": str(save.folder), "gigalearn_steps": steps}
+    learner = learner_state(model, config, save, plan)
+    state = imported_state(learner, config, steps, int(save.stats.get("total_iterations", 0)), origin)
+    report = Report(plan, parity, None, steps).lines()
+    return Report(plan, parity, write_run(runs, name, text, config, state, report), steps)

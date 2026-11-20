@@ -1,0 +1,29 @@
+# Practice task (drill): kickoffs against the scripted kickoff rusher. 1v1 from the real kickoff spots;
+# Orange is the scripted `kickoff` player (nitro.gauntlet), which rushes the ball with a dodge every time.
+# An episode lasts until a goal or 6 seconds. Measured by the share of kickoffs the bot touches first (a
+# touch on the same tick counts half), the time to its first touch and where the ball is 2 seconds after
+# the first touch (nitro.tasks), never by the reward. Needs an opponent (env.opponents = true).
+
+[env]
+num_arenas = 256
+
+[terminals]
+no_touch_seconds = 0
+max_episode_seconds = 6
+
+[[rewards]]
+name = "velocity_player_to_ball"
+weight = 1
+
+[[rewards]]
+name = "touch_ball"
+weight = 5
+zero_sum = { team_spirit = 0, opponent_scale = 1 }
+
+[[rewards]]
+name = "velocity_ball_to_goal"
+weight = 5
+zero_sum = { team_spirit = 1, opponent_scale = 1 }
+
+[[state_setters]]
+name = "kickoff"

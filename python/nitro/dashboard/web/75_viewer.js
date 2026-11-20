@@ -118,7 +118,14 @@ async function watchShow(bot, what) {
     const nv = NV_MAKE();
     session.nv = window.NV = nv;
     nv.store = { load: () => ({ ...WATCH.prefs }), save: watchKeepPrefs };
-    await nv.start(data, { host, arena, embedded: true, onClose: closeViewer, live: what.live ? cursor => watchPoll(session, cursor) : null });
+    // Practice this moment, or a start placed by hand, goes straight to the bot's practice starts.
+    const practice = async (text) => {
+      const out = await call("practice_add", bot, text);
+      if (out.error) throw new Error(out.error);
+      return out.message;
+    };
+    await nv.start(data, { host, arena, embedded: true, onClose: closeViewer, practice,
+      live: what.live ? cursor => watchPoll(session, cursor) : null });
     if (session.closed) return;
     session.started = true;
     box.querySelector(".watch-wait").remove();
@@ -226,11 +233,16 @@ async function watchModal() {
       ${recorded.page ? `<p class="muted">It is also a page, <span class="mono">watch.html</span>, that can be passed on to someone else; opened there it draws a generated arena. <button type="button" class="btn link" data-act="watch-page">Open the page in the browser</button> · <button type="button" class="btn link" data-act="watch-file">Show the file</button></p>` : ""}
       ${earlier.length ? `<div class="watch-earlier"><span class="cap">Recorded before</span>${earlier.map(r => `<div class="watch-rec"><span>${watchRecordingLine(r)}</span><button type="button" class="btn small" data-act="watch-recorded" data-rec="${esc(r.id)}">Watch it</button></div>`).join("")}</div>` : ""}
     </section>` : ""}
+    <section class="watch-part">
+      <div class="watch-head"><h3>Score a real game</h3><button type="button" class="btn strong" data-act="watch-score">Choose a game…</button></div>
+      <p class="muted">What would ${esc(b.name)}'s rewards pay a pro? Pick a replay you converted (Replays), a converted replay or a recording: its players are paid with ${esc(b.name)}'s rewards step by step, and the game opens here with the reward chart.</p>
+      ${recorded.scored ? `<div class="watch-rec"><span>Last scored: ${esc(recorded.scored.title || "a real game")} · ${ago(recorded.scored.time)}</span><button type="button" class="btn small" data-act="watch-recorded" data-rec="scored">Watch it</button></div>` : ""}
+    </section>
     <div class="foot"><button type="button" class="btn" data-close="1">Close</button></div>`);
 }
 function watchRecordingModal() {
   const job = WATCH.job;
-  modal(`<h2 class="display">Recording ${esc(job.bot)}</h2>
+  modal(`<h2 class="display">${job.open === "scored" ? "Scoring a game for" : "Recording"} ${esc(job.bot)}</h2>
     <div class="watch-run"><div class="bar"><span></span></div><div class="watch-head"><span>${esc(job.text)}</span><span class="mono" id="watch-took"></span></div></div>
     <div class="muted watch-note">It opens here by itself when it is ready. Hiding this box does not stop the recording.</div>
     <div class="foot"><button type="button" class="btn" data-act="watch-cancel">Stop the recording</button><button type="button" class="btn" data-close="1">Hide</button></div>`);
@@ -258,8 +270,9 @@ async function watchFollow(job) {
       toast("Recording a game did not work: the reason is on " + job.bot + "'s page.", true);
       if (S.view === "bot" && S.bot === job.bot) updateHead();
     } else if (out.state !== "done") toast(out.error || `The recording of ${job.bot} did not finish.`, true);
-    else if (showing) watchShow(job.bot, { id: "last" });
-    else toast(`The recorded game of ${job.bot} is ready: Watch it play, then The last recording.`);
+    else if (showing) watchShow(job.bot, { id: job.open || "last" });
+    else toast(job.open === "scored" ? `The scored game for ${job.bot} is ready: Watch it play, then Score a real game.`
+      : `The recorded game of ${job.bot} is ready: Watch it play, then The last recording.`);
     return;
   }
 }
@@ -280,6 +293,20 @@ ACTIONS["watch-record"] = async () => {
   watchForgetFailure(bot);
   const length = WATCH_LENGTHS.find(([s]) => s === seconds);
   WATCH.job = { bot, since: Date.now(), text: `A ${size}v${size} game of ${length ? length[1] : seconds + " s"} is being played and recorded.`, cancelled: false };
+  watchRecordingModal();
+  watchFollow(WATCH.job);
+  return;
+};
+ACTIONS["watch-score"] = async () => {
+  const bot = WATCH.pick.bot;
+  const chosen = await call("choose_game");
+  if (chosen.cancelled) return;
+  if (chosen.error) return toast(chosen.error, true);
+  const out = await call("watch_score", bot, chosen.game);
+  if (out.error) return toast(out.error, true);
+  watchForgetFailure(bot);
+  const name = chosen.game.split(/[\\/]/).pop();
+  WATCH.job = { bot, since: Date.now(), text: `${name} is being scored with ${bot}'s rewards.`, cancelled: false, open: "scored" };
   watchRecordingModal();
   watchFollow(WATCH.job);
   return;

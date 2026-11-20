@@ -208,7 +208,7 @@ def test_recorded_games_are_listed_kept_before_a_new_one_and_capped(
     api = Api(ROOT, tmp_path / "runs")
     started: list[list[str]] = []
     monkeypatch.setattr(api._jobs, "start", lambda bot, kind, args, where: started.append(args))
-    assert api.recordings("shown") == {"recordings": [], "page": ""}
+    assert api.recordings("shown") == {"recordings": [], "page": "", "scored": None}
     assert api.saves("shown")["saves"] == [
         {"steps": steps, "time": pytest.approx(time.time(), abs=60)} for steps in (3000, 2000, 1000)
     ]
@@ -256,9 +256,11 @@ def test_recorded_games_are_listed_kept_before_a_new_one_and_capped(
 
     runs = str(tmp_path / "runs")
     assert started[0][:7] == ["watch", "shown", "--runs", runs, "--no-open", "--seconds", "30"]
-    assert started[0][7] == "--seed" and len(started[0]) == 9, "the newest save, the bot's own size"
+    assert started[0][7] == "--seed" and started[0][9:] == ["--rewards", "--moments"], (
+        "the newest save, the bot's own size, the reward chart and practice moments"
+    )
     assert api.watch_record("shown", {"seconds": 120, "size": 2, "at": 2000}) == {"started": True}
-    assert started[-1][5:7] == ["--seconds", "120"] and started[-1][9:] == [
+    assert started[-1][5:7] == ["--seconds", "120"] and started[-1][11:] == [
         "--team-size",
         "2",
         "--at",

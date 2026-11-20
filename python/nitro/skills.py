@@ -6,7 +6,11 @@ training never sees. The bot plays with its own game settings (observation, team
 meets one idle opponent parked somewhere on the field, as the task files park extra cars. Each task's bar is
 what a fresh bot trained on that one skill for its budget reaches, so a full-game bot above the bar has the
 skill; below it, not yet. Results are printed and appended to `runs/<name>/skills.csv`, one row per task and
-save, so the skills' progress over a run can be read off later. Played sampled as in training by default;
+save, so the skills' progress over a run can be read off later. The drills against a scripted opponent
+(kickoff_duel, fifty_fifty) and wall_read take their bars from a scripted player in the same situations
+instead (`nitro.tasks.reference_score`); the drills against an opponent need a bot that plays with one. Each
+task's weakness map (`nitro.weakness`) goes to `runs/<name>/weakness.json`, and training can score its
+saves on a schedule (run.skills_every). Played sampled as in training by default;
 another pick rule for the bot (0 = likeliest, as the RLBot bot) writes to a file of its own
 (`skills_file`), so the sampled history stays one series.
 """
@@ -17,14 +21,14 @@ import csv
 import dataclasses
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import torch
 from torch import nn
 
-from nitro import _core
+from nitro import _core, weakness
 from nitro.config import NitroConfig
 from nitro.eval import Side, _model, _sizes
 from nitro.evaluate import evaluate
@@ -36,8 +40,12 @@ _BOT_ENV = (
     "team_size", "opponents", "tick_skip", "action_delay", "observation", "obs_team_size", "groups",
     "threads", "ball_prediction",
 )  # fmt: skip
-# Tasks a saved bot can be scored on alone; `kickoff` needs an opponent policy and is left out.
-DEFAULT_TASKS = ("ball_touch", "recovery", "boost_pickup", "shot", "save", "aerial_touch")
+# Tasks a saved bot can be scored on; `kickoff` needs an opponent policy and is left out (kickoff_duel
+# plays the kickoff against the scripted rusher instead).
+DEFAULT_TASKS = (
+    "ball_touch", "recovery", "boost_pickup", "shot", "save", "aerial_touch", "kickoff_duel", "fifty_fifty",
+    "wall_read",
+)  # fmt: skip
 CSV_FIELDS = ("when", "agent_steps", "task", "metric", "value", "unit", "bar", "above_bar", "games", "seed")
 
 
@@ -83,6 +91,7 @@ class SkillResult:
     higher_is_better: bool
     games: int
     others: dict[str, float]
+    weak: dict[str, Any] | None = field(default=None, compare=False)  # the weakness map (nitro.weakness)
 
     @property
     def above_bar(self) -> bool:
@@ -108,6 +117,15 @@ def skills_file(temperature: float) -> str:
     return "skills_likeliest.csv" if temperature == 0 else f"skills_temperature_{temperature:g}.csv"
 
 
+def unsuited(task: Task, bot: NitroConfig) -> str | None:
+    """Why `bot` cannot be scored on `task`, or None."""
+    if task.against_untrained:
+        return "it needs an opponent policy"
+    if task.duel and not bot.env.opponents:
+        return "it needs an opponent and this bot plays without one (env.opponents = false)"
+    return None
+
+
 def play_task(side: Side, task: Task, games: int, seed: int, temperature: float = 1.0) -> SkillResult:
     config = battery_config(task, side.config)
     arenas = min(config.env.num_arenas, max(games, 1))
@@ -119,7 +137,8 @@ def play_task(side: Side, task: Task, games: int, seed: int, temperature: float 
     obs_size, num_actions = _sizes(config)
     model = _model(side, obs_size, num_actions, device)
     # The save drives its first car only; every other car (the opponents and, in 2v2 or 3v3, the
-    # teammates) is idle, so nobody else can touch the ball first and end the episode.
+    # teammates) is idle, so nobody else can touch the ball first and end the episode; in a drill against a
+    # scripted opponent, Orange's cars are the script's.
     idle = Idle(num_actions).to(device)
     records = evaluate(
         model,
@@ -131,9 +150,11 @@ def play_task(side: Side, task: Task, games: int, seed: int, temperature: float 
         idle,
         bot_cars=(0,),
         pick=(temperature, 1.0),
+        scripted=task.scripted(),
     )
     mine = [r for r in records if r.car == 0]  # the bot's car; the idle cars don't count
-    measured = task.measure(mine)
+    situations = _situations(records) if task.duel else [[r] for r in mine]
+    measured = task.measure([r for s in situations for r in s])
     return SkillResult(
         task=task.name,
         metric=task.metric,
@@ -143,7 +164,21 @@ def play_task(side: Side, task: Task, games: int, seed: int, temperature: float 
         higher_is_better=task.higher_is_better,
         games=len(mine),
         others={name: value for name, value in measured.items() if name != task.metric},
+        weak=weakness.analyse(task, situations),
     )
+
+
+def _situations(records: list[_core.EpisodeRecord]) -> list[weakness.Situation]:
+    """Each episode of the bot's car (car 0) with the same arena's episode of Orange's first car (car 1)."""
+    cars: dict[tuple[int, int], list[_core.EpisodeRecord]] = {}
+    for record in records:
+        cars.setdefault((record.env, record.car), []).append(record)
+    return [
+        [mine, rival]
+        for (env, car), episodes in sorted(cars.items())
+        if car == 0
+        for mine, rival in zip(episodes, cars[(env, 1)], strict=True)
+    ]
 
 
 def run_battery(
@@ -152,9 +187,34 @@ def run_battery(
     games: int = 512,
     seed: int = EVAL_SEEDS[0],
     temperature: float = 1.0,
+    skipped: list[str] | None = None,
 ) -> list[SkillResult]:
-    """`temperature`: the bot car's pick rule, 1 = sampled as in training, 0 = likeliest."""
-    return [play_task(side, TASKS[name], games, seed, temperature) for name in tasks]
+    """`temperature`: the bot car's pick rule, 1 = sampled as in training, 0 = likeliest. The tasks `side`
+    can be scored on; a line for each one it cannot goes to `skipped`."""
+    results = []
+    for name in tasks:
+        if why := unsuited(TASKS[name], side.config):
+            if skipped is not None:
+                skipped.append(f"{name}: left out, {why}")
+            continue
+        results.append(play_task(side, TASKS[name], games, seed, temperature))
+    return results
+
+
+def save_results(
+    folder: Path,
+    agent_steps: int,
+    results: list[SkillResult],
+    seed: int,
+    games: int,
+    temperature: float = 1.0,
+) -> None:
+    """The skills file for the pick rule (`skills_file`) and weakness.json (sampled play only) in the run's
+    folder."""
+    append_csv(folder / skills_file(temperature), agent_steps, results, seed)
+    if temperature == 1:
+        maps = [r.weak for r in results if r.weak is not None]
+        weakness.append_report(folder / weakness.REPORT, agent_steps, maps, seed, games)
 
 
 def append_csv(path: Path, agent_steps: int, results: list[SkillResult], seed: int) -> None:

@@ -8,6 +8,7 @@ use serde::Deserialize;
 use crate::replay::ReplayLibrary;
 use crate::sim::Sim;
 use crate::snapshot::{Body, GameSnapshot};
+use crate::snapshots::{self, Snapshot};
 
 const BALL_RADIUS: f32 = 92.75;
 const CAR_REST_Z: f32 = 17.0;
@@ -71,10 +72,26 @@ pub enum SetterKind {
         max_height_uu: f32,
         max_ball_speed: f32,
     },
+    /// Practice: a 50/50. The ball at rest on the floor; the first Blue car `min_distance_uu` to
+    /// `max_distance_uu` from it on its own side (give or take 30°), the first Orange car exactly opposite
+    /// through the ball, both at rest facing it with the same boost, so neither is nearer. Needs opponents;
+    /// any other car starts at rest somewhere else.
+    FiftyFifty {
+        min_distance_uu: f32,
+        max_distance_uu: f32,
+    },
+    /// Practice: reading a ball off a side wall. The ball 600-1500 uu off a side wall, rolling or
+    /// bouncing toward it at `min_speed` to `max_speed` uu/s, so it climbs the wall or bounces off it; the
+    /// first car at rest 1500-3000 uu from the ball on the field side, facing it. Any other car starts at
+    /// rest somewhere else.
+    WallRead { min_speed: f32, max_speed: f32 },
     /// A situation from a recording of a real game (`crate::replay`): `files` are RLPR recordings (plain or
     /// zstd-compressed, as the settings loader resolved them); `air_bias` favours frames with something high
     /// up (a frame's weight is 1 + air_bias × height / ceiling height).
     Replay { files: Vec<String>, air_bias: f32 },
+    /// Recorded moments (`crate::snapshots`): `file` as the settings loader resolved it, one moment drawn at
+    /// random and given to a random Blue car with its jump and flip state, the others parked away.
+    Snapshots { file: String },
 }
 
 /// The goal line (uu); Blue defends -Y and attacks +Y.
@@ -171,6 +188,20 @@ impl WeightedSetter {
                     "aerial_ball needs 300 <= min_height_uu <= max_height_uu <= 1800 and 0 <= max_ball_speed <= 2000",
                 )
             }
+            SetterKind::FiftyFifty {
+                min_distance_uu,
+                max_distance_uu,
+            } if !(within(min_distance_uu, MIN_CAR_GAP, 3000.0)
+                && within(max_distance_uu, min_distance_uu, 3000.0)) =>
+            {
+                Some("fifty_fifty needs 250 <= min_distance_uu <= max_distance_uu <= 3000")
+            }
+            SetterKind::WallRead {
+                min_speed,
+                max_speed,
+            } if !(within(min_speed, 300.0, 3000.0) && within(max_speed, min_speed, 3000.0)) => {
+                Some("wall_read needs 300 <= min_speed <= max_speed <= 3000")
+            }
             SetterKind::Replay { ref files, .. } if files.is_empty() => {
                 Some("replay needs at least one recording file")
             }
@@ -182,11 +213,31 @@ impl WeightedSetter {
     }
 }
 
+fn load_moments(file: &str) -> Result<Vec<Snapshot>, String> {
+    let text = std::fs::read_to_string(file).map_err(|err| format!("reading {file}: {err}"))?;
+    let moments: Vec<Snapshot> = snapshots::parse_csv(&text)
+        .map_err(|err| format!("{file}: {err}"))?
+        .into_iter()
+        .map(|row| row.snapshot)
+        .collect();
+    if moments.is_empty() {
+        return Err(format!("{file} has no moments"));
+    }
+    for (n, moment) in moments.iter().enumerate() {
+        if let Some(problem) = snapshots::problem(moment) {
+            return Err(format!("{file}, moment {}: {problem}", n + 1));
+        }
+    }
+    Ok(moments)
+}
+
 pub struct SetterMix {
     setters: Vec<SetterKind>,
     weights: Vec<f32>,
     /// The loaded recordings of each replay setter (None for the other kinds).
     replays: Vec<Option<ReplayLibrary>>,
+    /// The moments of each snapshots setter (empty for the other kinds).
+    moments: Vec<Vec<Snapshot>>,
 }
 
 impl SetterMix {
@@ -203,6 +254,13 @@ impl SetterMix {
             total > 0.0,
             "state setter weights must sum to more than zero"
         );
+        if !opponents
+            && weighted
+                .iter()
+                .any(|s| matches!(s.kind, SetterKind::FiftyFifty { .. }))
+        {
+            return Err("the fifty_fifty start needs an opponent (env.opponents = true)".into());
+        }
         let weights: Vec<f32> = weighted.iter().map(|s| s.weight).collect();
         let replays = weighted
             .iter()
@@ -215,10 +273,20 @@ impl SetterMix {
                 _ => Ok(None),
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let moments = weighted
+            .iter()
+            .map(|setter| match &setter.kind {
+                SetterKind::Snapshots { file } => {
+                    load_moments(file).map_err(|err| format!("snapshots state setter: {err}"))
+                }
+                _ => Ok(Vec::new()),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             setters: weighted.into_iter().map(|setter| setter.kind).collect(),
             weights,
             replays,
+            moments,
         })
     }
 
@@ -266,6 +334,12 @@ impl SetterMix {
         };
         sim.reset_to_kickoff(rng.u64(..));
         match self.setters[index] {
+            SetterKind::Snapshots { .. } => {
+                let moments = &self.moments[index];
+                let moment = &moments[rng.usize(..moments.len())];
+                let car = snapshots::random_blue_car(sim, rng);
+                snapshots::place(sim, rng, moment, car);
+            }
             SetterKind::Replay { .. } => {
                 let library = self.replays[index]
                     .as_ref()
@@ -333,6 +407,14 @@ impl SetterMix {
                 max_height_uu,
                 max_ball_speed,
             } => aerial_ball(sim, rng, min_height_uu, max_height_uu, max_ball_speed),
+            SetterKind::FiftyFifty {
+                min_distance_uu,
+                max_distance_uu,
+            } => fifty_fifty(sim, rng, min_distance_uu, max_distance_uu),
+            SetterKind::WallRead {
+                min_speed,
+                max_speed,
+            } => wall_read(sim, rng, min_speed, max_speed),
         }
         index
     }
@@ -678,6 +760,72 @@ fn save(sim: &mut Sim, rng: &mut fastrand::Rng, min_speed: f32, max_speed: f32) 
     sim.place(ball, &cars);
 }
 
+/// Car 0 is Blue and car 1 Orange (`Sim::new`'s order); Orange's spot mirrors Blue's through the ball.
+fn fifty_fifty(sim: &mut Sim, rng: &mut fastrand::Rng, min_distance: f32, max_distance: f32) {
+    for _ in 0..PLACEMENT_ATTEMPTS {
+        let distance = min_distance + rng.f32() * (max_distance - min_distance);
+        let angle = -FRAC_PI_2 + sym(rng) * (PI / 6.0);
+        let offset = Vec3A::new(angle.cos(), angle.sin(), 0.0) * distance;
+        let ball = Body {
+            pos: Vec3A::new(sym(rng) * 2500.0, sym(rng) * 2500.0, BALL_RADIUS),
+            ..Body::RESTING
+        };
+        let blue = Vec3A::new(ball.pos.x + offset.x, ball.pos.y + offset.y, CAR_REST_Z);
+        let orange = Vec3A::new(ball.pos.x - offset.x, ball.pos.y - offset.y, CAR_REST_Z);
+        if !(in_field(blue) && in_field(orange)) {
+            continue;
+        }
+        let boost = rng.f32() * 100.0;
+        let mut cars = vec![
+            (facing(blue, ball.pos), boost, true),
+            (facing(orange, ball.pos), boost, true),
+        ];
+        park_the_rest(sim, rng, ball.pos, &mut cars);
+        sim.place(ball, &cars);
+        return;
+    }
+    panic!("no room for the cars at the fifty_fifty distances");
+}
+
+fn wall_read(sim: &mut Sim, rng: &mut fastrand::Rng, min_speed: f32, max_speed: f32) {
+    let side = if rng.bool() { 1.0 } else { -1.0 };
+    let in_air = rng.bool();
+    let pos = Vec3A::new(
+        side * (crate::custom::kit::SIDE_WALL_X - 600.0 - rng.f32() * 900.0),
+        sym(rng) * 3000.0,
+        if in_air {
+            BALL_RADIUS + 100.0 + rng.f32() * 400.0
+        } else {
+            BALL_RADIUS
+        },
+    );
+    // Toward the wall, up to 45° off straight; a ball in the air is also thrown up to 500 uu/s up or down.
+    let speed = min_speed + rng.f32() * (max_speed - min_speed);
+    let angle = sym(rng) * (PI / 4.0);
+    let up = if in_air { sym(rng) * 500.0 } else { 0.0 };
+    let ball = Body {
+        pos,
+        vel: Vec3A::new(side * angle.cos() * speed, angle.sin() * speed, up),
+        ..Body::RESTING
+    };
+    let spot = (0..PLACEMENT_ATTEMPTS)
+        .map(|_| {
+            let toward_field = if side > 0.0 { PI } else { 0.0 };
+            let angle = toward_field + sym(rng) * (PI / 3.0);
+            let distance = 1500.0 + rng.f32() * 1500.0;
+            Vec3A::new(
+                pos.x + angle.cos() * distance,
+                pos.y + angle.sin() * distance,
+                CAR_REST_Z,
+            )
+        })
+        .find(|&p| in_field(p))
+        .unwrap_or(Vec3A::new(0.0, pos.y, CAR_REST_Z));
+    let mut cars = vec![(facing(spot, pos), rng.f32() * 100.0, true)];
+    park_the_rest(sim, rng, ball.pos, &mut cars);
+    sim.place(ball, &cars);
+}
+
 fn boost_pickup(sim: &mut Sim, rng: &mut fastrand::Rng) {
     let ball = resting_ball(rng);
     let mut cars: Vec<(Body, f32, bool)> = Vec::with_capacity(sim.num_cars());
@@ -897,6 +1045,87 @@ mod tests {
             let other = &snap.cars[1];
             assert!(other.on_ground && other.body.pos.distance(snap.ball.pos) > MIN_CAR_GAP);
             assert!(other.body.pos.distance(car.body.pos) > MIN_CAR_GAP);
+        }
+    }
+
+    #[test]
+    fn fifty_fifty_puts_the_two_cars_equally_far_on_opposite_sides_of_the_ball() {
+        if !meshes_loaded() {
+            return;
+        }
+        let kind = SetterKind::FiftyFifty {
+            min_distance_uu: 1000.0,
+            max_distance_uu: 2000.0,
+        };
+        let lone = vec![WeightedSetter {
+            kind: kind.clone(),
+            weight: 1.0,
+        }];
+        assert!(
+            SetterMix::new(lone.clone(), 1, false).is_err(),
+            "needs an opponent"
+        );
+        let mix = SetterMix::new(lone, 2, true).unwrap();
+        for seed in 0..50 {
+            let mut sim = Sim::new(2, true, seed);
+            let mut rng = fastrand::Rng::with_seed(seed);
+            let mut snap = GameSnapshot::default();
+            mix.apply(&mut sim, &mut rng, &mut snap);
+            sim.read(&mut snap);
+            assert_ball_at_rest_on_the_floor(&snap);
+            let (blue, orange) = (&snap.cars[0], &snap.cars[1]);
+            assert!(
+                blue.team == crate::snapshot::Team::Blue
+                    && orange.team == crate::snapshot::Team::Orange
+            );
+            let (b, o) = (
+                (blue.body.pos - snap.ball.pos).truncate(),
+                (orange.body.pos - snap.ball.pos).truncate(),
+            );
+            assert!(
+                (b + o).length() < 1.0,
+                "seed {seed}: mirrored through the ball"
+            );
+            assert!((999.0..=2001.0).contains(&b.length()), "seed {seed}");
+            assert!(b.y < 0.0, "Blue on its own side of the ball");
+            assert_eq!(blue.boost, orange.boost);
+            for car in [blue, orange] {
+                let to_ball = (snap.ball.pos - car.body.pos).truncate().normalize();
+                assert!(car.body.forward().truncate().normalize().dot(to_ball) > 0.999);
+            }
+        }
+    }
+
+    #[test]
+    fn wall_read_sends_the_ball_at_a_side_wall_with_the_car_on_the_field_side() {
+        if !meshes_loaded() {
+            return;
+        }
+        for seed in 0..50 {
+            let snap = start(
+                SetterKind::WallRead {
+                    min_speed: 1000.0,
+                    max_speed: 2000.0,
+                },
+                2,
+                seed,
+            );
+            let ball = snap.ball;
+            let off_wall = crate::custom::kit::SIDE_WALL_X - ball.pos.x.abs();
+            assert!(
+                (599.0..=1501.0).contains(&off_wall),
+                "seed {seed}: {off_wall}"
+            );
+            assert!(
+                ball.vel.x * ball.pos.x > 0.0,
+                "seed {seed}: toward the wall"
+            );
+            let flat = ball.vel.truncate().length();
+            assert!((999.0..=2001.0).contains(&flat), "seed {seed}: {flat}");
+            let car = &snap.cars[0];
+            assert!(car.body.pos.x.abs() < ball.pos.x.abs(), "on the field side");
+            let gap = car.body.pos.truncate().distance(ball.pos.truncate());
+            assert!(gap > 1000.0 && car.on_ground, "seed {seed}: {gap}");
         }
     }
 

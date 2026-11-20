@@ -266,6 +266,22 @@ impl CarEvents {
 /// Below this height (uu) the ball's centre is on the floor (its resting height is 93.15).
 pub const BALL_FLOOR_Z: f32 = 100.0;
 
+/// A car's jump and flip state, for starting a game from a recorded moment (`crate::snapshots`): what
+/// `Sim::place` otherwise starts fresh.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct CarMoves {
+    pub has_jumped: bool,
+    pub has_double_jumped: bool,
+    pub has_flipped: bool,
+    pub is_jumping: bool,
+    pub is_flipping: bool,
+    pub jump_time: f32,
+    pub flip_time: f32,
+    pub flip_rel_torque: Vec3A,
+    pub air_time: f32,
+    pub air_time_since_jump: f32,
+}
+
 /// More of a car's state at the end of the step, for rewards of one's own (training only): what
 /// RocketSim keeps about each car beyond the snapshot. The RLBot bot never fills it.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]

@@ -531,6 +531,7 @@ class TrainingRun:
                     max(config.env.team_sizes),
                 )
         self.checkpoint_index = state["checkpoint"] if state else 0
+        self.said_saves_over = False  # the saves disk cap warned once already
         self.agent_steps = state["agent_steps"] if state else 0
         self.iterations = state["iterations"] if state else 0
         self.trainer.iterations = self.iterations  # train.log numbers iterations as metrics.csv does
@@ -830,6 +831,59 @@ class TrainingRun:
         self.last_times = report.times
         return row
 
+    def _housekeeping(self) -> None:
+        """After a save: the saves' disk cap and metrics.csv's size cap (run.saves_disk_gb,
+        metrics_max_mb)."""
+        run = self.config.run
+        if run.saves_disk_gb > 0:
+            deleted, over = self.folder.cap_saves(run.saves_disk_gb, run.milestone_steps)
+            for line in deleted:
+                print(f"Disk cap: {line}.", flush=True)
+                log.info("Disk cap: %s", line)
+            if over and not self.said_saves_over:
+                self.said_saves_over = True
+                log.warning(
+                    "The saves still take more than run.saves_disk_gb = %g GB, but the ones left are never "
+                    "deleted (the newest, and saves marked to keep): raise the cap or free space by hand.",
+                    run.saves_disk_gb,
+                )
+        if run.metrics_max_mb > 0 and self.metrics.compact(run.metrics_max_mb * 1e6):
+            line = (
+                f"metrics.csv was over {run.metrics_max_mb:g} MB (run.metrics_max_mb): every other row "
+                "dropped (the first and newest kept)"
+            )
+            print(f"{line}.", flush=True)
+            log.info(line)
+
+    def _rate_strength(self, state: dict[str, Any], path: Path) -> None:
+        """The new save's rating against the pinned anchors (strength.anchors); a failure is logged and
+        training goes on."""
+        settings = self.config.strength
+        if settings.anchors <= 0 or (self.checkpoint_index - 1) % settings.rate_every:
+            return
+        from nitro import strength
+
+        start = time.monotonic()
+        try:
+            entry = strength.rate_save(self.folder, state, self.config, path)
+        except Exception as err:  # a chart must never stop training
+            log.warning("The strength rating of this save was skipped: %s", err)
+            return
+        took = time.monotonic() - start
+        pinned = (path / strength.ANCHOR).is_file()
+        if entry is None:
+            log.info("Strength: this save is the first anchor (rating 0 by definition).")
+        else:
+            log.info(
+                "Strength: %.0f (95%% range %.0f to %.0f) against %d anchor(s), in %.1f s%s.",
+                entry["rating"],
+                entry["low"],
+                entry["high"],
+                len(entry["matches"]),
+                took,
+                "; pinned as a new anchor" if pinned else "",
+            )
+
     def checkpoint(self, continue_after: bool = True, kept: bool = False) -> Path:
         """Saves the run; when continuing, every game starts afresh and the past versions
         playing against the bot are re-drawn."""
@@ -845,12 +899,16 @@ class TrainingRun:
             kept=kept,
             copy_so_far=self.copy_so_far,
         )
+        self._housekeeping()
         self.checkpoint_index += 1
         self.saved_at_steps = self.agent_steps
         if self.replay_mix is not None and self.replay_mix.off:  # said again: it stays in the report's list
             log.warning(self.replay_mix.off)
             self.recent_warnings = [*self.recent_warnings[-4:], self.replay_mix.off]
             self.console_warnings.append(self.replay_mix.off)
+        self._rate_strength(state, path)
+        if run.skills_every > 0 and self.checkpoint_index % run.skills_every == 0:
+            self.score_skills(state)
         if continue_after:
             self.selfplay.rotate(rotation_rng(self.config.run.seed, self.checkpoint_index))
 
@@ -865,6 +923,40 @@ class TrainingRun:
                 self.cards.rebuilt = self.checkpoint_index
             self.warming_up = True
         return path
+
+    def score_skills(self, state: dict[str, Any]) -> None:
+        """run.skills_every: the save just made through `nitro skills`' battery on the training device,
+        the same situations every time. Never stops training: a problem is reported and training goes on."""
+        from nitro.eval import Side
+        from nitro.skills import run_battery, save_results
+        from nitro.tasks import EVAL_SEEDS
+
+        games, seed = self.config.run.skills_games, EVAL_SEEDS[0]
+        start = time.perf_counter()
+        skipped: list[str] = []
+        try:
+            config = self.folder.load_settings(state)
+            device = self.trainer.device
+            run = dataclasses.replace(config.run, device="cuda" if device.type == "cuda" else "cpu")
+            config = dataclasses.replace(config, run=run)
+            # The battery's own random draws leave training's exactly where they were.
+            with torch.random.fork_rng(devices=[device] if device.type == "cuda" else []):
+                side = Side(self.folder.root.name, self.agent_steps, state, config)
+                results = run_battery(side, games=games, seed=seed, skipped=skipped)
+            save_results(self.folder.root, self.agent_steps, results, seed, games)
+        except Exception as err:  # scoring must never end a run
+            log.warning(
+                "Could not score this save's skills (run.skills_every); training carries on. The problem: %s",
+                err,
+            )
+            return
+        log.info(
+            "Skills at %s agent steps (%d situations each, took %.0f s; saved in skills.csv):\n  %s",
+            f"{self.agent_steps:,}",
+            games,
+            time.perf_counter() - start,
+            "\n  ".join([r.line() for r in results] + skipped),
+        )
 
     def state(self) -> dict[str, Any]:
         """Everything a save holds: the run continues exactly from it."""

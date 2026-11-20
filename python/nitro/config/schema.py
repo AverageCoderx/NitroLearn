@@ -149,6 +149,34 @@ class RunConfig:
         "available. 0 = keep only the newest saves.",
         minimum=0,
     )
+    saves_disk_gb: float = setting(
+        0.0,
+        "Most disk space the run's saves may take, in GB (0 = no limit). Over it, the oldest saves are "
+        "deleted first, then the oldest milestone saves; the newest save and saves marked to keep are never "
+        "deleted. Each deletion is said in the console and train.log.",
+        minimum=0.0,
+    )
+    metrics_max_mb: float = setting(
+        0.0,
+        "Most size metrics.csv (the run's numbers, one row an iteration) may grow to, in MB (0 = no limit). "
+        "Over it, at a save, every other row is dropped (the first and newest stay): the charts keep the "
+        "same points, only finer detail between them goes. Rows kept are never changed.",
+        minimum=0.0,
+    )
+    auto_restart: bool = setting(
+        False,
+        "Start training again by itself after it stops unexpectedly (a crash) or the computer restarts. "
+        "It carries on from the newest save. A stop you ask for (Stop, Ctrl+C) is never undone. To start "
+        "again after a computer restart it adds a start-up entry for your user (Windows: the Startup "
+        "folder; Linux: autostart), removed once no bot needs it.",
+    )
+    auto_restart_limit: int = setting(
+        3,
+        "With auto_restart: how many times in a row it starts again without a new save in between. One "
+        "crash more and it stops trying and says why (a problem that comes back at once needs fixing).",
+        minimum=1,
+        maximum=100,
+    )
     report_minutes: float = setting(2.0, "Rewrite the run's report.html this often, in minutes.", minimum=0.1)
     console: Literal["line", "report"] = setting(
         "line",
@@ -160,6 +188,20 @@ class RunConfig:
     )
     console_seconds: float = setting(
         10.0, "How often the console line or report is printed while training, in seconds.", minimum=1.0
+    )
+    skills_every: int = setting(
+        0,
+        "Every this many saves, score the save just made on the practice skills, as nitro skills does "
+        ": the same held-out situations every time, rows added to the run's skills.csv and its "
+        "weakness map to weakness.json, one line in the console with the time it took. Training waits "
+        "while it plays. 0 = off. A problem while scoring is reported and training carries on.",
+        minimum=0,
+    )
+    skills_games: int = setting(
+        128,
+        "With skills_every: situations per skill. Fewer is quicker but noisier (nitro skills plays 512).",
+        minimum=8,
+        maximum=4096,
     )
 
 
@@ -234,6 +276,14 @@ class ModelConfig:
         "Rescale each layer's outputs to a steady range (layer normalisation), "
         "which keeps learning steady however the weights grow. Needed by "
         "residual, fused_norm and weight_decay.",
+    )
+    input_map: int = setting(
+        0,
+        "For bots brought over from another framework (nitro import-rlgym): the networks read this many "
+        "numbers, made from the observation by a fixed map kept in the bot's save (picked, scaled and, as "
+        "RLGym-PPO does, standardised and clipped), so the network sees exactly what it was trained on. 0 = "
+        "off: the networks read the observation itself. Set by the import; fixed once the bot has saves.",
+        minimum=0,
     )
     fused_norm: bool = setting(
         False,
@@ -730,6 +780,10 @@ class PPOConfig:
         return [name for name, used in on.items() if used]
 
 
+# Exact copies of other frameworks' observations: no ball prediction, shuffled places or attention.
+COPIED_OBSERVATIONS = ("gigalearn_advanced", "gigalearn_default", "gigalearn_padder", "rlgym_padder")
+
+
 @dataclass(frozen=True)
 class EnvConfig:
     # [env.physics] held physics constants; an empty table is accepted and ignored, any value refused.
@@ -791,7 +845,7 @@ class EnvConfig:
         maximum=31,
     )
     observation: Literal[
-        "native", "nitro_v2", "gigalearn_advanced", "gigalearn_default", "gigalearn_padder"
+        "native", "nitro_v2", "gigalearn_advanced", "gigalearn_default", "gigalearn_padder", "rlgym_padder"
     ] = setting(
         "nitro_v2",
         "What the bot sees: 'nitro_v2' (the default: NitroLearn's own observation plus the relative, "
@@ -800,16 +854,18 @@ class EnvConfig:
         "same on ball touch and on saves (0.88 against 0.87). For bots brought over from GigaLearn, exact "
         "copies of its observations: 'gigalearn_advanced' (AdvancedObs, 109 numbers in 1v1), "
         "'gigalearn_default' (DefaultObs, 89) and 'gigalearn_padder' (AdvancedObsPadderGGL, a community "
-        "GigaLearn observation, 109; its room for players is env.obs_team_size). The GigaLearn ones work "
-        "without ball prediction, shuffle_slots and attention or transformer encoders, and only "
-        "gigalearn_padder takes env.obs_team_size. Fixed once the bot has saves.",
+        "GigaLearn observation, 109; its room for players is env.obs_team_size). For bots brought over from "
+        "RLGym-PPO: 'rlgym_padder' (rlgym-tools' AdvancedObsPadder; its room is env.obs_team_size). These "
+        "copies work without ball prediction, shuffle_slots and attention or transformer encoders, and only "
+        "the two padders take env.obs_team_size. Fixed once the bot has saves.",
     )
-    action_masks: Literal["standard", "gigalearn"] = setting(
+    action_masks: Literal["standard", "gigalearn", "none"] = setting(
         "standard",
         "Which of the 90 actions the bot may pick at each moment (the others are masked): 'standard' "
         "(NitroLearn's rules) or 'gigalearn' (GigaLearn's exact rules, for bots brought over from "
-        "GigaLearn: it never allows one air action and its air yaw actions hold handbrake). Fixed once the "
-        "bot has saves.",
+        "GigaLearn: it never allows one air action and its air yaw actions hold handbrake) or 'none' (every "
+        "action always allowed, as RLGym-PPO trains, for bots brought over from it). Fixed once the bot has "
+        "saves.",
     )
     obs_team_size: int = setting(
         0,
@@ -881,9 +937,7 @@ class EnvConfig:
         if 0 < self.obs_team_size < self.team_size:
             found.append(("obs_team_size", f"must be 0 or at least team_size ({self.team_size})"))
         if self.obs_team_size > 0 and self.observation in ("gigalearn_advanced", "gigalearn_default"):
-            found.append(
-                ("obs_team_size", "needs the 'native', 'nitro_v2' or 'gigalearn_padder' observation")
-            )
+            found.append(("obs_team_size", "needs the 'native', 'nitro_v2' or a padder observation"))
         if self.shuffle_slots and self.is_gigalearn:
             found.append(("shuffle_slots", "needs the 'native' or 'nitro_v2' observation"))
         found += [("ball_prediction", problem) for problem in self.ball_prediction_problems()]
@@ -951,8 +1005,9 @@ class EnvConfig:
 
     @property
     def is_gigalearn(self) -> bool:
-        """One of GigaLearn's observations (no car places of NitroLearn's kind, no ball prediction)."""
-        return self.observation.startswith("gigalearn")
+        """An exact copy of another framework's observation, GigaLearn's or RLGym's (no car places of
+        NitroLearn's kind, no ball prediction)."""
+        return self.observation in COPIED_OBSERVATIONS
 
     @property
     def mixed_sizes(self) -> bool:
@@ -1044,6 +1099,41 @@ class SelfPlayConfig:
         "Warn when the bot's rating against its past versions has not risen for this many agent steps "
         "(0 = never warn).",
         minimum=0,
+    )
+
+
+@dataclass(frozen=True)
+class StrengthConfig:
+    """A strength chart against pinned anchors (off by default)."""
+
+    anchors: int = setting(
+        0,
+        "How many saves become anchors: fixed points the bot's strength is measured from. The first save is "
+        "always one, then the first save of every anchor_every_steps, until there are this many. Anchors are "
+        "kept for good (never deleted with old saves) and never played in training. After each save the bot "
+        "plays a short match from kickoffs against every anchor and gets a rating on a fixed scale (the "
+        "first anchor = 0; 400 more = ten times the goals), charted on the Overview. For your own reading of "
+        "a run, not proof that a setting is better. 0 = off.",
+        minimum=0,
+        maximum=20,
+    )
+    anchor_every_steps: int = setting(
+        1_000_000_000,
+        "With anchors: the next anchor is the first save in each new block of this many agent steps.",
+        minimum=1,
+    )
+    points: int = setting(
+        100,
+        "With anchors: points played against each anchor per rating (from kickoff to a goal, or none after "
+        "the bot's no-touch time or 60 s). More points give a narrower range and take longer: the training "
+        "waits for the matches (on a PC, a few seconds per 100 points and anchor for a small network).",
+        minimum=10,
+        maximum=5000,
+    )
+    rate_every: int = setting(
+        1,
+        "With anchors: rate every this many saves (1 = every save). Anchors are pinned on the saves rated.",
+        minimum=1,
     )
 
 
@@ -1514,6 +1604,10 @@ class NitroConfig:
     exploiters: ExploitersConfig = section(
         ExploitersConfig, "Copies of the bot trained to beat it, then played against (off by default)."
     )
+    strength: StrengthConfig = section(
+        StrengthConfig,
+        "A strength chart against pinned anchor saves (off by default).",
+    )
     start_from: StartFromConfig = section(
         StartFromConfig, "Starting a new run from another run's trained networks (transfer learning)."
     )
@@ -1687,6 +1781,8 @@ class NitroConfig:
             found.append(("run.fp16_sums", "needs run.precision = 'fp16'"))
         if self.rewards and not self.active_rewards:
             found.append(("rewards", "every reward is switched off (enabled = false): switch one on"))
+        if not self.env.opponents and any(s.name == "fifty_fifty" for s in self.state_setters):
+            found.append(("state_setters", "the fifty_fifty start needs an opponent (env.opponents = true)"))
         if self.pretrain.enabled and self.start_from.source:
             found.append(
                 (
@@ -1756,6 +1852,10 @@ class NitroConfig:
         if self.ppo.advantage_keep_rest < 1 and self.run.cards > 1:
             found.append(
                 ("ppo.advantage_keep_rest", "below 1 does not work with several cards (run.cards) yet")
+            )
+        if self.model.input_map and (self.model.uses_attention or self.model.residual):
+            found.append(
+                ("model.input_map", "works with plain networks only (no encoder, no model.residual)")
             )
         if self.model.uses_attention:
             if self.env.is_gigalearn:

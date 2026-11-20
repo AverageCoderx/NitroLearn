@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from nitro import pack, rebuild, reward_check, rlbot_find, rlbot_install
+from nitro import gauntlet_card, keeper, pack, rebuild, reward_check, rlbot_find, rlbot_install
 from nitro.config.loader import ConfigError, load_toml
 from nitro.config.rewards import custom_kinds
 from nitro.config.schema import NitroConfig, large_networks
@@ -39,6 +39,7 @@ from nitro.dashboard import (
     starts,
 )
 from nitro.dashboard.garage import GarageApi, preset_cards
+from nitro.dashboard.helping import HelpApi
 from nitro.dashboard.info import InfoApi
 from nitro.dashboard.jobs import CONSOLE, Jobs, read_console
 from nitro.dashboard.tools import Tools
@@ -56,6 +57,7 @@ _RESERVED = {"con", "prn", "aux", "nul", *(f"{port}{i}" for port in ("com", "lpt
 _BUILD = ".build"  # the jobs list's name for a build of the core with one's own Rust rewards
 _CONVERT = ".convert"  # the jobs list's name for converting replays only
 _RLBOT = ".rlbot"  # the jobs list's name for installing RLBot v5 (`nitro install-rlbot`)
+_DATASET = ".dataset"  # the jobs list's name for downloading replays (nitro get-replays)
 PENDING = "pending.json"  # the waiting changes, in the runs folder's .dashboard
 NEW_ACTION_DELAY = 1  # ticks, for new bots
 # How a bot gets its first save: one copying replays saves when the copy is ready.
@@ -150,7 +152,7 @@ def _newest_finished(folder: RunFolder) -> dict[str, Any] | None:
     return None
 
 
-class Api(InfoApi, GarageApi, Tools, Watching, Updating):
+class Api(InfoApi, GarageApi, Tools, Watching, Updating, HelpApi):
     def __init__(self, project: Path, runs: Path) -> None:
         self._project = project
         self._runs = runs
@@ -245,6 +247,7 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
         out["reward_changes"] = self._reward_changes(folder, name)
         out["start_changes"] = self._start_changes(folder, name)
         out["notes"] = self._notes(folder)
+        out["gauntlet"] = gauntlet_card.newest(folder.root / gauntlet_card.REPORT)
         out["newest"] = bots.newest(folder)
         out["wandb"] = bots.wandb_url(folder)
         out["report"] = folder.report.is_file()
@@ -653,6 +656,8 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
         if (state := bots.running(folder)) is not None:
             self._note_running(name, state)
             return {"error": f"{name} is already training"}
+        if keeper.alive(folder):
+            return {"error": f"{name} starts again by itself in a moment (auto restart); Stop stops it"}
         if busy := self._busy(name):
             return {"error": busy}
         waiting = (self._pending, self._reward_pending, self._start_pending)
@@ -710,6 +715,9 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
     def stop(self, name: str) -> dict[str, Any]:
         folder = self._folder(name)
         if (state := bots.running(folder)) is None:
+            if keeper.alive(folder):  # waiting to start again after a crash (run.auto_restart)
+                (folder.root / bots.STOP_REQUEST).write_text("stop\n", encoding="utf-8")
+                return {"stopping": True}
             return {"error": f"{name} is not training"}
         self._note_running(name, state)
         self._applying.pop(name, None)  # the trainer then saves and stops, without starting again
@@ -1313,6 +1321,99 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
         self._jobs.start(_CONVERT, "convert", args, folder)
         return {"started": True}
 
+    def _dataset_folder(self) -> Path:
+        return self._runs / ".dashboard" / "dataset"
+
+    @_safe
+    def dataset(self, after: int = 0) -> dict[str, Any]:
+        """Downloading replays (`nitro get-replays`): what is published (as last fetched), what is here by
+        game size, the download's state and progress, the conversion's after it, and what it printed
+        after byte `after`."""
+        from nitro import replay_dataset, replays
+
+        job = self._jobs.get(_DATASET, "dataset")
+        state = (
+            "none"
+            if job is None
+            else "running"
+            if not job.done
+            else "stopped"
+            if job.stopped
+            else "done"
+            if job.code == 0
+            else "failed"
+        )
+
+        def read(live: Path) -> Any:
+            with contextlib.suppress(OSError, ValueError):
+                return json.loads(live.read_text(encoding="utf-8")) if live.is_file() else None
+            return None
+
+        progress, converting = read(replay_dataset.progress_file()), read(replays.converting_file())
+        published = None
+        kept = replay_dataset.folder() / "manifest.json"
+        if kept.is_file():
+            with contextlib.suppress(OSError, replay_dataset.DatasetError):
+                published = replay_dataset.read_manifest(kept.read_bytes()).available()
+        here = {
+            size: sum(1 for _ in replay_dataset.size_folder(size).glob("*.replay"))
+            for size in replay_dataset.SIZES
+            if replay_dataset.size_folder(size).is_dir()
+        }
+        text, end = read_console(self._dataset_folder(), int(after))
+        return {
+            "state": state,
+            "progress": progress,
+            "converting": converting,
+            "published": published,
+            "here": here,
+            "folders": {size: str(replay_dataset.size_folder(size)) for size in replay_dataset.SIZES},
+            "credit": replay_dataset.CREDIT,
+            "text": text,
+            "next": end,
+        }
+
+    @_safe
+    def dataset_published(self) -> dict[str, Any]:
+        """Fetches the list of replays that can be downloaded (a small file from GitHub)."""
+        from nitro import replay_dataset
+
+        try:
+            manifest = replay_dataset.fetch_manifest(say=lambda _: None)
+        except replay_dataset.NotPublished as err:
+            return {"unavailable": str(err)}
+        except replay_dataset.DatasetError as err:
+            return {"error": f"The list of replays could not be fetched: {err}"}
+        return {"published": manifest.available()}
+
+    @_safe
+    def dataset_start(self, size: str, count: int, convert: bool = True) -> dict[str, Any]:
+        """Starts `nitro get-replays`: `count` new replays of `size` (0 = all), best first, then converts them
+        into the store unless `convert` is off."""
+        from nitro import replay_dataset
+
+        if size not in replay_dataset.SIZES:
+            return {"error": f"the game size is one of {', '.join(replay_dataset.SIZES)}"}
+        if int(count) < 0:
+            return {"error": "how many: a whole number, 0 for all"}
+        job = self._jobs.get(_DATASET, "dataset")
+        if job is not None and not job.done:
+            return {"error": "replays are already being downloaded"}
+        try:
+            replay_dataset.fetch_manifest(say=lambda _: None)
+        except replay_dataset.NotPublished as err:
+            return {"unavailable": str(err)}
+        except replay_dataset.DatasetError:
+            pass  # the download says why, with what it keeps
+        folder = self._dataset_folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / CONSOLE).unlink(missing_ok=True)
+        replay_dataset.progress_file().unlink(missing_ok=True)
+        args = ["get-replays", "--size", size, "--count", str(int(count))]
+        args += ["--meshes", str(self._project / "collision_meshes")] if convert else ["--no-convert"]
+        self._jobs.start(_DATASET, "dataset", args, folder)
+        return {"started": True}
+
     @_safe
     def convert_folders(self, folders: list[str]) -> dict[str, Any]:
         """Keeps the folders chosen for converting, for the next time the page opens."""
@@ -1378,8 +1479,12 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
     # ---------- Check this PC ----------
     @_safe
     def check_pc(self) -> dict[str, Any]:
-        """The checks of `nitro doctor`, each with its state, its message and how to fix it."""
-        return checks.run(self._project)
+        """The checks of `nitro doctor`, each with its state, its message and how to fix it (kept for the
+        report for Discord)."""
+        found = checks.run(self._project)
+        if "checks" in found:
+            self._last_checks = found
+        return found
 
     # ---------- helpers ----------
     def _summary(self, folder: RunFolder) -> dict[str, Any]:
@@ -1412,6 +1517,8 @@ class Api(InfoApi, GarageApi, Tools, Watching, Updating):
             self._note_running(name, bots.running(folder))
         elif starting is not None and not starting.done and not starting.seen_running:
             out["status"] = "starting"
+        if kept := keeper.banner(folder):
+            out["kept"] = kept
         exporting = self._jobs.get(name, "export")
         out["exporting"] = exporting is not None and not exporting.done
         checking = self._jobs.get(name, "check")

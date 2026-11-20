@@ -13,7 +13,7 @@ from nitro import _core
 from nitro.build_info import check_core
 from nitro.config.rewards import AllOf, Custom, Reward, ZeroSum
 from nitro.config.schema import NitroConfig
-from nitro.config.state_setters import Replay, StateSetter
+from nitro.config.state_setters import Replay, Snapshots, StateSetter
 from nitro.model import observation_room
 from nitro.recordings import replay_files
 
@@ -55,6 +55,8 @@ def tagged(item: Any) -> dict[str, Any]:
     if isinstance(item, Replay):
         # The core gets the concrete files; the patterns and the bundled flag are the Python side's.
         return {"name": item.name, "files": replay_files(item), "air_bias": item.air_bias}
+    if isinstance(item, Snapshots):
+        return {"name": item.name, "file": str(item.file)}
     if isinstance(item, AllOf):
         return {"name": item.name, "parts": [tagged(part) for part in item.parts]}
     if isinstance(item, Custom):  # a reward of one's own: its name and its own settings
@@ -179,6 +181,12 @@ class EnvPool:
         """Blocks until `group` has finished its step."""
         self._core.wait(group)
 
+    def game_states(self, group: int, arenas: int) -> torch.Tensor:
+        """`group`'s `arenas` arenas' whole game states, one row each (the layout of the core's
+        `Env::write_state`; arenas of one game size), for checks made outside the core. Call between steps."""
+        values = torch.tensor(self._core.game_states(group), dtype=torch.float32)
+        return values.reshape(arenas, -1)
+
     def card_start(self, group: int) -> tuple[int, int]:
         """The addresses of a C function and its argument that start one step of `group` as `step` does,
         for a CUDA host node to call (`env.card_starts_games`). Keep this pool alive while anything may
@@ -193,6 +201,11 @@ class EnvPool:
         """Which of `arena`'s cars (Blue, Orange, Blue, Orange...) count in `take_stats`; self-play leaves
         its frozen opponents out so the logged rewards are the learner's alone."""
         self._core.set_counted(arena, counted)
+
+    def set_scripted(self, arena: int, team: int, script: str | None) -> None:
+        """Gives `arena`'s cars of `team` (0 Blue, 1 Orange) to a scripted benchmark opponent
+        (`nitro.gauntlet`), or back to the policy with None; the actions chosen for them are ignored."""
+        self._core.set_scripted(arena, team, script)
 
     @property
     def num_actions(self) -> int:
@@ -210,3 +223,18 @@ class EnvPool:
     def take_capture(self, arena: int) -> list[float]:
         """The viewer frames `arena` wrote since the last call, flat."""
         return self._core.take_capture(arena)
+
+    def moments(self, arena: int) -> list[list[float]]:
+        """Every car's moment in `arena` now, in car order: the 41 numbers of a `snapshots` start
+        (`nitro_core::snapshots::COLUMNS`), as Blue sees the field."""
+        return self._core.moments(arena)
+
+    def keep_reward_parts(self, arena: int, on: bool = True) -> None:
+        """Keeps what each reward pays each car of `arena` in every step (`reward_parts`), or stops."""
+        self._core.keep_reward_parts(arena, on)
+
+    def reward_parts(self, arena: int) -> list[float]:
+        """What each reward paid each car of `arena` in its last step, after zero-sum and weight, flat
+        `[reward * cars + car]` (rewards in `reward_labels` order); each car's add up, in order, to its
+        reward. Empty unless kept."""
+        return self._core.reward_parts(arena)

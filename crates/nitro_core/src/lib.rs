@@ -19,9 +19,12 @@ pub mod replay;
 pub mod replicar;
 pub mod rewards;
 pub mod rlpr;
+pub mod score;
+pub mod scripted;
 pub mod setters;
 pub mod sim;
 pub mod snapshot;
+pub mod snapshots;
 pub mod team;
 pub mod terminals;
 #[cfg(test)]

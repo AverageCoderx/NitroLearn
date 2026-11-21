@@ -71,7 +71,7 @@ pub fn same_controls(a: &CarControls, b: &CarControls) -> bool {
 }
 
 /// A row's car as RocketSim's state (the mapping replicar's `restore` uses: wheels only as touching or not).
-/// RocketSim keeps the contact cache private: the ground flag and touching wheels go in through
+/// RocketSim does not expose the contact cache: the ground flag and touching wheels go in through
 /// `set_contact_flags`, the previous controls through `set_prev_controls`, and the world-contact normal, which
 /// has no setter, through the state's serde form.
 pub fn state_of(c: &Car) -> Result<CarState, String> {

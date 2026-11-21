@@ -35,6 +35,7 @@ from nitro import __version__, rebuild, tracking
 from nitro.config.loader import ConfigError, parse_toml
 from nitro.config.rewards import Custom, custom_kinds
 from nitro.config.schema import NitroConfig
+from nitro.keeper import FILES as KEEPER_FILES
 from nitro.runs import RunFolder
 from nitro.viewer import LIVE_PAGE
 
@@ -54,7 +55,17 @@ WANDB = "wandb_run.json"  # nitro.tracking.STATE_FILE: which W&B run the bot rep
 # commands' console (their command lines name this computer's folders), the trainer's log and how its last
 # start-again after an Apply went.
 _LOGS = {"console.log", "train.log", "apply_restart.json"}
-_SKIPPED = {"running.json", "stop.request", SETTINGS_FILES, LIVE_PAGE, "recordings", "cards", "wandb", *_LOGS}
+_SKIPPED = {
+    "running.json",
+    "stop.request",
+    SETTINGS_FILES,
+    LIVE_PAGE,
+    "recordings",
+    "cards",
+    "wandb",
+    *_LOGS,
+    *KEEPER_FILES,
+}
 _SECTIONS = ("run/", "files/", "rust/", "meshes/")
 _FULL_PATH = re.compile(r"^(/|[A-Za-z]:[\\/]|\\\\)")  # a full path on Linux, macOS or Windows
 _WINDOWS_PATH = re.compile(r"^([A-Za-z]:[\\/]|\\\\)")  # one on Windows: a drive letter, or \\server\share

@@ -26,7 +26,7 @@ const TOOL_ICON = (() => {
 // (`dialog`) or outside the window.
 const TOOLS = [
   { id: "eval", icon: "flag", name: "Test against older saves", line: "Is the newest save really better? It plays an earlier one.", form: true, hint: "nitro eval", keywords: ["eval", "match", "versus", "older", "save", "better", "play against"] },
-  { id: "skills", icon: "bars", name: "Skill check", line: "Six short drills: touch, landing, boost, shot, save, aerial.", form: true, hint: "nitro skills", keywords: ["skills", "drills", "score", "practice"] },
+  { id: "skills", icon: "bars", name: "Skill check", line: "Nine short drills: touch, landing, boost, shot, save, aerial, kickoff, 50/50, wall read.", form: true, hint: "nitro skills", keywords: ["skills", "drills", "score", "practice"] },
   { id: "ab", icon: "versus", name: "Compare two settings", line: "Trains fresh bots with each and says if one is clearly better.", form: true, hint: "nitro ab", keywords: ["ab", "compare", "settings", "a/b", "speed", "experiment"] },
   { id: "surgery", icon: "grow", name: "Change the network's size", line: "A wider copy of the bot that plays the same and can learn more.", form: true, hint: "nitro surgery", keywords: ["surgery", "widen", "network", "size", "bigger", "parameters"] },
   { id: "export", icon: "rocket", name: "Make RLBot bot", line: "A folder RLBot can play in a real match on this PC.", form: true, hint: "nitro export", keywords: ["export", "rlbot", "match", "bot folder"] },
@@ -146,7 +146,7 @@ const TOOL_FORMS = {
     title: b => `Skill check of ${b.name}`,
     go: "Run the drills",
     defaults: () => ({ save: 0, situations: 512, as_bot: false }),
-    about: b => `<p>Puts a save of <b>${esc(b.name)}</b> through six short drills against an opponent that stands still: touch a ball at rest, land on its wheels, collect boost, score in an empty net, save a shot, touch a ball in the air.</p><p>Each score is set against a bar: what a fresh bot trained on that one drill alone reaches. It says whether a skill is there, not how good the bot is. The scores are also added to <span class="mono">skills.csv</span> in the bot's folder.</p>`,
+    about: b => `<p>Puts a save of <b>${esc(b.name)}</b> through nine short drills. Six against an opponent that stands still: touch a ball at rest, land on its wheels, collect boost, score in an empty net, save a shot, touch a ball in the air. Three more: win kickoffs and 50/50s against a scripted opponent, and read a ball off the wall.</p><p>Each score is set against a bar: for the first six, what a fresh bot trained on that one drill alone reaches; for the last three, what a simple scripted player reaches. It says whether a skill is there, not how good the bot is. The scores are also added to <span class="mono">skills.csv</span> in the bot's folder.</p>`,
     fields: b => {
       const saves = savesOf(b.name);
       return optRow("Which save", optSelect("save", [[0, saves.length ? `Its newest save (${whole(saves[0])} steps)` : "It has no save yet"], ...saves.slice(1).map(s => [s, `Save at ${whole(s)} steps`])], "Which save"))

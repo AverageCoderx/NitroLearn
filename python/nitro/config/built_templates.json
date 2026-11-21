@@ -1,0 +1,162 @@
+[
+  {
+    "title": "chase_the_ball",
+    "about": "Every step: how fast the car moves toward the ball. The same as the built-in velocity_player_to_ball.",
+    "copies": {
+      "name": "velocity_player_to_ball"
+    },
+    "terms": [
+      {
+        "measure": "speed_toward_ball"
+      }
+    ]
+  },
+  {
+    "title": "flip_back_height",
+    "about": "When the car gets its flip back above 100 units: its height x 0.25.",
+    "terms": [
+      {
+        "when": "me.regained_flip and me.z > 100",
+        "value": "me.z * 0.25"
+      }
+    ]
+  },
+  {
+    "title": "aerial_air_time",
+    "about": "On a touch: the smaller of the time in the air (a variable, up to 1.75 s) and the ball's height. The same as aerial_touch_airtime.",
+    "copies": {
+      "name": "custom",
+      "kind": "aerial_touch_airtime",
+      "settings": {}
+    },
+    "vars": [
+      {
+        "name": "air",
+        "start": 0,
+        "next": "if(me.on_ground, 0, air + dt)"
+      }
+    ],
+    "terms": [
+      {
+        "when": "me.touch",
+        "value": "min(min(prev(air), 1.75) / 1.75, ball.z / 2044)"
+      }
+    ]
+  },
+  {
+    "title": "kickoff_race",
+    "about": "Every step of a kickoff: 1 while nearer the ball than every opponent, else -0.8. The same as kickoff_nearest.",
+    "copies": {
+      "name": "custom",
+      "kind": "kickoff_nearest",
+      "settings": {}
+    },
+    "terms": [
+      {
+        "when": "ball.x == 0 and ball.y == 0",
+        "value": "if(has_opp and dist(me.pos, ball.pos) < min_opps(dist(it.pos, ball.pos)), 1, -0.8)"
+      }
+    ]
+  },
+  {
+    "title": "keep_apart",
+    "about": "Every step: a charge for each teammate nearer than 1000 units (-1 on top of it).",
+    "terms": [
+      {
+        "when": "not me.demoed",
+        "value": "sum_mates(if(not it.demoed and dist(me.pos, it.pos) < 1000, -(1 - dist(me.pos, it.pos) / 1000), 0))"
+      }
+    ]
+  },
+  {
+    "title": "wall_ready",
+    "about": "On a wall above 200 with the ball just above and over 50 boost: 1 a step, 4 with a touch. The same as wall_positioning.",
+    "copies": {
+      "name": "custom",
+      "kind": "wall_positioning",
+      "settings": {}
+    },
+    "terms": [
+      {
+        "when": "me.on_ground and me.z > 200 and ball.z > me.z and dist(ball.pos, me.pos) < 463.75 and me.boost > 50",
+        "value": "if(me.touch, 4, 1)",
+        "every_step": true
+      }
+    ]
+  },
+  {
+    "title": "fast_goal",
+    "about": "On a goal: the ball's speed the step before (x 1.75 when it was off the floor). The same as goal_speed_and_placement.",
+    "copies": {
+      "name": "custom",
+      "kind": "goal_speed_and_placement",
+      "settings": {}
+    },
+    "terms": [
+      {
+        "when": "goal",
+        "value": "if(prev(ball.z) > 102.75, 1.75 * (prev(ball.speed) / 6000), prev(ball.speed) / 6000)"
+      }
+    ]
+  },
+  {
+    "title": "land_well",
+    "about": "Falling above 250 units: how well the nose follows the flight and the roof points up. The same as landing_recovery.",
+    "copies": {
+      "name": "custom",
+      "kind": "landing_recovery",
+      "settings": {}
+    },
+    "terms": [
+      {
+        "when": "me.in_air and me.vel.z < 0 and me.z > 250",
+        "value": "(dot(norm(flat(me.vel)), norm(flat(me.forward))) + me.up.z) / 2"
+      }
+    ]
+  },
+  {
+    "title": "touch_then_goal",
+    "about": "On a goal: 1 when the car touched the ball in the 3 seconds before (a sequence).",
+    "copies": {
+      "name": "test",
+      "kind": "touch_then_goal"
+    },
+    "terms": [
+      {
+        "when": "goal",
+        "value": "since(me.touch) <= 3"
+      }
+    ]
+  },
+  {
+    "title": "reset_then_shot",
+    "about": "A shot within 2 seconds of a flip reset (a sequence).",
+    "copies": {
+      "name": "test",
+      "kind": "reset_then_shot"
+    },
+    "terms": [
+      {
+        "value": "me.shot and since(me.flip_reset) < 2"
+      }
+    ]
+  },
+  {
+    "title": "long_air_dribble",
+    "about": "A touch in the air after at least 1 second in the air, more for each touch in a row without landing (a counter), at most 5 an episode.",
+    "vars": [
+      {
+        "name": "chain",
+        "start": 0,
+        "next": "if(me.on_ground, 0, if(me.touch, chain + 1, chain))"
+      }
+    ],
+    "terms": [
+      {
+        "when": "me.touch and me.in_air and held(me.in_air) >= 1",
+        "value": "chain",
+        "cap_episode": 5
+      }
+    ]
+  }
+]

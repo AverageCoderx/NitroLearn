@@ -18,5 +18,6 @@ render();
   every(1500, pollUpdate);
   every(1500, pollRLBotInstall);
   every(2000, pollConverting);
+  every(2000, pollDataset);
   every(3600 * 1000, askNotice);  // a dashboard left open for days hears of a new version too
 })();

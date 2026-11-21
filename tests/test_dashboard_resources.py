@@ -97,7 +97,7 @@ def test_the_library_keeps_paths_and_notes_and_refuses_what_it_cannot_use(tmp_pa
     assert ident not in {e["id"] for e in api.resources()["files"]} and f["set.toml"].is_file()
     assert "file:" + ident not in api.resources()["notes"]
     built_in = api.resources()
-    assert len([k for k in built_in["rewards"] if not k.get("own")]) == 13
+    assert len([k for k in built_in["rewards"] if not k.get("own")]) == 14
     assert "nitro_v2" in built_in["observation"]["options"]
 
 

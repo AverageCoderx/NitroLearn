@@ -27,6 +27,8 @@ pub enum MaskRule {
     /// the floor counts as turtled.
     #[serde(rename = "gigalearn")]
     GigaLearn,
+    /// Every action always allowed, as RLGym-PPO trains (it has no masks; for bots brought over from it).
+    None,
 }
 
 impl MaskRule {
@@ -35,6 +37,7 @@ impl MaskRule {
         match name {
             "standard" => Some(Self::Standard),
             "gigalearn" => Some(Self::GigaLearn),
+            "none" => Some(Self::None),
             _ => None,
         }
     }
@@ -44,6 +47,7 @@ impl MaskRule {
         match self {
             Self::Standard => "standard",
             Self::GigaLearn => "gigalearn",
+            Self::None => "none",
         }
     }
 }
@@ -70,7 +74,7 @@ struct Situation {
 }
 
 const SITUATIONS: usize = 8;
-const RULES: [MaskRule; 2] = [MaskRule::Standard, MaskRule::GigaLearn];
+const RULES: [MaskRule; 3] = [MaskRule::Standard, MaskRule::GigaLearn, MaskRule::None];
 
 impl Situation {
     fn of(car: &CarSnapshot) -> Self {
@@ -193,7 +197,7 @@ impl ActionTable {
                     &ground
                 } else {
                     match rule {
-                        MaskRule::Standard => &air_standard,
+                        MaskRule::Standard | MaskRule::None => &air_standard,
                         MaskRule::GigaLearn => &air_gigalearn,
                     }
                 };
@@ -209,6 +213,7 @@ impl ActionTable {
                             (base[i] && (situation.has_boost || !boost))
                                 || (jump && situation.can_jump)
                         }
+                        MaskRule::None => true,
                     };
                     out[i] = u8::from(allowed);
                 }
@@ -256,6 +261,7 @@ impl ActionTable {
         let r = match rule {
             MaskRule::Standard => 0,
             MaskRule::GigaLearn => 1,
+            MaskRule::None => 2,
         };
         let start = (r * SITUATIONS + Situation::of(car).index()) * len;
         out.copy_from_slice(&self.masks[start..start + len]);
@@ -335,6 +341,22 @@ mod tests {
             let ok = allowed(&table, MaskRule::Standard, &car(on_ground, true, 0.0));
             assert!(ok.iter().all(|&i| !table.controls(i).boost));
         }
+    }
+
+    #[test]
+    fn the_none_rule_allows_every_action_everywhere() {
+        let table = ActionTable::new();
+        for state in [
+            car(true, true, 50.0),
+            car(false, false, 0.0),
+            car(true, false, 0.0),
+        ] {
+            assert_eq!(allowed(&table, MaskRule::None, &state).len(), NUM_ACTIONS);
+        }
+        assert_eq!(
+            serde_json::from_str::<MaskRule>("\"none\"").unwrap(),
+            MaskRule::None
+        );
     }
 
     #[test]

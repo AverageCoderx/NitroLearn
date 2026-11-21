@@ -38,6 +38,105 @@ _RUST_KINDS = {"f32": "float", "f64": "float", "bool": "bool", "String": "text"}
 # The header line that puts a reward file or a reward set in the trick-move group.
 MOVES_GROUP = "group: moves"
 
+# A reward built from blocks: its title names it in metrics.csv, its terms say what it pays.
+BUILT = "built"
+_TERM_DEFAULTS: dict[str, Any] = {
+    "when": [],
+    "combine": "product",
+    "weight": 1,
+    "once_per_touch": False,
+    "once_per_episode": False,
+    "every_step": False,
+}
+_VAR_DEFAULTS: dict[str, Any] = {"start": 0}
+# A built reward's lists of blocks, in the order they are written: its variables, then its terms.
+_BUILT_LISTS = ("vars", "terms")
+
+
+def key_name(view: dict[str, Any]) -> str:
+    """A reward's name in metrics.csv and the page's layout: its name, or a built reward's title."""
+    name = str(view.get("name", ""))
+    return str(view.get("title") or name) if name == BUILT else name
+
+
+def blocks() -> dict[str, Any]:
+    """The building blocks of built rewards with their plain-English help (nitro.config.built), for the
+    editor."""
+    from nitro.config import built
+
+    return {
+        "flags": [{"name": n, "help": h, "event": n in built.EVENT_FLAGS} for n, h in built.FLAGS.items()],
+        "numbered": [{"name": n, "help": h} for n, h in built.NUMBERED.items()],
+        "measures": [{"name": n, "help": h, "every_step": e} for n, (h, e) in built.MEASURES.items()],
+        "term_keys": dict(built.TERM_KEYS),
+        "var_keys": dict(built.VAR_KEYS),
+        "formula": {
+            "car": [{"name": n, "help": h} for n, h in built.CAR_FIELDS.items()],
+            "ball": [{"name": n, "help": h} for n, h in built.BALL_FIELDS.items()],
+            "names": [{"name": n, "help": h} for n, h in built.NAMES.items()],
+            "functions": [{"name": n, "help": h} for n, h in built.FUNCTIONS.items()],
+        },
+        "templates": templates(),
+    }
+
+
+TEMPLATES = Path(__file__).resolve().parents[1] / "config" / "built_templates.json"
+
+
+@functools.cache
+def _templates_text() -> str:
+    return TEMPLATES.read_text(encoding="utf-8")
+
+
+def templates() -> list[dict[str, Any]]:
+    """The builder's templates (python/nitro/config/built_templates.json): each a built reward to start from,
+    with what it pays and, for those that copy a reward, which (the core's tests prove the copies equal)."""
+    out = []
+    for item in json.loads(_templates_text()):
+        copies = item.get("copies") or {}
+        copied = copies.get("kind") if copies.get("name") == "custom" else copies.get("name")
+        out.append(
+            {
+                "title": item["title"],
+                "about": item["about"],
+                "copies": copied if copied and copies.get("name") != "test" else "",
+                "vars": item.get("vars", []),
+                "terms": item["terms"],
+            }
+        )
+    return out
+
+
+def built_problems(view: dict[str, Any]) -> dict[str, Any]:
+    """A built reward's view checked as the settings check and the core will: its problems, each with the
+    place it is in ("title", "terms[0].value", "vars[1].next" ...), whether it is paid every step and how
+    many numbers it remembers per car (from the core, which alone can judge formulas)."""
+    from nitro.config import built
+    from nitro.config.rewards import _TITLE_LETTERS, _builtin_names
+
+    data = data_of({**view, "name": BUILT})
+    title, terms, variables = data.get("title", ""), data.get("terms", []), data.get("vars", [])
+    problems: list[dict[str, str]] = []
+    if not title or not all(c in _TITLE_LETTERS for c in title):
+        problems.append({"where": "title", "message": "a title of small letters, digits and _ is needed"})
+    elif title in _builtin_names() or title in custom_kinds():
+        problems.append({"where": "title", "message": f"'{title}' is already a reward's name"})
+    if not terms:
+        problems.append({"where": "terms", "message": "a built reward needs at least one term"})
+    known = frozenset(str(v.get("name")) for v in variables if isinstance(v, dict))
+    for i, var in enumerate(variables):
+        for key, message in built.var_problems(var):
+            problems.append({"where": f"vars[{i}]" + (f".{key}" if key else ""), "message": message})
+    for i, term in enumerate(terms):
+        for key, message in built.term_problems(term, known):
+            problems.append({"where": f"terms[{i}]" + (f".{key}" if key else ""), "message": message})
+    every_step, memory = False, 0
+    if not problems:
+        where, message, every_step, memory = built.core_check(title, variables, terms)
+        if message:
+            problems.append({"where": where or "terms", "message": message})
+    return {"problems": problems, "every_step": every_step, "memory": memory}
+
 
 def catalog() -> list[dict[str, Any]]:
     """Every reward a settings file can name, with what it pays for and its own parameters."""
@@ -61,6 +160,23 @@ def catalog() -> list[dict[str, Any]]:
                 "nerd": _nerd(name),
             }
         )
+    out.append(
+        {
+            "name": BUILT,
+            "title": "Build your own (no code)",
+            "about": "A reward made from building blocks, no code: each term pays a measure (speed toward "
+            "the ball, a goal, the ball's height, ...) times its weight on the steps where all of its "
+            "conditions hold (in the air, touching the ball, ball above a height, ...). It can be added more "
+            "than once.",
+            "every_step": False,  # worked out from its terms, reward by reward, on the page
+            "group": False,
+            "built": True,
+            "repeatable": True,
+            "params": [],
+            "more": reward_guide.MORE.get(BUILT, ""),
+            "nerd": _nerd(BUILT),
+        }
+    )
     for kind in custom_kinds().values():
         out.append(
             {
@@ -177,7 +293,7 @@ def view(data: dict[str, Any]) -> dict[str, Any]:
         params = {param: data.get(param) for param, *_ in own.params}
     out: dict[str, Any] = {
         "name": name,
-        "known": cls is not None or own is not None,
+        "known": cls is not None or own is not None or name == BUILT,
         "enabled": data.get("enabled", True),
         "weight": data.get("weight", 1.0),
         "zero_sum": _zero_sum(data.get("zero_sum")),
@@ -185,6 +301,13 @@ def view(data: dict[str, Any]) -> dict[str, Any]:
     }
     if name == "all_of":
         out["parts"] = [dict(part) for part in data.get("parts", []) if isinstance(part, dict)]
+    if name == BUILT:
+        out["title"] = str(data.get("title", ""))
+        for kind in _BUILT_LISTS:
+            items = data.get(kind)
+            out[kind] = (
+                [dict(item) for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+            )
     return out
 
 
@@ -200,6 +323,8 @@ def _zero_sum(data: Any) -> dict[str, Any] | None:
 def data_of(item: dict[str, Any]) -> dict[str, Any]:
     """An editor view as its `[[rewards]]` block writes it, settings at their defaults left out."""
     out: dict[str, Any] = {"name": item["name"]}
+    if item.get("name") == BUILT:
+        out["title"] = str(item.get("title") or "")
     if item.get("enabled") is False:
         out["enabled"] = False
     out["weight"] = _number(item.get("weight", 1.0))
@@ -214,7 +339,74 @@ def data_of(item: dict[str, Any]) -> dict[str, Any]:
         if zero_sum.get("opponent_scale", 1.0) != 1.0:
             shared["opponent_scale"] = _number(zero_sum["opponent_scale"])
         out["zero_sum"] = shared
+    if item.get("name") == BUILT:  # last: they are written as [[rewards.vars]] and [[rewards.terms]] blocks
+        out["vars"] = [_var_data(var) for var in item.get("vars") or [] if isinstance(var, dict)]
+        out["terms"] = [_term_data(term) for term in item.get("terms") or [] if isinstance(term, dict)]
     return out
+
+
+def _var_data(var: dict[str, Any]) -> dict[str, Any]:
+    """A built reward's variable as its block writes it: name, start (left out at 0) and next."""
+    out: dict[str, Any] = {"name": str(var.get("name", "")).strip()}
+    start = var.get("start", 0)
+    start = start if isinstance(start, bool) else _number(start if start not in (None, "") else 0)
+    if start != 0:
+        out["start"] = start
+    out["next"] = str(var.get("next", "")).strip()
+    for key, value in var.items():  # anything else stays, for the settings check to name
+        if key not in out and key != "start":
+            out[key] = value
+    return out
+
+
+def _term_data(term: dict[str, Any]) -> dict[str, Any]:
+    """A built reward's term as its block writes it: one measure as text, several as a list, the rest left
+    out at their defaults; numbers as a person writes them."""
+    out: dict[str, Any] = {}
+    when = [_condition_data(c) for c in _as_list(term.get("when"))]
+    if when:
+        out["when"] = when
+    value = term.get("value")
+    if isinstance(value, str) and value.strip():  # a formula pays: no measures, no combine
+        out["value"] = value.strip()
+    else:
+        measures = [str(m) for m in _as_list(term.get("measure")) if m not in (None, "")]
+        out["measure"] = measures[0] if len(measures) == 1 else measures
+    for key in ("combine", "weight", "once_per_touch", "once_per_episode", "every_step"):
+        if key == "combine" and "value" in out:
+            continue
+        number = term.get(key, _TERM_DEFAULTS[key])
+        number = number if isinstance(number, bool) else _number(number)
+        if number != _TERM_DEFAULTS[key]:
+            out[key] = number
+    for key in ("cap_step", "cap_episode"):
+        if term.get(key) not in (None, ""):
+            out[key] = _number(term[key])
+    for key, kept in term.items():  # anything else stays, for the settings check to name
+        if (
+            key not in out
+            and key not in _TERM_DEFAULTS
+            and key not in ("measure", "value", "cap_step", "cap_episode")
+        ):
+            out[key] = kept
+    return out
+
+
+def _condition_data(condition: Any) -> Any:
+    if isinstance(condition, str):
+        return condition.strip()
+    if isinstance(condition, dict):
+        return {
+            key: _condition_data(value) if key == "not" else _number(value)
+            for key, value in condition.items()
+        }
+    return condition
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    return list(value) if isinstance(value, list | tuple) else [value]
 
 
 def _number(value: Any) -> Any:
@@ -247,7 +439,7 @@ def written(
     tables: list[Table] = list(old) if isinstance(old, AoT) else []
     kept = [e["from"] for e in entries if isinstance(e.get("from"), int) and 0 <= e["from"] < len(tables)]
     in_order = kept == sorted(set(kept)) and all(isinstance(e.get("from"), int) for e in entries[: len(kept)])
-    ending = _comments_after(tables[-1]) if tables else []
+    ending = _comments_after(_deepest(tables[-1])) if tables else []
     if isinstance(old, AoT) and in_order:
         for gone in sorted(set(range(len(tables))) - set(kept), reverse=True):
             del old[gone]
@@ -261,17 +453,27 @@ def written(
         _patch(table, data(entry["view"]), fresh=fresh, kinds=KINDS if kinds is None else kinds)
         if fresh or aot is not old:
             aot.append(table)
-        spaced = any(isinstance(item, Whitespace) for _, item in _tail(table))
+        last = _deepest(table)
+        spaced = any(isinstance(item, Whitespace) for _, item in _tail(last))
         if aot is old and not spaced and (number < len(entries) or fresh or ending):
-            table.add(tomlkit.nl())  # a blank line between blocks (a new list of blocks gets them anyway)
+            last.add(tomlkit.nl())  # a blank line between blocks (a new list of blocks gets them anyway)
     if len(aot):
-        aot[-1].value.body.extend(ending)
+        _deepest(aot[-1]).value.body.extend(ending)
     if aot is not old:
         if key in doc:
             doc[key] = aot
         else:
             doc.append(key, aot)
     return tomlkit.dumps(doc)
+
+
+def _deepest(table: Table) -> Table:
+    """The block whose lines come last in the file for `table`: a built reward's last term, else itself."""
+    body = table.value.body
+    while body and isinstance(body[-1][1], AoT) and len(body[-1][1]):
+        table = body[-1][1][-1]
+        body = table.value.body
+    return table
 
 
 def _tail(table: Table) -> list[tuple[Any, Any]]:
@@ -310,7 +512,21 @@ _SAME: dict[str, Callable[[Any], Any]] = {"zero_sum": _zero_sum}
 
 def _patch(table: Table, data: dict[str, Any], fresh: bool, kinds: dict[str, Any]) -> None:
     """Makes `table` say `data`, touching only the lines that change (a `fresh` block gets every line)."""
-    _with_tail_kept(table, lambda: _patch_lines(table, data, fresh, kinds))
+    if data.get("name") == BUILT and "terms" in data:  # its blocks first; its own lines go above them
+        lists = {kind: data.get(kind) or [] for kind in _BUILT_LISTS}
+        data = {key: value for key, value in data.items() if key not in _BUILT_LISTS}
+        if fresh and not any(kind in table for kind in _BUILT_LISTS):
+            _with_tail_kept(table, lambda: _patch_lines(table, data, fresh, kinds))
+            table.add(tomlkit.nl())
+            for kind, items in lists.items():
+                _patch_blocks(table, kind, items)
+            return
+        for kind, items in lists.items():
+            _patch_blocks(table, kind, items)
+    if any(isinstance(item, AoT | Table) for _, item in table.value.body):
+        _patch_lines(table, data, fresh, kinds)
+    else:
+        _with_tail_kept(table, lambda: _patch_lines(table, data, fresh, kinds))
 
 
 def _patch_lines(table: Table, data: dict[str, Any], fresh: bool, kinds: dict[str, Any]) -> None:
@@ -323,12 +539,169 @@ def _patch_lines(table: Table, data: dict[str, Any], fresh: bool, kinds: dict[st
             if same(now) != same(value):
                 table[key] = _item(value)
         elif fresh or value != defaults.get(key, dataclasses.MISSING):
-            table[key] = _item(value)
+            _add_line(table, key, _item(value))
     for key in ("enabled", "zero_sum"):
         if key in table and key not in data:
             now = table[key].unwrap() if hasattr(table[key], "unwrap") else table[key]
             if now != defaults.get(key):
                 del table[key]
+
+
+def _add_line(table: Table, key: str, item: Any) -> None:
+    """A new line at the end of the block's own lines: before the blank lines and comments that lead into a
+    built reward's term blocks, if it has any."""
+    body = table.value.body
+    first = next((i for i, (_, it) in enumerate(body) if isinstance(it, AoT | Table)), None)
+    if first is None:
+        table[key] = item
+        return
+    while first and body[first - 1][0] is None:
+        first -= 1
+    table.value._insert_at(first, key, item)
+
+
+def _patch_blocks(table: Table, kind: str, terms: list[dict[str, Any]]) -> None:
+    """A built reward's `[[rewards.terms]]` (or `[[rewards.vars]]`, `kind`) blocks made to say `terms`: a
+    block's unchanged lines and comments stay, a line at its default stays as written, removed blocks go and
+    new ones come last."""
+    defaults = _TERM_DEFAULTS if kind == "terms" else _VAR_DEFAULTS
+    old = table.get(kind)
+    if not terms:
+        if old is not None:
+            del table[kind]
+        return
+    if not isinstance(old, AoT):  # none yet, or written as one list: written again as blocks
+        if old is not None and _plain(old) == terms:
+            return
+        aot = tomlkit.aot()
+        for term in terms:
+            aot.append(_term_table(term))
+        if kind == "vars" and "terms" in table:  # variables go above the terms they are read in
+            terms_now = table["terms"]
+            del table["terms"]
+            table[kind] = aot
+            table["terms"] = terms_now
+        else:
+            table[kind] = aot
+        return
+    ending = _comments_after(old[-1]) if len(old) else []  # about what follows the blocks: stays last
+    was_last = old[-1] if len(old) else None
+    for gone in reversed(_removed_blocks([_block_of(block, defaults) for block in old], terms)):
+        # The comments right above the removed block go with it; those after its lines (above the next
+        # block) stay, in their place.
+        after = _comments_after(old[gone])
+        if gone:
+            body = old[gone - 1].value.body
+            del body[len(body) - len(_heading(body)) :]
+            body.extend(after)
+        else:
+            _swap_heading(table, kind, after)
+        del old[gone]
+    for i, term in enumerate(terms):
+        if i >= len(old):
+            if not any(isinstance(it, Whitespace) for _, it in _tail(old[i - 1])):
+                old[i - 1].add(tomlkit.nl())
+            old.append(_term_table(term))
+            continue
+        block = old[i]
+        for key, value in term.items():
+            if key not in block or _plain(block[key]) != value:
+                block[key] = _item(value)
+        for key in [k for k in block if k not in term]:
+            if _plain(block[key]) != defaults.get(key, dataclasses.MISSING):
+                del block[key]
+    last = old[-1]
+    if ending and last is not was_last and not any(isinstance(item, Whitespace) for _, item in _tail(last)):
+        last.add(tomlkit.nl())
+    last.value.body.extend(ending)
+
+
+def _heading(body: list[tuple[Any, Any]]) -> list[tuple[Any, Any]]:
+    """The comment lines at the end of `body` with no blank line after them: they head what comes next."""
+    start = len(body)
+    while start and body[start - 1][0] is None and isinstance(body[start - 1][1], Comment):
+        start -= 1
+    return body[start:]
+
+
+def _swap_heading(table: Table, kind: str, lines: list[tuple[Any, Any]]) -> None:
+    """The comments heading a built reward's first `kind` block replaced by `lines`: they end the blocks
+    written above it (its variables, for its first term), else the reward's own lines."""
+    body = table.value.body
+    at = next(i for i, (key, item) in enumerate(body) if isinstance(item, AoT) and key and key.key == kind)
+    above = body[at - 1][1] if at else None
+    if isinstance(above, AoT) and len(above):
+        held = above[-1].value.body
+        del held[len(held) - len(_heading(held)) :]
+        held.extend(lines)
+        return
+    start = at - len(_heading(body[:at]))
+    body[start:at] = lines
+    shift = len(lines) - (at - start)
+    index = table.value._map
+    for key, value in index.items():
+        if isinstance(value, tuple):
+            index[key] = tuple(v + shift if v >= at else v for v in value)
+        elif value >= at:
+            index[key] = value + shift
+
+
+def _block_of(block: Table, defaults: dict[str, Any]) -> dict[str, Any]:
+    """A block's settings as `_term_data` (or `_var_data`) gives them: lines at their defaults left out."""
+    out = {key: _plain(block[key]) for key in block}
+    return {key: value for key, value in out.items() if value != defaults.get(key, dataclasses.MISSING)}
+
+
+def _removed_blocks(old: list[dict[str, Any]], terms: list[dict[str, Any]]) -> list[int]:
+    """Which of the `old` blocks were removed to leave `terms`: the blocks that still say a term unchanged
+    keep it (the longest such match in order); between them, edited terms keep the first blocks and the
+    rest are removed."""
+    extra = len(old) - len(terms)
+    if extra <= 0:
+        return []
+    # Longest common subsequence of unchanged terms.
+    best = [[0] * (len(terms) + 1) for _ in range(len(old) + 1)]
+    for i in range(len(old) - 1, -1, -1):
+        for j in range(len(terms) - 1, -1, -1):
+            best[i][j] = best[i + 1][j + 1] + 1 if old[i] == terms[j] else max(best[i + 1][j], best[i][j + 1])
+    removed: list[int] = []
+    i = j = 0
+    gap_old: list[int] = []
+    gap_terms = 0
+
+    def close_gap() -> None:
+        removed.extend(gap_old[gap_terms:])
+
+    while i < len(old):
+        if j < len(terms) and old[i] == terms[j] and best[i][j] == best[i + 1][j + 1] + 1:
+            close_gap()
+            gap_old, gap_terms = [], 0
+            i, j = i + 1, j + 1
+        elif j < len(terms) and best[i][j + 1] >= best[i + 1][j]:
+            gap_terms, j = gap_terms + 1, j + 1
+        else:
+            gap_old.append(i)
+            i += 1
+    gap_terms += len(terms) - j
+    close_gap()
+    return removed[:extra]
+
+
+def _term_table(term: dict[str, Any]) -> Table:
+    block = tomlkit.table()
+    for key, value in term.items():
+        block[key] = _item(value)
+    return block
+
+
+def _plain(item: Any) -> Any:
+    """A settings line's value as plain Python (lists and tables too), numbers as a person writes them."""
+    value = item.unwrap() if hasattr(item, "unwrap") else item
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    return value if isinstance(value, bool) else _number(value)
 
 
 def _item(value: Any) -> Any:
@@ -367,6 +740,8 @@ def identity(view: dict[str, Any]) -> str | None:
     """What makes a reward the same as another: its name. An "all of" group is the same as another only
     with the same parts (two groups of different parts are two rewards); one without parts yet is none."""
     name = str(view.get("name", ""))
+    if name == BUILT:  # built rewards are told apart by their titles
+        return f"{BUILT}:{view.get('title') or ''}"
     if name != "all_of":
         return name or None
     parts = [canon(part) for part in view.get("parts") or [] if isinstance(part, dict)]
@@ -388,7 +763,7 @@ def duplicates(views: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def added_copies(before: list[dict[str, Any]], views: list[dict[str, Any]]) -> list[str]:
     """The names of the rewards `views` lists more often than once and more often than the settings file
-    (`before`) does: a copy added to a reward the bot already has."""
+    (`before`) does: a copy added to a reward the bot already has. A built reward is "built:<its title>"."""
     had: dict[str, int] = {}
     for view in before:
         if (key := identity(view)) is not None:
@@ -398,13 +773,15 @@ def added_copies(before: list[dict[str, Any]], views: list[dict[str, Any]]) -> l
     for view in views:
         if (key := identity(view)) is not None:
             now[key] = now.get(key, 0) + 1
-            names[key] = str(view.get("name"))
+            names[key] = (
+                f"{BUILT}:{view.get('title') or ''}" if view.get("name") == BUILT else str(view.get("name"))
+            )
     return [names[key] for key, count in now.items() if count > max(1, had.get(key, 0))]
 
 
 def labels(views: list[dict[str, Any]]) -> list[str | None]:
     """Each reward's name in metrics.csv (`raw_<label>`, `paid_<label>`), None for one switched off."""
-    on = numbered([item["name"] for item in views if item.get("enabled", True) is not False])
+    on = numbered([key_name(item) for item in views if item.get("enabled", True) is not False])
     found = iter(on)
     return [next(found) if item.get("enabled", True) is not False else None for item in views]
 
@@ -416,11 +793,11 @@ def changes(before: list[dict[str, Any]], entries: list[dict[str, Any]]) -> list
     for entry in entries:
         item, index = entry["view"], entry.get("from")
         if not isinstance(index, int) or not 0 <= index < len(before):
-            lines.append(f"{item['name']}: added, weight {_show(item.get('weight'))}")
+            lines.append(f"{key_name(item)}: added, weight {_show(item.get('weight'))}")
             continue
         kept.add(index)
         old = before[index]
-        name = item["name"]
+        name = key_name(item)
         if old.get("enabled", True) != item.get("enabled", True):
             lines.append(f"{name}: switched {'on' if item.get('enabled', True) else 'off'}")
         if _number(old.get("weight")) != _number(item.get("weight")):
@@ -430,7 +807,7 @@ def changes(before: list[dict[str, Any]], entries: list[dict[str, Any]]) -> list
             if _number(was) != _number(value):
                 lines.append(f"{name}: {describe.label(key).lower()} {_show(was)} -> {_show(value)}")
         lines.extend(_shared_changes(name, old, item))
-    lines.extend(f"{old['name']}: removed" for i, old in enumerate(before) if i not in kept)
+    lines.extend(f"{key_name(old)}: removed" for i, old in enumerate(before) if i not in kept)
     return lines
 
 
@@ -443,6 +820,14 @@ def _shared_changes(name: str, old: dict[str, Any], new: dict[str, Any]) -> list
         for key, words in (("team_spirit", "team spirit"), ("opponent_scale", "opponent scale")):
             if _number(was.get(key)) != _number(now.get(key)):
                 lines.append(f"{name}: {words} {_show(was.get(key))} -> {_show(now.get(key))}")
+    if old.get("title") != new.get("title") and new.get("name") == BUILT:
+        lines.append(f"{key_name(old)}: renamed to {key_name(new)}")
+    if canon(old.get("terms") or []) != canon(new.get("terms") or []):
+        count = len(new.get("terms") or [])
+        lines.append(f"{name}: terms changed ({count} term{'' if count == 1 else 's'})")
+    if canon(old.get("vars") or []) != canon(new.get("vars") or []):
+        count = len(new.get("vars") or [])
+        lines.append(f"{name}: variables changed ({count} variable{'' if count == 1 else 's'})")
     if (old.get("parts") or []) != (new.get("parts") or []):
         parts = ", ".join(str(part.get("name")) for part in new.get("parts") or [])
         lines.append(f"{name}: parts -> {parts or '(none)'}")

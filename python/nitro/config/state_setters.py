@@ -222,6 +222,54 @@ class AerialBall(_StateSetter):
 
 
 @dataclass(frozen=True)
+class FiftyFifty(_StateSetter):
+    """Practice: a 50/50. The ball at rest on the floor between the first Blue and the first Orange
+    car, both at rest facing it, the same distance away and with the same boost, so neither is nearer.
+    Needs an opponent (env.opponents = true). Used by the 50/50 drill."""
+
+    even_start: ClassVar[bool] = True  # Blue and Orange mirrored, neither nearer
+    name: Literal["fifty_fifty"] = "fifty_fifty"
+    min_distance_uu: float = setting(
+        1000.0, "Closest each car may start to the ball, in units.", minimum=250.0, maximum=3000.0
+    )
+    max_distance_uu: float = setting(
+        2000.0, "Farthest each car may start from the ball, in units.", minimum=250.0, maximum=3000.0
+    )
+
+    def problems(self) -> list[tuple[str, str]]:
+        if self.max_distance_uu < self.min_distance_uu:
+            return [("max_distance_uu", f"must be at least min_distance_uu ({self.min_distance_uu})")]
+        return []
+
+
+@dataclass(frozen=True)
+class WallRead(_StateSetter):
+    """Practice: reading a ball off a side wall. The ball rolls or bounces toward a side wall from
+    600-1500 units off it, so it climbs the wall or comes back off it; the car waits at rest on the field
+    side 1500-3000 units away, facing it. Used by the wall-read drill."""
+
+    even_start: ClassVar[bool] = False  # the drill's start goes to the first car
+    name: Literal["wall_read"] = "wall_read"
+    min_speed: float = setting(
+        1000.0,
+        "Slowest the ball may move toward the wall, in units per second.",
+        minimum=300.0,
+        maximum=3000.0,
+    )
+    max_speed: float = setting(
+        2000.0,
+        "Fastest the ball may move toward the wall, in units per second.",
+        minimum=300.0,
+        maximum=3000.0,
+    )
+
+    def problems(self) -> list[tuple[str, str]]:
+        if self.max_speed < self.min_speed:
+            return [("max_speed", f"must be at least min_speed ({self.min_speed})")]
+        return []
+
+
+@dataclass(frozen=True)
 class Replay(_StateSetter):
     """A real situation: a moment from a recording of a real match (the five recordings RocketSim ships, 25
     minutes of 1v1, 2v2 and 3v3 play by top players and bots, or recordings made from your own replays).
@@ -256,11 +304,39 @@ class Replay(_StateSetter):
         return [("files", missing)] if missing else []
 
 
+@dataclass(frozen=True)
+class Snapshots(_StateSetter):
+    """Practice starts: moments saved from watched games (the match viewer's Practice panel, or
+    `nitro practice`), one car and the ball, with the car's jump and flip state, in a CSV. Each game starts
+    from one moment drawn at random, given to a Blue car exactly as saved; any other car waits at rest away
+    from the ball."""
+
+    even_start: ClassVar[bool] = False  # the moment goes to one Blue car
+    name: Literal["snapshots"] = "snapshots"
+    file: Path = setting(Path(), 'The CSV, relative to this settings file; e.g. "practice_starts.csv".')
+
+    def problems(self) -> list[tuple[str, str]]:
+        return [] if self.file.is_file() else [("file", f"no such file: {self.file}")]
+
+
 def metrics_label(setter: StateSetter) -> str:
     """The setter's name in the per-start columns of metrics.csv."""
     return setter.name
 
 
-StateSetter = Kickoff | RandomState | BallTouch | Airborne | BoostPickup | Shot | Save | AerialBall | Replay
+StateSetter = (
+    Kickoff
+    | RandomState
+    | BallTouch
+    | Airborne
+    | BoostPickup
+    | Shot
+    | Save
+    | AerialBall
+    | FiftyFifty
+    | WallRead
+    | Replay
+    | Snapshots
+)
 
 DEFAULT_STATE_SETTERS: tuple[StateSetter, ...] = (Kickoff(),)

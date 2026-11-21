@@ -38,6 +38,7 @@ from nitro.fused_norm import AppliedReLU
 from nitro.model import (
     ActorCritic,
     EntityEncoder,
+    InputMap,
     ResidualBlock,
     TalkingEncoder,
     TransformerEncoder,
@@ -57,6 +58,7 @@ SKIP_FORMAT = 3  # an attention encoder with the own part passed beside it (mode
 TALK_FORMAT = 4  # encoder = 'attention_communication'
 TRANSFORMER_FORMAT = 6  # encoder = 'transformer'
 RESIDUAL_FORMAT = 8  # residual blocks (model.residual)
+INPUT_MAP_FORMAT = 9  # an imported network's input map (model.input_map)
 BOT_CRATE = "nitro_bot"
 PROGRAM = f"{BOT_CRATE}.exe" if sys.platform == "win32" else BOT_CRATE  # the bot program on this computer
 # Cargo's folders, which source paths in a program's panic messages would show.
@@ -76,6 +78,13 @@ def _layer_records(model: ActorCritic) -> tuple[list[dict[str, Any]], list[torch
     """Every layer of the shared trunk and the policy head, in order, with its weights."""
     layers: list[dict[str, Any]] = []
     weights: list[torch.Tensor] = []
+    mapped = getattr(model, "input_map", None)
+    if isinstance(mapped, InputMap):
+        clip = float(mapped.clip)
+        layers.append(
+            {"kind": "input_map", "inputs": mapped.inputs, "outputs": len(mapped.index), "clip": clip}
+        )
+        weights += [mapped.index.float(), mapped.scale, mapped.offset, mapped.divisor]
     for module in [*model.shared, *model.policy]:
         if isinstance(module, ResidualBlock):
             inner, inner_weights = _module_records(list(module.branch))
@@ -200,6 +209,8 @@ def write_policy(
     )
     if any(layer["kind"] == "residual_start" for layer in layers):
         version = RESIDUAL_FORMAT  # its reader takes every other format's layers too
+    if any(layer["kind"] == "input_map" for layer in layers):
+        version = INPUT_MAP_FORMAT  # its reader takes every other format's layers too
     header = _header(version, config, obs_size, num_actions, run, steps)
     _write(path, {**header, "layers": layers}, weights)
 

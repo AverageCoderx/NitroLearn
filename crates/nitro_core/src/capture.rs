@@ -10,7 +10,7 @@
 //! until a demolished car is back.
 
 use crate::sim::Sim;
-use crate::snapshot::{Controls, GameSnapshot, NUM_BOOST_PADS, StepEvents, Team};
+use crate::snapshot::{CarDetail, Controls, GameSnapshot, NUM_BOOST_PADS, StepEvents, Team};
 
 /// The frame layout's version, written into every recording.
 pub const FORMAT: u32 = 2;
@@ -125,82 +125,104 @@ impl Capture {
             _ => marker,
         };
         sim.details(&mut self.details);
-        self.frames.push(marker);
-        self.frames.extend(snap.ball.pos.to_array());
-        self.frames.extend(snap.ball.vel.to_array());
-        self.frames.extend(snap.ball.forward().to_array());
-        self.frames.extend(snap.ball.up().to_array());
-        self.frames.extend(snap.ball.ang_vel.to_array());
-        self.frames.extend(self.score);
-        self.frames.extend(snap.pads.iter().map(|pad| {
-            if pad.active {
-                0.0
-            } else {
-                // A pad taken this very tick may still show no wait: it reads as taken either way.
-                pad.cooldown.max(0.01)
-            }
-        }));
-        for (car, state) in snap.cars.iter().enumerate() {
-            let flags = [
-                (state.on_ground, FLAG_ON_GROUND),
-                (state.is_demoed, FLAG_DEMOED),
-                (state.is_supersonic, FLAG_SUPERSONIC),
-                (state.has_jumped, FLAG_JUMPED),
-                (state.has_double_jumped, FLAG_DOUBLE_JUMPED),
-                (state.has_flipped, FLAG_FLIPPED),
-                (std::mem::take(&mut self.unwritten[car]), FLAG_TOUCHED),
-            ]
-            .iter()
-            .filter(|(on, _)| *on)
-            .fold(0, |all, (_, flag)| all | flag);
-            let c = controls[car];
-            let detail = &self.details.details[car];
-            let bits = detail
-                .wheel_contacts
-                .iter()
-                .enumerate()
-                .filter(|(_, touching)| **touching)
-                .fold(0, |all, (wheel, _)| all | STATE_WHEEL << wheel)
-                | if detail.is_boosting {
-                    STATE_BOOSTING
-                } else {
-                    0
-                }
-                | if detail.is_jumping { STATE_JUMPING } else { 0 }
-                | if detail.is_flipping {
-                    STATE_FLIPPING
-                } else {
-                    0
-                };
-            self.frames.push(state.team.index() as f32);
-            self.frames.extend(state.body.pos.to_array());
-            self.frames.extend(state.body.vel.to_array());
-            self.frames.extend(state.body.forward().to_array());
-            self.frames.extend(state.body.up().to_array());
-            self.frames.extend(state.body.ang_vel.to_array());
-            self.frames.extend([
-                state.boost,
-                flags as f32,
-                c.throttle,
-                c.steer,
-                c.pitch,
-                c.yaw,
-                c.roll,
-                f32::from(u8::from(c.jump)),
-                f32::from(u8::from(c.boost)),
-                f32::from(u8::from(c.handbrake)),
-                bits as f32,
-                detail.handbrake,
-                BODY_OCTANE,
-                state.demo_timer,
-            ]);
-        }
+        write_frame(
+            &mut self.frames,
+            &snap,
+            &self.details.details,
+            controls,
+            marker,
+            self.score,
+            &mut self.unwritten,
+        );
         self.scratch = snap;
     }
 
     /// The step that just ended: its last frame gets each car's mechanics (`mechanics::MARK_*`).
     pub fn mark(&mut self, marks: &[u32]) {
         mark_last_frame(&mut self.frames, marks);
+    }
+}
+
+/// Appends one frame of `snap` to `frames`: its marker and score, the cars' `details` and `controls`;
+/// a car whose `touched` is set gets the touch flag, and it is cleared.
+pub fn write_frame(
+    frames: &mut Vec<f32>,
+    snap: &GameSnapshot,
+    details: &[CarDetail],
+    controls: &[Controls],
+    marker: f32,
+    score: [f32; 2],
+    touched: &mut [bool],
+) {
+    frames.push(marker);
+    frames.extend(snap.ball.pos.to_array());
+    frames.extend(snap.ball.vel.to_array());
+    frames.extend(snap.ball.forward().to_array());
+    frames.extend(snap.ball.up().to_array());
+    frames.extend(snap.ball.ang_vel.to_array());
+    frames.extend(score);
+    frames.extend(snap.pads.iter().map(|pad| {
+        if pad.active {
+            0.0
+        } else {
+            // A pad taken this very tick may still show no wait: it reads as taken either way.
+            pad.cooldown.max(0.01)
+        }
+    }));
+    for (car, state) in snap.cars.iter().enumerate() {
+        let flags = [
+            (state.on_ground, FLAG_ON_GROUND),
+            (state.is_demoed, FLAG_DEMOED),
+            (state.is_supersonic, FLAG_SUPERSONIC),
+            (state.has_jumped, FLAG_JUMPED),
+            (state.has_double_jumped, FLAG_DOUBLE_JUMPED),
+            (state.has_flipped, FLAG_FLIPPED),
+            (std::mem::take(&mut touched[car]), FLAG_TOUCHED),
+        ]
+        .iter()
+        .filter(|(on, _)| *on)
+        .fold(0, |all, (_, flag)| all | flag);
+        let c = controls[car];
+        let detail = &details[car];
+        let bits = detail
+            .wheel_contacts
+            .iter()
+            .enumerate()
+            .filter(|(_, touching)| **touching)
+            .fold(0, |all, (wheel, _)| all | STATE_WHEEL << wheel)
+            | if detail.is_boosting {
+                STATE_BOOSTING
+            } else {
+                0
+            }
+            | if detail.is_jumping { STATE_JUMPING } else { 0 }
+            | if detail.is_flipping {
+                STATE_FLIPPING
+            } else {
+                0
+            };
+        frames.push(state.team.index() as f32);
+        frames.extend(state.body.pos.to_array());
+        frames.extend(state.body.vel.to_array());
+        frames.extend(state.body.forward().to_array());
+        frames.extend(state.body.up().to_array());
+        frames.extend(state.body.ang_vel.to_array());
+        frames.extend([
+            state.boost,
+            flags as f32,
+            c.throttle,
+            c.steer,
+            c.pitch,
+            c.yaw,
+            c.roll,
+            f32::from(u8::from(c.jump)),
+            f32::from(u8::from(c.boost)),
+            f32::from(u8::from(c.handbrake)),
+            bits as f32,
+            detail.handbrake,
+            BODY_OCTANE,
+            state.demo_timer,
+        ]);
     }
 }
 

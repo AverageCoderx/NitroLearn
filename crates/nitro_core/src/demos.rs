@@ -659,7 +659,7 @@ fn fill_snapshot(snap: &mut GameSnapshot, tick: &Tick, teams: &[Team], rebuilt: 
     snap.goal_scored = None;
 }
 
-fn car_snapshot(record: &CarRecord, team: Team, is_supersonic: bool) -> CarSnapshot {
+pub(crate) fn car_snapshot(record: &CarRecord, team: Team, is_supersonic: bool) -> CarSnapshot {
     let flipped = record.double_jumped_or_flipped && (record.is_flipping || record.flip_time > 0.0);
     CarSnapshot {
         team,

@@ -254,6 +254,11 @@ def widen_run(
         raise SurgeryError(
             f"'{source}' has attention networks (model.encoder); widening works on plain networks only."
         )
+    if config.model.input_map:
+        raise SurgeryError(
+            f"'{source}' was brought over from another framework (model.input_map); widening it is not "
+            "built yet."
+        )
     if config.model.residual or config.model.value_heads_apart:
         raise SurgeryError(
             f"'{source}' has residual blocks or value heads (model.residual, model.value_heads); "

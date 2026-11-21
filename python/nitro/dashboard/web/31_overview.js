@@ -20,6 +20,18 @@ function warmupHTML(d) {
   </section>`;
 }
 
+// ---------- the gauntlet's report card ----------
+function gauntletHTML(d) {
+  const card = d.gauntlet;
+  if (!card || !(card.lines || []).length) return "";
+  const rows = card.lines.map(x => `<li>${esc(x.text)}</li>`).join("");
+  return `<section class="card pad" aria-label="Report card against the scripted opponents">
+    <div class="heading"><h3>Report card</h3><span class="muted" style="font-size:13px;">the save at ${steps(card.agent_steps)} agent steps${card.when ? `, played ${esc(card.when)}` : ""}</span></div>
+    <ul style="margin:6px 0 4px 18px;font-size:13.5px;">${rows}</ul>
+    <div class="muted" style="font-size:12.5px;">Its share of the goals against fixed scripted players, from kickoffs, with the 95% range. Made with <span class="mono">nitro gauntlet ${esc(d.name)}</span>.</div>
+  </section>`;
+}
+
 function drawCopyCharts() {
   const cc = copyCharts(S.data.copy);
   document.querySelectorAll("canvas[data-cpchart]").forEach(cv => { if (cc[+cv.dataset.cpchart]) drawChart(cv, cc[+cv.dataset.cpchart], +cv.dataset.cpchart); });
@@ -34,7 +46,7 @@ function renderOverview(box) {
 function fillOverview() {
   if (!$("#telemetry") || !S.data) return;
   let blocks = false;
-  keepFocus(() => { blocks = put($("#ov-blocks"), warmupHTML(S.data) + copyProgressHTML(S.data)); });
+  keepFocus(() => { blocks = put($("#ov-blocks"), warmupHTML(S.data) + copyProgressHTML(S.data) + gauntletHTML(S.data)); });
   fillTelemetry();
   put($("#ov-tools"), toolsHTML());
   if (blocks) requestAnimationFrame(drawCopyCharts);
@@ -104,6 +116,7 @@ function drawChart(cv, chart, index = 0, mark = null) {
   const pts = chart.points;
   let lo = Infinity, hi = -Infinity, x0 = pts[0][0], x1 = pts[pts.length - 1][0];
   for (const [, y] of pts) { lo = Math.min(lo, y); hi = Math.max(hi, y); }
+  for (const [, a, b] of chart.band || []) { lo = Math.min(lo, a); hi = Math.max(hi, b); }
   if (hi - lo < 1e-12) { hi += 1; lo -= 1; }
   if (chart.minSpan && hi - lo < chart.minSpan) { const mid = (hi + lo) / 2; hi = mid + chart.minSpan / 2; lo = mid - chart.minSpan / 2; }
   const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
@@ -117,6 +130,13 @@ function drawChart(cv, chart, index = 0, mark = null) {
     const x = Math.round(X(marked[0])) + 0.5;
     g.strokeStyle = css.getPropertyValue("--dim").trim();
     g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
+  }
+  if (chart.band && chart.band.length) {
+    // The 95% range of a rating (the strength chart), under its line.
+    g.beginPath();
+    chart.band.forEach(([x, a], i) => { if (i === 0) g.moveTo(X(x), Y(a)); else g.lineTo(X(x), Y(a)); });
+    [...chart.band].reverse().forEach(([x, , b]) => g.lineTo(X(x), Y(b)));
+    g.closePath(); g.globalAlpha = 0.18; g.fillStyle = colour; g.fill(); g.globalAlpha = 1;
   }
   g.beginPath();
   pts.forEach(([x, y], i) => { if (i === 0) g.moveTo(X(x), Y(y)); else g.lineTo(X(x), Y(y)); });

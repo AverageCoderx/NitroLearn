@@ -22,12 +22,17 @@ function plate(bot, size = 54) {
   return `<span class="plate display" style="--size:${Number(size) || 54}px;${paint}" title="Race number ${esc(l.number || "")}">${esc(l.number || "")}</span>`;
 }
 
+// A message that is showing already is shown once: it stays longer instead of stacking (an edit repeated while
+// a problem lasts would add a copy each time).
 function toast(text, bad) {
+  const wait = bad ? 9000 : Math.max(4500, String(text).length * 45);
+  const same = [...$("#toasts").children].find(t => t.textContent === String(text) && t.classList.contains("bad") === !!bad);
+  if (same) { clearTimeout(same._gone); same._gone = setTimeout(() => same.remove(), wait); return; }
   const el = document.createElement("div");
   el.className = "toast" + (bad ? " bad" : "");
   el.textContent = text;
   $("#toasts").appendChild(el);
-  setTimeout(() => el.remove(), bad ? 9000 : Math.max(4500, String(text).length * 45));
+  el._gone = setTimeout(() => el.remove(), wait);
 }
 
 // ---------- dialogs ----------

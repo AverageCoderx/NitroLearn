@@ -76,6 +76,22 @@ pub enum RewardKind {
     /// A reward of one's own, compiled in from a Rust file: `kind` names it, `settings` holds its own
     /// settings.
     Custom(crate::custom::CustomReward),
+    /// A reward built from blocks in the settings, without code: `title` names it, `terms` holds its terms
+    /// (`crate::built`).
+    Built(BuiltReward),
+}
+
+/// A built reward, paid through the same path as a reward of one's own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BuiltReward(pub crate::custom::CustomReward);
+
+impl<'de> Deserialize<'de> for BuiltReward {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let settings = serde_json::Map::deserialize(deserializer)?;
+        crate::built::make(&settings)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl RewardKind {
@@ -94,7 +110,7 @@ impl RewardKind {
             Self::Goal { .. } => "goal",
             Self::Alignment {} => "alignment",
             Self::AllOf { .. } => "all_of",
-            Self::Custom(custom) => custom.name(),
+            Self::Custom(custom) | Self::Built(BuiltReward(custom)) => custom.name(),
         }
     }
 
@@ -108,7 +124,7 @@ impl RewardKind {
             | Self::SaveBoost { .. }
             | Self::Alignment {} => true,
             Self::AllOf { parts } => parts.iter().all(Self::is_continuous),
-            Self::Custom(custom) => custom.every_step(),
+            Self::Custom(custom) | Self::Built(BuiltReward(custom)) => custom.every_step(),
             _ => false,
         }
     }
@@ -116,12 +132,20 @@ impl RewardKind {
     /// How many numbers per car the reward keeps between steps (only rewards of one's own do).
     fn memory(&self) -> usize {
         match self {
-            Self::Custom(custom) => custom.memory(),
+            Self::Custom(custom) | Self::Built(BuiltReward(custom)) => custom.memory(),
             _ => 0,
         }
     }
 
     /// What is wrong with the kind's own parameters, if anything.
+    /// A reward of one's own or a built one: rewards paid by a `custom::Reward`.
+    fn as_custom(&self) -> Option<&crate::custom::CustomReward> {
+        match self {
+            Self::Custom(custom) | Self::Built(BuiltReward(custom)) => Some(custom),
+            _ => None,
+        }
+    }
+
     fn problem(&self) -> Option<&'static str> {
         match self {
             Self::StrongTouch {
@@ -219,7 +243,9 @@ impl RewardKind {
             Self::AllOf { ref parts } => {
                 krc(parts.iter().map(|part| part.value(prev, cur, events, car)))
             }
-            Self::Custom(ref custom) => custom.value(prev, cur, events, car),
+            Self::Custom(ref custom) | Self::Built(BuiltReward(ref custom)) => {
+                custom.value(prev, cur, events, car)
+            }
         }
     }
 }
@@ -353,6 +379,9 @@ pub struct RewardSet {
     raw: Vec<f32>,
     /// Per term, the numbers each car's reward keeps between steps (rewards that remember).
     memory: Vec<Vec<f32>>,
+    /// When kept (`keep_parts`): each term's pay to each car in the last step, after zero-sum and weight,
+    /// `[term * cars + car]`; a car's terms add up, in order, to its total.
+    parts: Option<Vec<f32>>,
 }
 
 impl RewardSet {
@@ -363,7 +392,18 @@ impl RewardSet {
             step_scale: tick_skip as f32 / REFERENCE_TICK_SKIP,
             raw: Vec::new(),
             memory,
+            parts: None,
         }
+    }
+
+    /// Keeps each term's pay of every step from the next `compute` on (`parts`), or stops keeping it.
+    pub fn keep_parts(&mut self, on: bool) {
+        self.parts = on.then(Vec::new);
+    }
+
+    /// Each term's pay to each car in the last step, `[term * cars + car]`; empty unless kept.
+    pub fn parts(&self) -> &[f32] {
+        self.parts.as_deref().unwrap_or_default()
     }
 
     /// A new episode: what the rewards remember starts again from 0.
@@ -388,6 +428,10 @@ impl RewardSet {
         let cars = cur.cars.len();
         debug_assert_eq!(counted.len(), cars);
         out.fill(0.0);
+        if let Some(parts) = &mut self.parts {
+            parts.clear();
+            parts.resize(self.terms.len() * cars, 0.0);
+        }
         stats.agent_steps += counted.iter().filter(|&&c| c).count() as u64;
         for (t, term) in self.terms.iter().enumerate() {
             let scale = if term.kind.is_continuous() {
@@ -397,7 +441,7 @@ impl RewardSet {
             };
             let weight = term.weight;
             self.raw.clear();
-            if let (RewardKind::Custom(custom), size @ 1..) = (&term.kind, term.kind.memory()) {
+            if let (Some(custom), size @ 1..) = (term.kind.as_custom(), term.kind.memory()) {
                 let memory = &mut self.memory[t];
                 memory.resize(cars * size, 0.0);
                 self.raw.extend(
@@ -432,6 +476,9 @@ impl RewardSet {
                 };
                 let weighted = shaped * weight;
                 out[car] += weighted;
+                if let Some(parts) = &mut self.parts {
+                    parts[t * cars + car] = weighted;
+                }
                 if !counted[car] {
                     continue;
                 }
@@ -688,6 +735,47 @@ mod tests {
         };
         let (out, _) = rewards(vec![term], &game(0.0), &cur, &no_events(2));
         assert_eq!(out, vec![150.0, -120.0]);
+    }
+
+    #[test]
+    fn kept_parts_are_each_terms_pay_and_add_up_to_the_total() {
+        let mut events = no_events(2);
+        events.cars[0].bumped_opponent = true;
+        let mut cur = game(5300.0);
+        cur.goal_scored = Some(Team::Blue);
+        let bump = RewardTerm {
+            kind: RewardKind::Bump {},
+            weight: 20.0,
+            zero_sum: Some(ZeroSum {
+                team_spirit: 0.5,
+                opponent_scale: 1.0,
+            }),
+        };
+        let goal = RewardTerm {
+            kind: RewardKind::Goal {
+                concede_scale: -0.8,
+            },
+            weight: 150.0,
+            zero_sum: None,
+        };
+        let mut set = RewardSet::new(vec![bump, goal, plain(RewardKind::Alignment {}, 0.3)], 8);
+        let mut out = vec![0.0; 2];
+        let mut stats = RewardStats::new(3);
+        let counted = [true, true];
+        set.compute(&game(0.0), &cur, &events, &counted, &mut out, &mut stats);
+        assert!(set.parts().is_empty(), "not kept unless asked");
+        set.keep_parts(true);
+        set.compute(&game(0.0), &cur, &events, &counted, &mut out, &mut stats);
+        let parts = set.parts().to_vec();
+        assert_eq!(parts.len(), 6);
+        assert_eq!(&parts[..4], &[20.0, -20.0, 150.0, -120.0]);
+        for car in 0..2 {
+            let total = (0..3).fold(0.0f32, |sum, t| sum + parts[t * 2 + car]);
+            assert_eq!(total.to_bits(), out[car].to_bits(), "car {car}");
+        }
+        set.keep_parts(false);
+        set.compute(&game(0.0), &cur, &events, &counted, &mut out, &mut stats);
+        assert!(set.parts().is_empty());
     }
 
     #[test]

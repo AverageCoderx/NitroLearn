@@ -1,0 +1,129 @@
+# The test suite on every push to the release line and on pull requests into it: Rust checks on Linux, and the
+# Python tests on Linux and Windows (CPU only, no graphics card), split into four shards each; and the scrub
+# (tools/release_scrub.py) for text that must not ship.
+# Collision meshes come from the same hash-pinned public package `nitro fetch-meshes` uses. Nothing is uploaded
+# as an artifact: the logs are the record.
+name: tests
+
+on:
+  push:
+    branches: [main, "**/release-v1"]
+  pull_request:
+    branches: [main, "**/release-v1"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUST_VERSION: "1.99.0" # the Rust the project is checked with: a newer one can bring new lints
+
+jobs:
+  scrub:
+    name: release scrub
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Text that must not ship
+        env:
+          BEFORE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            python3 tools/release_scrub.py --base "$BEFORE"
+          else
+            echo "No earlier commit to compare with: the whole tree's checks only."
+            python3 tools/release_scrub.py --base HEAD
+          fi
+
+  rust:
+    name: rust checks (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal -c clippy -c rustfmt
+          rustup default "$RUST_VERSION"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-${{ env.RUST_VERSION }}-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: rust-${{ env.RUST_VERSION }}-${{ runner.os }}-
+      - name: Collision meshes
+        run: python3 tools/ci_meshes.py
+      - name: Formatting
+        run: |
+          cargo fmt --all --check
+          rustfmt --edition 2024 --check crates/nitro_core/src/custom/library/*.rs
+      - name: Lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+
+  python:
+    name: python tests (${{ matrix.os }}, shard ${{ matrix.shard }}/4)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        shard: [1, 2, 3, 4]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: core-${{ env.RUST_VERSION }}-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: core-${{ env.RUST_VERSION }}-${{ runner.os }}-
+      - name: Python environment and the core
+        run: |
+          uv venv --python 3.11 .venv
+          if [ -d .venv/Scripts ]; then bin=.venv/Scripts; else bin=.venv/bin; fi
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          echo "$PWD/$bin" >> "$GITHUB_PATH"
+          export VIRTUAL_ENV="$PWD/.venv"
+          uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install maturin playwright
+          uv pip install --editable '.[dev]' --no-build-isolation
+      - name: Collision meshes
+        run: python tools/ci_meshes.py
+      - name: Lints and types
+        if: matrix.os == 'ubuntu-latest' && matrix.shard == 1
+        run: |
+          ruff check python tests benchmarks tools
+          ruff format --check python tests benchmarks tools
+          mypy
+      - name: Tests (shard ${{ matrix.shard }} of 4)
+        run: |
+          files=$(ls tests/test_*.py | awk -v shard=${{ matrix.shard }} 'NR % 4 == shard % 4')
+          python -m pytest -q -rfEs -p no:cacheprovider $files

@@ -23,6 +23,9 @@ pub enum ObsKind {
     /// AdvancedObsPadderGGL, a community GigaLearn observation, reproduced exactly: places for
     /// `obs_team_size` players a side (its `teamSize`; 0 = the game's), the empty ones all zeros.
     GigalearnPadder,
+    /// rlgym-tools' `AdvancedObsPadder`: `gigalearn_padder` with each car's `has_jump` (not jumped yet) where
+    /// that has its 0 (bots brought over from RLGym-PPO).
+    RlgymPadder,
 }
 
 /// Where each part of a native observation sits, so the network can treat other cars as a set.
@@ -82,7 +85,7 @@ impl ObsKind {
     /// GigaLearn's padder has `room` places its own way (unflagged); its other copies take no room.
     pub fn layout(self, team_size: usize, has_opponents: bool, room: usize) -> ObsLayout {
         let (self_part, base_other) = self.parts();
-        if self == Self::GigalearnPadder {
+        if matches!(self, Self::GigalearnPadder | Self::RlgymPadder) {
             // Its places are always `teamSize - 1` teammates and `teamSize` opponents, unflagged.
             let places = if room == 0 { team_size } else { room };
             return ObsLayout {
@@ -120,7 +123,9 @@ impl ObsKind {
                 GIGALEARN_GLOBAL + GIGALEARN_DEFAULT_PLAYER,
                 GIGALEARN_DEFAULT_PLAYER,
             ),
-            Self::GigalearnPadder => (GIGALEARN_GLOBAL + PADDER_PLAYER, PADDER_OTHER),
+            Self::GigalearnPadder | Self::RlgymPadder => {
+                (GIGALEARN_GLOBAL + PADDER_PLAYER, PADDER_OTHER)
+            }
         }
     }
 
@@ -147,7 +152,7 @@ impl ObsKind {
     /// Whether this observation takes `obs_team_size` (room for more players than the game has): NitroLearn's
     /// padded ones and GigaLearn's padder (which pads its own way, without flags).
     pub fn takes_room(self) -> bool {
-        self.pads() || self == Self::GigalearnPadder
+        self.pads() || matches!(self, Self::GigalearnPadder | Self::RlgymPadder)
     }
 
     /// `layout` for settings that may be wrong: the same rules as the core's settings check, and only
@@ -181,6 +186,7 @@ impl ObsKind {
             "gigalearn_advanced" => Some(Self::GigalearnAdvanced),
             "gigalearn_default" => Some(Self::GigalearnDefault),
             "gigalearn_padder" => Some(Self::GigalearnPadder),
+            "rlgym_padder" => Some(Self::RlgymPadder),
             _ => None,
         }
     }
@@ -193,6 +199,7 @@ impl ObsKind {
             Self::GigalearnAdvanced => "gigalearn_advanced",
             Self::GigalearnDefault => "gigalearn_default",
             Self::GigalearnPadder => "gigalearn_padder",
+            Self::RlgymPadder => "rlgym_padder",
         }
     }
 
@@ -308,7 +315,10 @@ impl ObsKind {
             Self::NitroV2 => nitro_v2(snap, me, prev_action, slotted, prediction, &mut writer),
             Self::GigalearnAdvanced => gigalearn_advanced(snap, me, prev_action, &mut writer),
             Self::GigalearnDefault => gigalearn_default(snap, me, prev_action, &mut writer),
-            Self::GigalearnPadder => gigalearn_padder(snap, me, prev_action, places, &mut writer),
+            Self::GigalearnPadder => {
+                gigalearn_padder(snap, me, prev_action, places, false, &mut writer);
+            }
+            Self::RlgymPadder => gigalearn_padder(snap, me, prev_action, places, true, &mut writer),
         }
         assert_eq!(writer.len, writer.out.len(), "observation size mismatch");
     }
@@ -763,11 +773,14 @@ fn gigalearn_default_player(car: &CarSnapshot, viewer: Team, w: &mut Writer<'_>)
 /// pads as gigalearn_default; the own car, then up to `teammates` teammates and `opponents` opponents in
 /// car order (more are left out, as there), each also relative to the own car, the missing places all
 /// zeros. `places` None: every other car (the game's size).
+/// `has_jump`: rlgym-tools' version, each car's has_jump (not jumped yet) where the source has its 0
+/// placeholder.
 fn gigalearn_padder(
     snap: &GameSnapshot,
     me: usize,
     prev_action: Controls,
     places: Places,
+    has_jump: bool,
     w: &mut Writer<'_>,
 ) {
     const SCALE: f32 = 1.0 / 2300.0;
@@ -801,7 +814,7 @@ fn gigalearn_padder(
         w.flag(car.on_ground);
         w.flag(car.can_flip);
         w.flag(car.is_demoed);
-        w.scalar(0.0); // the source's placeholder
+        w.flag(has_jump && !car.has_jumped); // the GigaLearn source's 0 placeholder
         body
     };
     let mine = player(&snap.cars[me], w);
@@ -851,6 +864,7 @@ mod tests {
             "gigalearn_advanced",
             "gigalearn_default",
             "gigalearn_padder",
+            "rlgym_padder",
         ] {
             let parsed: ObsKind = serde_json::from_str(&format!("\"{name}\"")).unwrap();
             assert_eq!(ObsKind::from_name(name), Some(parsed));
@@ -1650,6 +1664,15 @@ mod tests {
         assert_eq!(&room3[141..173], &exact[77..109]);
         assert!(room3[173..].iter().all(|&v| v == 0.0));
         assert_eq!(exact[76], 0.0, "the source's placeholder after demoed");
+        // rlgym-tools' version has the car's has_jump there, and the same everywhere else.
+        let mut jumped = snap.clone();
+        jumped.cars[1].has_jumped = true;
+        let rlgym = obs(ObsKind::RlgymPadder, &jumped, 0);
+        assert_eq!(rlgym[76], 1.0, "the own car has not jumped");
+        assert_eq!(rlgym[77 + 25], 0.0, "the opponent has");
+        let plain = obs(ObsKind::GigalearnPadder, &jumped, 0);
+        let differ: Vec<usize> = (0..109).filter(|&i| rlgym[i] != plain[i]).collect();
+        assert_eq!(differ, [76]);
     }
 
     /// AdvancedObsPadderGGL's reference: its own C++ source, run on these games, wrote the same numbers.

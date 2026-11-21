@@ -3,6 +3,7 @@
 // on the left; a search narrows them all.
 async function loadResources() {
   loadConverting();
+  loadDataset();
   const out = await call("resources");
   S.res = Object.assign(S.res || { query: "", notesOpen: {} }, out.error ? { error: out.error } : out, { loaded: true });
   if (S.res.build === "running" && !S.res.buildLive) S.res.buildLive = { state: "running", text: "", next: 0 };
@@ -49,6 +50,7 @@ function renderResources() {
   const kept = Object.values(((S.conv || {}).store || {}).counts || {}).reduce((a, v) => a + v, 0);
   const sections = [
     { id: "replays", title: "Converted replays", html: resShown("converted replays convert") ? convertHTML() : "", count: kept },
+    { id: "download", title: "Download replays", html: resShown("download replays dataset high-level") ? datasetHTML() : "", count: Object.values((S.ds || {}).here || {}).reduce((a, v) => a + v, 0) },
     { id: "settings", title: "Settings files", about: "Starting points for new bots: the presets, your files in my-settings, and settings files you added.", rows: sources.concat(brokenSettings) },
     { id: "sets", title: "Reward sets", about: "Rewards kept apart from a bot, to load into one from its Rewards tab (which can also save one).", rows: added("rewards").map(fileRow) },
     { id: "rust", title: "Your Rust files", about: "Your own rewards, compiled into NitroLearn by Build (observation builders and action parsers come later). Start from the example, docs/your_own_rewards.md.", rows: added("rust").map(fileRow), lead: buildHTML(added("rust")) },
@@ -129,6 +131,66 @@ function convertHTML() {
    </div></section>`;
 }
 async function pollConverting() { if (S.view === "resources" && S.conv && S.conv.state === "running") await loadConverting(); }
+// ---------- downloading replays (nitro get-replays): high-level games, best first, no ballchasing key ----------
+async function loadDataset() {
+  const after = S.ds && S.ds.state === "running" ? S.ds.next || 0 : 0;
+  const out = await call("dataset", after);
+  if (out.error) return;
+  const text = after && S.ds ? (S.ds.text || "") + (out.text || "") : out.text || "";
+  S.ds = Object.assign(S.ds || { size: "1v1", count: "1000", convert: true }, out, { text: text.slice(-60000), loaded: true });
+  if (S.view === "resources") renderDataset();
+}
+function renderDataset() { const box = $("#dataset"); if (box) { box.outerHTML = datasetHTML(); const pre = $("#dsText"); if (pre) pre.scrollTop = pre.scrollHeight; } }
+async function pollDataset() { if (S.view === "resources" && S.ds && S.ds.state === "running") await loadDataset(); }
+function datasetHTML() {
+  if (!S.ds || !S.ds.loaded) return '<section id="dataset"><div class="heading"><h2 class="display">Download replays</h2></div><div class="set-hint">Loading…</div></section>';
+  const d = S.ds, n = x => Number(x || 0).toLocaleString("en-US"), gb = b => (Number(b || 0) / 2 ** 30).toFixed(1);
+  const running = d.state === "running", p = d.progress, c = d.converting;
+  const sizes = Object.keys(d.published || {}).length ? Object.keys(d.published).sort() : ["1v1", "2v2"];
+  const stat = (k, v) => `<div class="stat"><div class="k">${k}</div><div class="v display">${v}</div></div>`;
+  const here = sizes.map(sz => stat(sz + " here", n((d.here || {})[sz]))).join("");
+  const offered = d.unavailable ? `<div class="banner" style="font-size:13px;">${esc(d.unavailable)}</div>` : d.published ? `<div class="chips">${Object.entries(d.published).sort().map(([k, v]) => `<span class="chip">${esc(k)}: ${n(v.replays)} replays, ${gb(v.bytes)} GB</span>`).join("")}</div>` : `<div class="row"><button type="button" class="btn small" data-act="ds-list">See what can be downloaded</button></div>`;
+  const left = s => s == null ? "" : s >= 3600 ? Math.floor(s / 3600) + " h " + Math.round(s % 3600 / 60) + " min" : Math.max(1, Math.round(s / 60)) + " min";
+  const share = p && p.bytes_total ? Math.min(1, p.bytes_done / p.bytes_total) : 0;
+  const fetching = p && p.chunks ? `<div class="row"><b>Downloading ${esc(p.size)}: part ${n(p.chunk)} of ${n(p.chunks)}</b><span class="muted">${gb(p.bytes_done)} of ${gb(p.bytes_total)} GB · ${p.mb_per_second} MB/s${running && p.seconds_left != null && p.state === "downloading" ? " · about " + left(p.seconds_left) + " left" : ""}</span></div>
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(100 * share)}"><span style="width:${(100 * share).toFixed(1)}%"></span></div>
+      <div class="muted" style="font-size:13px;">${n(p.replays_new)} new replays so far.</div>` : "";
+  const converting = running && p && p.state === "downloaded" && c && c.todo ? `<div class="muted" style="font-size:13px;">Converting: ${n(c.done)} of ${n(c.todo)}${c.seconds_left != null ? " · about " + left(c.seconds_left) + " left" : ""}.</div>` : "";
+  const note = p && (p.state === "disk_full" || p.state === "failed") && p.note ? `<div class="banner bad" style="font-size:13px;">${esc(p.note)}</div>` : "";
+  const words = { none: "", running: "", done: "Done. The replays are in the store, ready for replay copying.", stopped: "Stopped. What was downloaded is kept; Download carries on where it stopped.", failed: "It stopped with an error: the lines below say why." }[d.state] || "";
+  const folder = (d.folders || {})[d.size] || "";
+  return `<section id="dataset"><div class="heading"><h2 class="display">Download replays</h2><span class="muted grow">Games by very good players for replay copying, with no ballchasing.com key.</span></div>
+   <div class="card pad rw-panel res-card">
+    <div class="row" style="gap:12px 34px;align-items:flex-end;">${here}</div>
+    ${offered}
+    <div class="ink2" style="font-size:13px;max-width:110ch;">Downloads ranked games played at Grand Champion and above, the most skilled games first, and only as many as you ask for. A stopped download carries on where it stopped, and replays you already have are never downloaded again. Then it converts them (see Converted replays above) so every bot's replay copy can use them. They are saved in <span class="mono">${esc(folder)}</span>: to copy them, add that folder as one of the bot's replay folders. About 1 MB to download a replay, and about 10 MB once converted.</div>
+    <div class="row"><label class="muted" for="ds-size" style="font-size:13px;">Game size</label><select id="ds-size" class="field" ${running ? "disabled" : ""}>${sizes.map(sz => `<option ${sz === d.size ? "selected" : ""}>${esc(sz)}</option>`).join("")}</select>
+      <label class="muted" for="ds-count" style="font-size:13px;">How many new replays (0 for all)</label><input id="ds-count" class="field" style="width:110px;" inputmode="numeric" value="${esc(d.count)}" ${running ? "disabled" : ""}>
+      <label class="muted" style="font-size:13px;"><input type="checkbox" id="ds-convert" ${d.convert ? "checked" : ""} ${running ? "disabled" : ""}> Convert them after downloading</label>
+      <span class="grow"></span>${running ? '<button type="button" class="btn" data-act="ds-stop">Stop</button>' : d.unavailable ? "" : '<button type="button" class="btn primary" data-act="ds-start">Download</button>'}</div>
+    ${words ? `<div class="${d.state === "failed" ? "banner bad" : "muted"}" style="font-size:13px;">${esc(words)}</div>` : ""}
+    ${fetching}${converting}${note}
+    ${d.text ? `<pre class="console mono" id="dsText" style="height:18vh;">${esc(d.text)}</pre>` : ""}
+    <div class="muted" style="font-size:12px;">${esc(d.credit || "")}</div>
+   </div></section>`;
+}
+ACTIONS["ds-list"] = async () => {
+  const out = await call("dataset_published");
+  if (out.error) return toast(out.error, true);
+  S.ds.unavailable = out.unavailable || null; S.ds.published = out.published; return renderDataset();
+};
+ACTIONS["ds-start"] = async () => {
+  const raw = ($("#ds-count").value || "").trim().replace(/[,_ ]/g, "");
+  if (!/^\d+$/.test(raw)) return toast("How many: a whole number, 0 for all.", true);
+  S.ds.size = $("#ds-size").value; S.ds.count = raw; S.ds.convert = $("#ds-convert").checked;
+  const out = await call("dataset_start", S.ds.size, Number(raw), S.ds.convert);
+  if (out.error) return toast(out.error, true);
+  if (out.unavailable) { S.ds.unavailable = out.unavailable; return renderDataset(); }
+  toast("Downloading replays…");
+  S.ds.state = "running"; S.ds.text = ""; S.ds.next = 0; S.ds.progress = null;
+  return renderDataset();
+};
+ACTIONS["ds-stop"] = async () => { const out = await call("stop_job", ".dataset", "dataset"); if (out.error) return toast(out.error, true); toast("Stopped. What was downloaded is kept."); return loadDataset(); };
 function buildHTML(rust) {
   const b = S.res.buildLive || { state: S.res.build || "none", text: "" };
   const rewards = rust.filter(f => f.kind === "rust_reward" && !f.problem);

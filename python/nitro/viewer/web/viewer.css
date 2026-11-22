@@ -143,6 +143,8 @@
   background: var(--nv-chalk); }
 .nv-meter-centred i { background: var(--nv-good); }
 .nv-meter-centred i.nv-bad { background: var(--nv-bad); }
+.nv-driver { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin: 4px 0 2px; }
+.nv-driver span { color: var(--nv-dim); }
 .nv-meters { display: flex; flex-direction: column; gap: 6px; }
 .nv-think-empty .nv-meters { display: none; }
 .nv-think-none { color: var(--nv-dim); }
@@ -381,3 +383,43 @@
 .nv-low .nv-timeline { height: 38px; }
 .nv-low .nv-menu { top: 48px; max-height: calc(100% - 54px); }
 .nv-low .nv-camset { max-height: calc(100% - var(--nv-bar) - 52px); }
+
+/* The reward chart (recordings with rewards) sits over the timeline, lined up with it. */
+.nv-rewards { display: flex; flex-direction: column; gap: 4px; }
+.nv-rewards-head { display: flex; align-items: center; gap: 10px; padding: 0 48px; min-height: 22px; }
+.nv-rewards-title { font-stretch: 75%; font-weight: 700; font-size: 11.5px; text-transform: uppercase;
+  letter-spacing: 0.09em; white-space: nowrap; }
+.nv-rewards-legend { display: flex; flex: 1; flex-wrap: wrap; gap: 2px 10px; min-width: 0; }
+.nv-root .nv-rewards-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--nv-chalk); }
+.nv-root .nv-rewards-chip[aria-pressed="false"] { color: var(--nv-dim); text-decoration: line-through; }
+.nv-rewards-chip i { width: 10px; height: 10px; border-radius: 2px; }
+.nv-rewards-chip[aria-pressed="false"] i { opacity: 0.3; }
+.nv-rewards-chip b { font-family: "JetBrains Mono", ui-monospace, monospace; font-weight: 500; color: var(--nv-dim); }
+.nv-rewards-plot { position: relative; height: 74px; margin: 0 48px; cursor: pointer; }
+.nv-rewards-plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.nv-rewards-head-line { position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: var(--nv-chalk);
+  opacity: 0.7; pointer-events: none; }
+.nv-compact .nv-rewards-head, .nv-compact .nv-rewards-plot { padding: 0; margin: 0; }
+.nv-compact .nv-rewards-plot { height: 52px; }
+
+/* Practice starts: a panel like the camera settings, with the field from above for placing a start. */
+.nv-practice { position: absolute; right: 12px; top: 64px; z-index: 12; display: flex;
+  flex-direction: column; gap: 8px; width: 300px; max-width: calc(100% - 24px);
+  max-height: calc(100% - 76px); overflow-y: auto; padding: 10px 14px 12px; pointer-events: auto;
+  background: var(--nv-asphalt); border: 1px solid var(--nv-rule); }
+.nv-practice-head { display: flex; align-items: flex-end; justify-content: space-between;
+  border-bottom: 3px solid var(--nv-chalk); }
+.nv-practice-head .nv-menu-title { border-bottom: 0; }
+.nv-practice-text { margin: 0; color: var(--nv-dim); font-size: 12px; line-height: 1.4; }
+.nv-root .nv-practice .nv-big { height: 34px; padding: 0 14px; color: var(--nv-asphalt); --nv-block: var(--nv-yellow); }
+.nv-root .nv-practice .nv-big:disabled { color: var(--nv-dim); --nv-block: var(--nv-raised); cursor: default; }
+.nv-practice-editor { display: flex; flex-direction: column; gap: 6px; }
+.nv-practice-field { width: 240px; height: 330px; align-self: center; background: #1b1c19; touch-action: none;
+  cursor: grab; }
+.nv-practice-inputs { display: grid; gap: 3px; }
+.nv-practice-input { display: grid; grid-template-columns: 1fr 86px; align-items: center; gap: 8px; font-size: 12.5px; }
+.nv-practice-input input { width: 100%; padding: 2px 4px; font: 12px "JetBrains Mono", ui-monospace, monospace;
+  color: var(--nv-chalk); background: var(--nv-raised); border: 1px solid var(--nv-rule); }
+.nv-practice-result { display: flex; flex-direction: column; gap: 6px; }
+.nv-practice-command { display: block; padding: 6px 8px; font: 11.5px "JetBrains Mono", ui-monospace, monospace;
+  color: var(--nv-chalk); background: var(--nv-raised); user-select: all; word-break: break-all; }

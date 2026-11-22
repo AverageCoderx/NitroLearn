@@ -28,6 +28,10 @@ Several rewards can be tied together with `all_of`, which pays only when every p
 A reward can be switched off without deleting it: `enabled = false` keeps its block and settings for later,
 but the run neither pays nor measures it (the dashboard's on/off switch).
 
+A reward can be built from blocks without writing code, `name = "built"`: terms of conditions ("in the
+air", "ball above 300"), measures ("speed toward the ball", "a goal") and weights. The blocks are listed in
+nitro/config/built.py.
+
 If you list no `[[rewards]]` at all, a starting mix is used (see `DEFAULT_REWARDS` at the bottom of this
 file).
 """
@@ -38,7 +42,7 @@ import dataclasses
 import functools
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from nitro.config.loader import setting
 
@@ -207,6 +211,15 @@ class AllOf(_Reward):
                     (f"parts[{i}]", "a group cannot hold another group; list all the rewards in one")
                 )
                 continue
+            if isinstance(part, Built) and part.remembers:
+                found.append(
+                    (
+                        f"parts[{i}]",
+                        "a built reward that remembers (once_per_touch, variables, since...) cannot be "
+                        "part of a group",
+                    )
+                )
+                continue
             own = part.zero_sum is not None or not part.enabled
             if part.weight != 1.0 or own:
                 found.append(
@@ -295,6 +308,111 @@ class Custom(_Reward):
         return dataclasses.replace(made, settings=tuple(sorted(own.items())))
 
 
+@dataclass(frozen=True)
+class Built(_Reward):
+    """A reward built from blocks and formulas, without code: terms of conditions, measures or formulas and
+    weights, and variables kept from step to step, read by NitroLearn as the game runs (nothing is compiled).
+    Its block gives it a title and its terms:
+
+        [[rewards]]
+        name = "built"
+        title = "touch_up_high"
+        weight = 20
+
+        [[rewards.terms]]
+        when = ["in_air", "touching_ball", { ball_above = 300 }]
+        measure = "ball_height"
+
+    The blocks and formulas, each explained: nitro/config/built.py and docs/reward_builder.md.
+    """
+
+    name: str = ""  # always "built"; no fixed name here, so the settings loader asks `accepts`
+    title: str = ""
+    terms: tuple[dict[str, Any], ...] = ()
+    vars: tuple[dict[str, Any], ...] = ()
+
+    @classmethod
+    def accepts(cls, name: str) -> bool:
+        return name == "built"
+
+    @classmethod
+    def names(cls) -> list[str]:
+        return ["built"]
+
+    @classmethod
+    def build(
+        cls,
+        raw: dict[str, Any],
+        path: str,
+        build: Callable[[type[Any], dict[str, Any], str], Any],
+        report: Callable[[str, str, str | None], None],
+    ) -> Built:
+        """The reward a `[[rewards]]` block builds, its title, variables and every term checked (formulas by
+        the core, before training starts)."""
+        from nitro.config import built as blocks
+
+        own = {"title", "terms", "vars"}
+        made: Built = build(cls, {k: v for k, v in raw.items() if k not in own}, path)
+        title = raw.get("title")
+        found = False
+        if not isinstance(title, str) or not title or not all(c in _TITLE_LETTERS for c in title):
+            report(
+                f"{path}.title",
+                "a built reward needs a title of small letters, digits and _",
+                "e.g. touch_up_high",
+            )
+            title, found = "", True
+        elif title in _builtin_names() or title in custom_kinds():
+            report(f"{path}.title", f"'{title}' is already a reward's name", "pick a title of its own")
+            found = True
+        terms = raw.get("terms")
+        if not isinstance(terms, list) or not terms:
+            report(f"{path}.terms", "a built reward needs at least one term ([[rewards.terms]] blocks)", None)
+            terms, found = [], True
+        variables = raw.get("vars", [])
+        if not isinstance(variables, list):
+            report(f"{path}.vars", "vars is a list of [[rewards.vars]] blocks", None)
+            variables, found = [], True
+        known = frozenset(str(v.get("name")) for v in variables if isinstance(v, dict))
+        checks: tuple[tuple[str, list[Any], Callable[[object], list[tuple[str, str]]]], ...] = (
+            ("vars", variables, blocks.var_problems),
+            ("terms", terms, lambda term: blocks.term_problems(term, known)),
+        )
+        for kind, items, check in checks:
+            for i, item in enumerate(items):
+                for key, message in check(item):
+                    report(f"{path}.{kind}[{i}]" + (f".{key}" if key else ""), message, None)
+                    found = True
+        kept = tuple(dict(term) for term in terms if isinstance(term, dict))
+        kept_vars = tuple(dict(var) for var in variables if isinstance(var, dict))
+        made = dataclasses.replace(made, name="built", title=title, terms=kept, vars=kept_vars)
+        if not found:
+            where, problem, _, _ = blocks.core_check(title, list(kept_vars), list(kept))
+            if problem:
+                report(f"{path}.{where}" if where else path, problem, None)
+        return made
+
+    @property
+    def every_step(self) -> bool:
+        from nitro.config import built as blocks
+
+        return bool(self.terms) and blocks.core_check(self.title, list(self.vars), list(self.terms))[2]
+
+    @property
+    def remembers(self) -> bool:
+        """It keeps numbers from step to step (variables, since/held/count/once, once per touch...)."""
+        from nitro.config import built as blocks
+
+        return bool(self.terms) and blocks.core_check(self.title, list(self.vars), list(self.terms))[3] > 0
+
+
+_TITLE_LETTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
+
+
+def _builtin_names() -> set[str]:
+    return {str(cls.__dataclass_fields__["name"].default) for cls in get_args(Reward)} - {""}
+
+
 def _rust_type_problem(rust_type: str, value: Any) -> str | None:
     if rust_type in ("f32", "f64"):
         ok = isinstance(value, int | float) and not isinstance(value, bool)
@@ -330,6 +448,7 @@ Reward = (
     | Alignment
     | AllOf
     | Custom
+    | Built
 )
 
 # The starting mix a run uses when its settings list no rewards.

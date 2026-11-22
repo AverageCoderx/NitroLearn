@@ -1,0 +1,14 @@
+/* The Multi-model bot page and the Overview's block of a multi-model bot (41_multimodel.js). */
+.mm-page { display: flex; flex-direction: column; gap: 14px; max-width: 980px; }
+.mm-page .card.pad { display: flex; flex-direction: column; gap: 10px; }
+.mm-bots { display: flex; flex-direction: column; gap: 6px; }
+.mm-bot { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border: 1px solid var(--rule); font-size: 13px; cursor: pointer; }
+.mm-bot.on { border-color: var(--yellow); }
+.mm-bot.bad .err { display: block; margin-top: 2px; }
+.mm-bot .grow { display: flex; flex-direction: column; }
+.mm-share { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.mm-share input { width: 56px; }
+.mm-live { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.mm-live-row { display: grid; grid-template-columns: minmax(160px, 1fr) 2fr 56px; align-items: center; gap: 10px; font-size: 13px; }
+.mm-live-row .bar { position: relative; }
+.mm-aim { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text); opacity: 0.7; }

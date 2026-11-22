@@ -496,7 +496,17 @@ fn a_padded_policy_plays_every_game_up_to_its_room_and_coasts_in_bigger_ones() {
 #[test]
 fn a_gigalearn_padder_bot_reads_trainings_observation_in_every_game_up_to_its_room() {
     // A GigaLearn bot with AdvancedObsPadderGGL(3): every game up to 3v3 is the same size.
-    let (room, kind) = (3, ObsKind::GigalearnPadder);
+    padder_bot_plays(ObsKind::GigalearnPadder, ("gigalearn_padder", "gigalearn"));
+}
+
+#[test]
+fn an_rlgym_padder_bot_reads_trainings_observation_in_every_game_up_to_its_room() {
+    // A bot brought over from RLGym-PPO with rlgym-tools' AdvancedObsPadder(3), which has no masks.
+    padder_bot_plays(ObsKind::RlgymPadder, ("rlgym_padder", "none"));
+}
+
+fn padder_bot_plays(kind: ObsKind, seeing: (&str, &str)) {
+    let room = 3;
     let obs_size = kind.layout(1, true, room).size;
     let pads = PadMap::new(&field()).unwrap();
     let mut rng = fastrand::Rng::with_seed(21);
@@ -523,14 +533,7 @@ fn a_gigalearn_padder_bot_reads_trainings_observation_in_every_game_up_to_its_ro
                 .fold(0.0f32, f32::max);
             assert!(worst <= 1e-5, "{team_size}v{team_size}: differs by {worst}");
         }
-        let file = policy_file_seeing(
-            ("gigalearn_padder", "gigalearn"),
-            0,
-            obs_size,
-            room,
-            "",
-            NUM_ACTIONS,
-        );
+        let file = policy_file_seeing(seeing, 0, obs_size, room, "", NUM_ACTIONS);
         let mut bot = NitroBot::new(
             Policy::from_bytes(&file).unwrap(),
             &field(),

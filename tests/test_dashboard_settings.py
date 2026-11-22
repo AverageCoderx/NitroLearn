@@ -483,7 +483,13 @@ def test_the_about_block_and_the_resources_sections_in_the_page(tmp_path: Path) 
             tab.wait_for_selector("#res-rewards")
             titles = tab.locator("#main .set-nav .set-group .t").all_text_contents()
             assert titles == [
-                *("Converted replays", "Settings files", "Reward sets", "Your Rust files"),
+                *(
+                    "Converted replays",
+                    "Download replays",
+                    "Settings files",
+                    "Reward sets",
+                    "Your Rust files",
+                ),
                 *("Built in: rewards", "Built in: observations"),
             ]
             tab.click("[data-resjump=rewards]")

@@ -414,6 +414,8 @@ pub struct EnvPool {
     arena_team_sizes: Vec<usize>,
     /// Arenas of more than one game size: the statistics are also kept per size.
     mixed: bool,
+    /// Other bots' views of these games (a multi-model bot's models).
+    views: Vec<crate::views::ViewConfig>,
 }
 
 impl EnvPool {
@@ -491,6 +493,7 @@ impl EnvPool {
             reward_labels,
             arena_team_sizes,
             mixed,
+            views: config.views.clone(),
         };
         for i in 0..shares {
             let shared = Arc::clone(&pool.shared);
@@ -505,6 +508,17 @@ impl EnvPool {
 
     pub fn num_groups(&self) -> usize {
         self.shared.groups.len()
+    }
+
+    /// Every arena of `group` as `Env::write_state` writes it, one after another. Call between steps.
+    pub fn game_states(&self, group: usize) -> Vec<f32> {
+        let mut out = Vec::new();
+        for env in &self.shared.groups[group] {
+            env.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .write_state(&mut out);
+        }
+        out
     }
 
     pub fn shape(&self, group: usize) -> BufferShape {
@@ -613,6 +627,24 @@ impl EnvPool {
             .set_counted(counted)
     }
 
+    /// Hands arena `arena`'s cars of `team` to a scripted benchmark opponent, or back to the policy
+    /// with None. Call between steps.
+    pub fn set_scripted(
+        &self,
+        arena: usize,
+        team: crate::snapshot::Team,
+        script: Option<crate::scripted::Script>,
+    ) -> Result<(), String> {
+        let groups = &self.shared.groups;
+        let env = groups[arena % groups.len()]
+            .get(arena / groups.len())
+            .ok_or_else(|| format!("there is no arena {arena}"))?;
+        env.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_scripted(team, script);
+        Ok(())
+    }
+
     pub fn snapshot(&self, arena: usize) -> Result<GameSnapshot, String> {
         let groups = &self.shared.groups;
         let env = groups[arena % groups.len()]
@@ -648,8 +680,98 @@ impl EnvPool {
         self.with_env(arena, Env::take_capture)
     }
 
+    /// Every car's moment in `arena` now (`Env::moments`); call between steps.
+    pub fn moments(&self, arena: usize) -> Result<Vec<[f32; 41]>, String> {
+        self.with_env(arena, |env| env.moments())
+    }
+
+    /// Keeps each reward term's pay to each car of `arena`'s steps, or stops (`Env::keep_reward_parts`).
+    pub fn keep_reward_parts(&self, arena: usize, on: bool) -> Result<(), String> {
+        self.with_env(arena, |env| env.keep_reward_parts(on))
+    }
+
+    /// Each reward term's pay to each car of `arena` in its last step, `[term * cars + car]`.
+    pub fn reward_parts(&self, arena: usize) -> Result<Vec<f32>, String> {
+        self.with_env(arena, |env| env.reward_parts())
+    }
+
     pub fn num_actions(&self) -> usize {
         self.rules.actions.len()
+    }
+
+    /// Numbers in view `view`'s observation.
+    pub fn view_size(&self, view: usize) -> Result<usize, String> {
+        self.views
+            .get(view)
+            .ok_or_else(|| format!("there is no view {view}"))?
+            .obs_size()
+    }
+
+    /// Every car of `group` as view `view` sees it now: `obs` one row of `view_size` numbers per car and
+    /// `mask` one row of `num_actions` per car, in the group's row order. Call between steps.
+    pub fn views_into(
+        &self,
+        group: usize,
+        view: usize,
+        obs: &mut [f32],
+        mask: &mut [u8],
+    ) -> Result<(), String> {
+        let width = self.view_size(view)?;
+        let envs = self
+            .shared
+            .groups
+            .get(group)
+            .ok_or_else(|| format!("there is no group {group}"))?;
+        let (agents, actions) = (self.shape(group).agents, self.rules.actions.len());
+        if obs.len() != agents * width || mask.len() != agents * actions {
+            return Err(format!(
+                "the buffers hold {} and {} entries, {} and {} needed",
+                obs.len(),
+                mask.len(),
+                agents * width,
+                agents * actions
+            ));
+        }
+        let config = &self.views[view];
+        let steps = config.prediction(self.rules.tick_skip)?;
+        let cars = agents / envs.len().max(1); // views need one game size (`PoolConfig::check`)
+        for ((env, obs), mask) in envs
+            .iter()
+            .zip(obs.chunks_exact_mut(cars * width))
+            .zip(mask.chunks_exact_mut(cars * actions))
+        {
+            env.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .views_into(config, &steps, obs, mask);
+        }
+        Ok(())
+    }
+
+    /// Per car of `group`, in its row order, how its last step ended for its team (`Env::goals_into`): 1
+    /// scored, -1 conceded, 0 no goal. Call between steps.
+    pub fn goals_into(&self, group: usize, out: &mut [i8]) -> Result<(), String> {
+        let envs = self
+            .shared
+            .groups
+            .get(group)
+            .ok_or_else(|| format!("there is no group {group}"))?;
+        let agents = self.shape(group).agents;
+        if out.len() != agents {
+            return Err(format!(
+                "the buffer holds {} entries, {agents} needed",
+                out.len()
+            ));
+        }
+        let mut at = 0;
+        for env in envs {
+            let env = env
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cars = env.snapshot().cars.len();
+            env.goals_into(&mut out[at..at + cars]);
+            at += cars;
+        }
+        Ok(())
     }
 
     /// Statistics of every environment since the last call; steps still in progress count towards the next.
@@ -1463,5 +1585,138 @@ mod tests {
         // alignment puts on a line too; one share's counter fills exactly a line.
         assert!(align_of::<Shared>() >= LINE && align_of::<Job>() >= LINE);
         assert_eq!((size_of::<Counter>(), align_of::<Counter>()), (LINE, LINE));
+    }
+
+    /// A model's view with ball prediction, in games whose own observation has none, is the
+    /// observation of games that predict at its times; the games predict as far as the furthest view.
+    #[test]
+    fn a_views_ball_prediction_is_the_observation_with_it() {
+        if !meshes_loaded() {
+            return;
+        }
+        let view: crate::views::ViewConfig = serde_json::from_str(
+            r#"{"observation": "nitro_v2", "team_size": 1, "opponents": true, "action_masks": "standard",
+                "ball_prediction": [0.5, 1.0]}"#,
+        )
+        .unwrap();
+        let far: crate::views::ViewConfig = serde_json::from_str(
+            r#"{"observation": "native", "team_size": 1, "opponents": true,
+                "action_masks": "standard", "ball_prediction": [3.0]}"#,
+        )
+        .unwrap();
+        let mut seeing = pool_config(4, 2, 2, 9);
+        seeing.observation = crate::obs::ObsKind::NitroV2;
+        seeing.ball_prediction = vec![0.5, 1.0];
+        let mut plain = pool_config(4, 2, 2, 9);
+        plain.observation = crate::obs::ObsKind::NitroV2;
+        plain.views = vec![view, far];
+        assert_eq!(
+            plain.rules().unwrap().prediction_len,
+            45,
+            "the furthest view's 3 s"
+        );
+        let mut a = RandomPlay {
+            driver: PoolDriver::new(&seeing).unwrap(),
+            rng: fastrand::Rng::with_seed(3),
+        };
+        let mut b = RandomPlay {
+            driver: PoolDriver::new(&plain).unwrap(),
+            rng: fastrand::Rng::with_seed(3),
+        };
+        let width = b.driver.pool.view_size(0).unwrap();
+        assert_eq!(width, a.driver.pool.shape(0).obs_size);
+        for _ in 0..120 {
+            a.step();
+            b.step();
+            for (group, buffers) in a.driver.buffers.iter().enumerate() {
+                let agents = buffers.reward.len();
+                let mut obs = vec![0.0; agents * width];
+                let mut mask = vec![0; agents * b.driver.pool.num_actions()];
+                b.driver
+                    .pool
+                    .views_into(group, 0, &mut obs, &mut mask)
+                    .unwrap();
+                assert_eq!(obs, buffers.obs);
+            }
+        }
+    }
+
+    #[test]
+    fn views_and_goals_follow_the_groups_rows() {
+        if !meshes_loaded() {
+            return;
+        }
+        let mut config = pool_config(4, 2, 2, 5);
+        let own: crate::views::ViewConfig = serde_json::from_str(
+            r#"{"observation": "native", "team_size": 1, "opponents": true, "action_masks": "standard"}"#,
+        )
+        .unwrap();
+        let alone = crate::views::ViewConfig {
+            opponents: false,
+            ..own
+        };
+        config.views = vec![own, alone];
+        let mut play = RandomPlay {
+            driver: PoolDriver::new(&config).unwrap(),
+            rng: fastrand::Rng::with_seed(3),
+        };
+        let pool = &play.driver.pool;
+        assert!(pool.view_size(1).unwrap() < pool.view_size(0).unwrap());
+        assert!(pool.view_size(2).is_err());
+        let (mut scored, mut conceded) = (0, 0);
+        for i in 0..400 {
+            if i % 40 == 0 {
+                // Random play rarely scores: now and then each ball flies at the Orange net.
+                for arena in 0..4 {
+                    play.driver
+                        .pool
+                        .with_env(arena, |env| {
+                            let cars: Vec<_> = env
+                                .snapshot()
+                                .cars
+                                .iter()
+                                .map(|c| (c.body, c.boost, c.on_ground))
+                                .collect();
+                            let shot = crate::snapshot::Body {
+                                pos: rocketsim::Vec3A::new(0.0, 4900.0, 300.0),
+                                vel: rocketsim::Vec3A::new(0.0, 2500.0, 0.0),
+                                ..crate::snapshot::Body::RESTING
+                            };
+                            env.sim_mut().place(shot, &cars);
+                        })
+                        .unwrap();
+                }
+            }
+            play.step();
+            let pool = &play.driver.pool;
+            for (group, buffers) in play.driver.buffers.iter().enumerate() {
+                let agents = buffers.reward.len();
+                let (width, actions) = (pool.view_size(0).unwrap(), pool.num_actions());
+                let mut obs = vec![0.0; agents * width];
+                let mut mask = vec![0; agents * actions];
+                pool.views_into(group, 0, &mut obs, &mut mask).unwrap();
+                assert_eq!(obs, buffers.obs, "the game's own view is its observation");
+                assert_eq!(mask, buffers.mask);
+                let mut goals = vec![0i8; agents];
+                pool.goals_into(group, &mut goals).unwrap();
+                for (car, &sign) in goals.iter().enumerate() {
+                    assert!(
+                        sign == 0 || buffers.terminal[car] == 1,
+                        "a goal ends the episode"
+                    );
+                    scored += usize::from(sign == 1);
+                    conceded += usize::from(sign == -1);
+                }
+                // Each arena's two cars see the same goal from both sides.
+                for pair in goals.as_chunks::<2>().0 {
+                    assert_eq!(pair[0], -pair[1]);
+                }
+                assert!(pool.goals_into(group, &mut goals[1..]).is_err());
+            }
+        }
+        assert!(
+            scored > 0 && scored == conceded,
+            "{scored} goals scored, {conceded} conceded"
+        );
     }
 }

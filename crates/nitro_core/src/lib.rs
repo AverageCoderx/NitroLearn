@@ -2,8 +2,10 @@
 
 pub mod actions;
 pub mod ball_prediction;
+pub mod built;
 pub mod capture;
 pub mod config;
+pub mod csv_rows;
 pub mod custom;
 pub mod demos;
 pub mod driver;
@@ -19,13 +21,17 @@ pub mod replay;
 pub mod replicar;
 pub mod rewards;
 pub mod rlpr;
+pub mod score;
+pub mod scripted;
 pub mod setters;
 pub mod sim;
 pub mod snapshot;
+pub mod snapshots;
 pub mod team;
 pub mod terminals;
 #[cfg(test)]
 mod testing;
+pub mod views;
 
 /// Which physics engine this build steps.
 pub const SIMULATOR: &str = "RocketSim v3";

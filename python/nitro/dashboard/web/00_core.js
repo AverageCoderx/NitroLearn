@@ -23,6 +23,13 @@ async function call(method, ...args) {
   }
 }
 
+// An answer leaves out the parts the page said it holds and that have not changed (their digests sent back,
+// api._trimmed): they are taken from `held`, the earlier answer.
+function withHeld(out, held) {
+  if (out && !out.error && held) for (const part of out.same || []) out[part] = held[part];
+  return out;
+}
+
 // ---------- small helpers ----------
 const $ = (s, root = document) => root.querySelector(s);
 const esc = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -155,7 +162,7 @@ const S = {
   home: BOOT, view: "home", bot: null, data: null, tab: "overview", query: "",
   open: { run: true, ppo: true, env: true }, errors: {}, notesOpen: {}, helpOpen: {},
   consoleNext: 0, consoleText: "", showChanges: false, theme: (BOOT && BOOT.prefs && BOOT.prefs.theme) || "dark",
-  rw: null, rwQuery: "", rwWindow: 60, rwNotesOpen: {}, rwAbout: {}, rwCatMore: {}, ls: null, lsMore: {}, wiz: null,
+  rw: null, rwKinds: null, rwQuery: "", rwWindow: 60, rwNotesOpen: {}, rwAbout: {}, rwCatMore: {}, ls: null, lsMore: {}, wiz: null,
   typed: {}, drafts: {}, discards: 0, failed: null,
   // How long Try these rewards plays: shorter where training runs on the processor alone.
   rwTrySteps: BOOT && BOOT.machine && BOOT.machine.graphics_card === false ? 250000 : 1000000,

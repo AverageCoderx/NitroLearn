@@ -4,7 +4,7 @@
 //! computes action logits with no PyTorch anywhere. Format, all little-endian:
 //!
 //! ```text
-//! b"NITROPOL"  u32 format version (1 to 8)  u32 header length  header (JSON, UTF-8)  f32 weights...
+//! b"NITROPOL"  u32 format version (1 to 10)  u32 header length  header (JSON, UTF-8)  f32 weights...
 //! ```
 //!
 //! Format 2 adds the `entity_encoder` layer, an attention encoder in front of the policy;
@@ -13,8 +13,11 @@
 //! other (`model.encoder = "attention_communication"`). Format 6 adds the `transformer` layer
 //! (`model.encoder = "transformer"`). Format 8 adds `residual_start` and `residual_add` (`model.residual`):
 //! the vector at the start is kept and added back at the add, `x + f(x)` around the layers between.
-//! The numbers 5 and 7 are not used. Plain networks are written as format 1, encoders without the flag as
-//! format 2, and every format loads.
+//! Format 10 adds `selector`: a multi-model bot, whose `layers` are the selector's network and whose models
+//! follow it, each a policy, a value network, and optionally its own `view` of the game, a goal head
+//! (`goal`) and its value standardised (`value_shift`, `value_scale`); `extras_at` says where the selector's
+//! own numbers sit in what it sees. The numbers 5 and 7 are not used. Plain networks are written as format 1,
+//! encoders without the flag as format 2, and every format loads.
 //!
 //! An attention encoder's weights do not depend on how many cars it reads, so a policy that starts with
 //! one plays any number of cars a side (`Policy::logits_cars`), beyond the room it was trained with.
@@ -23,7 +26,9 @@
 //! observation) and the network layer by layer. The weights follow in that order: for a `linear` layer
 //! its matrix (`outputs` rows of `inputs`, PyTorch's layout) then its bias; for a `layer_norm` its scale
 //! then its shift; activations carry nothing. Only the policy (with any shared trunk) is exported; the
-//! value network is training-only.
+//! value network is training-only, except a multi-model bot's models' (the selector reads their estimates).
+//! A multi-model bot's weights: the selector's network, then per model its policy, its value and its goal
+//! head (when it has one).
 
 use std::fmt;
 use std::fs;
@@ -36,9 +41,15 @@ use crate::team::Team;
 
 pub const MAGIC: &[u8; 8] = b"NITROPOL";
 /// The newest format this bot reads; every lower one loads too (but `UNUSED_FORMATS`).
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 10;
 /// The first format that may hold residual blocks (`residual_start`, `residual_add`).
 pub const RESIDUAL_FORMAT: u32 = 8;
+/// The first format that may start with an `input_map` (bots brought over from other frameworks).
+pub const INPUT_MAP_FORMAT: u32 = 9;
+/// The format of a multi-model bot (`selector`).
+pub const MULTI_FORMAT: u32 = 10;
+/// A goal head's outputs: no goal, the car's team scores, the other team scores.
+const GOAL_CLASSES: usize = 3;
 /// The format plain networks are written in (no attention encoder): the first one.
 pub const PLAIN_FORMAT: u32 = 1;
 const OLDEST_FORMAT: u32 = 1;
@@ -64,6 +75,15 @@ pub enum LayerSpec {
     Relu,
     LeakyRelu,
     Tanh,
+    /// Format 9, first only: the numbers a network imported from another framework was trained on, made
+    /// from the observation: `outputs` numbers, number `i` = clamp((x[index_i] * scale_i - offset_i) /
+    /// divisor_i, -clip, clip), no clamp when `clip` is 0. Its weights: the indices (as floats), then the
+    /// scales, offsets and divisors.
+    InputMap {
+        inputs: usize,
+        outputs: usize,
+        clip: f32,
+    },
     /// Format 8: keeps the vector here (no weights); the next `residual_add` adds it back. Not nested.
     ResidualStart,
     /// Format 8: adds the vector kept at the last `residual_start` (it must be the same size).
@@ -167,6 +187,51 @@ pub struct PolicyHeader {
     pub obs_size: usize,
     pub num_actions: usize,
     pub layers: Vec<LayerSpec>,
+    /// A multi-model bot (format 10); `layers` are then the selector's network. Other bots: none.
+    #[serde(default)]
+    pub selector: Option<SelectorSpec>,
+}
+
+/// A multi-model bot: the selector's network (the header's `layers`) reads the observation, which model
+/// drives (one-hot), how long it has (seconds over `held_cap_seconds`, at most 1), whether it may choose
+/// again, each model's value estimate and, with `goal_heads`, each model's two goal chances; it picks the
+/// model that drives, which keeps the car for at least `hold_steps` decisions.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SelectorSpec {
+    pub hold_steps: u32,
+    pub held_cap_seconds: f32,
+    pub specialists: Vec<SpecialistSpec>,
+    /// Where the selector's own numbers go in what it sees (after the own part, for an attention selector);
+    /// none: after the observation.
+    #[serde(default)]
+    pub extras_at: Option<usize>,
+    /// Every model has a goal head, whose two goal chances the selector sees after the values.
+    #[serde(default)]
+    pub goal_heads: bool,
+}
+
+/// One model of a multi-model bot: its policy network (the observation to the action logits) and its value
+/// network (the observation to one normalised value).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SpecialistSpec {
+    pub name: String,
+    pub policy: Vec<LayerSpec>,
+    pub value: Vec<LayerSpec>,
+    /// How it sees the game, when not as the bot's own observation does.
+    #[serde(default)]
+    pub view: Option<crate::views::ViewConfig>,
+    /// Its goal head (its observation to three goal logits).
+    #[serde(default)]
+    pub goal: Option<Vec<LayerSpec>>,
+    /// The selector sees its value as `(value - value_shift) / value_scale`.
+    #[serde(default)]
+    pub value_shift: f32,
+    #[serde(default = "one")]
+    pub value_scale: f32,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 #[derive(Debug)]
@@ -230,6 +295,7 @@ enum Layer {
     Relu,
     LeakyRelu,
     Tanh,
+    InputMap(Box<InputMap>),
     ResidualStart,
     ResidualAdd,
     Encoder(Box<Encoder>),
@@ -246,6 +312,37 @@ impl Layer {
             Self::Transformer(t) => Some((t.own, t.block)),
             _ => None,
         }
+    }
+}
+
+/// `LayerSpec::InputMap`'s numbers.
+struct InputMap {
+    index: Vec<usize>,
+    scale: Vec<f32>,
+    offset: Vec<f32>,
+    divisor: Vec<f32>,
+    clip: f32,
+}
+
+impl InputMap {
+    /// `current` (rows of `width` numbers) replaced by the mapped rows; returns their width.
+    fn apply(&self, current: &mut Vec<f32>, width: usize) -> usize {
+        let mapped: Vec<f32> = current
+            .chunks_exact(width)
+            .flat_map(|row| {
+                (0..self.index.len()).map(move |i| {
+                    let value =
+                        (row[self.index[i]] * self.scale[i] - self.offset[i]) / self.divisor[i];
+                    if self.clip > 0.0 {
+                        value.clamp(-self.clip, self.clip)
+                    } else {
+                        value
+                    }
+                })
+            })
+            .collect();
+        *current = mapped;
+        self.index.len()
     }
 }
 
@@ -724,10 +821,12 @@ impl Transformer {
     }
 }
 
-/// A loaded policy: the header and the network, ready to run on the CPU.
+/// A loaded policy: the header and the network (for a multi-model bot, the selector's and its models'),
+/// ready to run on the CPU.
 pub struct Policy {
     header: PolicyHeader,
     net: Net,
+    selector: Option<Selector>,
 }
 
 impl fmt::Debug for Policy {
@@ -803,13 +902,34 @@ impl Policy {
             at += count;
             Ok(slice.to_vec())
         };
-        let net = assemble_net(
-            &header.layers,
-            header.format,
-            header.obs_size,
-            header.num_actions,
-            &mut take,
-        )?;
+        let (net, selector) = match &header.selector {
+            None => {
+                let net = assemble_net(
+                    &header.layers,
+                    header.format,
+                    header.obs_size,
+                    header.num_actions,
+                    &mut take,
+                )?;
+                (net, None)
+            }
+            Some(spec) => {
+                let count = spec.specialists.len();
+                if header.format < MULTI_FORMAT
+                    || count < 2
+                    || spec.hold_steps == 0
+                    || !(spec.held_cap_seconds > 0.0 && spec.held_cap_seconds.is_finite())
+                {
+                    return Err(PolicyError::BadHeader(format!(
+                        "a multi-model bot needs format {MULTI_FORMAT}, two or more models and a hold"
+                    )));
+                }
+                let inputs = header.obs_size + selector_extra(count, spec.goal_heads);
+                let net = assemble_net(&header.layers, header.format, inputs, count, &mut take)?;
+                let selector = assemble_selector(&header, spec, &mut take)?;
+                (net, Some(selector))
+            }
+        };
         if at != weights.len() {
             return Err(PolicyError::WeightCount {
                 expected: at,
@@ -819,7 +939,11 @@ impl Policy {
         if weights.iter().any(|w| !w.is_finite()) {
             return Err(PolicyError::BadHeader("a weight is NaN or infinite".into()));
         }
-        Ok(Self { header, net })
+        Ok(Self {
+            header,
+            net,
+            selector,
+        })
     }
 
     pub fn header(&self) -> &PolicyHeader {
@@ -837,6 +961,7 @@ impl Policy {
     /// Action logits for one observation (`obs.len() == obs_size`, `out.len() == num_actions`), in FP32,
     /// the same maths as the PyTorch model on the CPU.
     pub fn logits(&self, obs: &[f32], out: &mut [f32]) {
+        self.assert_plain();
         assert_eq!(obs.len(), self.header.obs_size, "observation size");
         assert_eq!(out.len(), self.header.num_actions, "logit count");
         self.net.run(obs, out);
@@ -845,6 +970,7 @@ impl Policy {
     /// `logits` with `team` sharing each linear layer's work (the RLBot bot: one decision split across
     /// cores); the same bits.
     pub fn logits_team(&self, obs: &[f32], out: &mut [f32], team: &Team<'_>) {
+        self.assert_plain();
         assert_eq!(obs.len(), self.header.obs_size, "observation size");
         assert_eq!(out.len(), self.header.num_actions, "logit count");
         self.net.run_cars(obs, None, out, team);
@@ -854,6 +980,7 @@ impl Policy {
     /// bits as `logits` gives it; a plain network reads each weight once per four of them, `team` sharing
     /// the work.
     pub fn logits_rows(&self, obs: &[f32], rows: usize, out: &mut [f32], team: &Team<'_>) {
+        self.assert_plain();
         self.net.run_rows(obs, rows, out, team);
     }
 
@@ -864,14 +991,29 @@ impl Policy {
         self.net.read_half(on)
     }
 
+    /// A multi-model bot (header `selector`).
+    pub fn is_selector(&self) -> bool {
+        self.selector.is_some()
+    }
+
+    fn assert_plain(&self) {
+        assert!(
+            self.selector.is_none(),
+            "a multi-model bot has no logits of its own; use decide_seeing"
+        );
+    }
+
     /// Whether the policy starts with an attention encoder, whose weights do not depend on the number of
-    /// cars, so it plays any number a side (`logits_cars`).
+    /// cars, so it plays any number a side (`logits_cars`). A multi-model bot does not.
     pub fn reads_any_cars(&self) -> bool {
         self.car_blocks().is_some()
     }
 
     /// For a policy that `reads_any_cars`: its observation's own part and car block sizes.
     pub fn car_blocks(&self) -> Option<(usize, usize)> {
+        if self.selector.is_some() {
+            return None;
+        }
         self.net.layers.first().and_then(Layer::reads_cars)
     }
 
@@ -908,11 +1050,12 @@ impl Policy {
     /// obs_size`, `out.len() == rows * num_actions`), each the bits `logits` gives it, the weights read
     /// once for all rows (the cars of a hivemind decide in one pass).
     pub fn logits_batch(&self, obs: &[f32], rows: usize, out: &mut [f32], team: &Team<'_>) {
+        self.assert_plain();
         self.net.run_batch(obs, rows, out, team);
     }
 
     /// The action for one observation and its mask: `pick` chooses from the logits and the mask (argmax or
-    /// sample).
+    /// sample). For a multi-model bot use `decide_seeing`.
     pub fn decide(
         &self,
         obs: &[f32],
@@ -923,6 +1066,86 @@ impl Policy {
         let mut logits = vec![0.0f32; self.header.num_actions];
         self.logits(obs, &mut logits);
         pick(&logits, mask)
+    }
+
+    /// The views of the game a multi-model bot's models need, in the order `decide_seeing` takes them;
+    /// empty for any other bot.
+    pub fn views(&self) -> &[crate::views::ViewConfig] {
+        self.selector.as_ref().map_or(&[], |s| s.views.as_slice())
+    }
+
+    /// `decide` for any bot; a multi-model bot lets every model pick its action (model `i` seeing
+    /// `views[its view]`, the observation and mask of `views()[..]` for this car, or the bot's own) and the
+    /// selector pick which is played, as `nitro.selector.SelectorEnvs` trained it. `state` is the car's
+    /// (reset it where a training episode would start).
+    pub fn decide_seeing(
+        &self,
+        obs: &[f32],
+        mask: &[u8],
+        views: &[(&[f32], &[u8])],
+        state: &mut SelectorState,
+        pick: &mut dyn FnMut(&[f32], &[u8]) -> usize,
+    ) -> usize {
+        let Some(selector) = &self.selector else {
+            return self.decide(obs, mask, pick);
+        };
+        assert_eq!(mask.len(), self.header.num_actions, "mask size");
+        assert_eq!(obs.len(), self.header.obs_size, "observation size");
+        assert_eq!(
+            views.len(),
+            selector.views.len(),
+            "one observation and mask per view"
+        );
+        let count = selector.specialists.len();
+        let mut logits = vec![0.0f32; self.header.num_actions];
+        let mut actions = Vec::with_capacity(count);
+        let mut values = Vec::with_capacity(count);
+        let mut goals = Vec::with_capacity(if selector.goal_heads { 2 * count } else { 0 });
+        for specialist in &selector.specialists {
+            let (seen, allowed) = specialist.view.map_or((obs, mask), |v| views[v]);
+            specialist.policy.run(seen, &mut logits);
+            actions.push(pick(&logits, allowed));
+            let mut value = [0.0f32];
+            specialist.value.run(seen, &mut value);
+            values.push((value[0] - specialist.value_shift) / specialist.value_scale);
+            if let Some(goal) = &specialist.goal {
+                let mut out = [0.0f32; GOAL_CLASSES];
+                goal.run(seen, &mut out);
+                let top = out.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let exp = out.map(|x| (x - top).exp());
+                let sum: f32 = exp.iter().sum();
+                goals.extend([exp[1] / sum, exp[2] / sum]);
+            }
+        }
+        let free = state.active.is_none() || state.held >= selector.hold_steps;
+        let mut seen = Vec::with_capacity(obs.len() + selector_extra(count, selector.goal_heads));
+        seen.extend_from_slice(&obs[..selector.extras_at]);
+        seen.extend((0..count).map(|i| f32::from(u8::from(state.active == Some(i)))));
+        let held = (state.held as f32 * selector.step_seconds).min(selector.held_cap);
+        seen.push(held / selector.held_cap);
+        seen.push(f32::from(u8::from(free)));
+        seen.extend(values);
+        seen.extend(goals);
+        seen.extend_from_slice(&obs[selector.extras_at..]);
+        let allowed: Vec<u8> = (0..count)
+            .map(|i| u8::from(free || state.active == Some(i)))
+            .collect();
+        let mut scores = vec![0.0f32; count];
+        self.net.run(&seen, &mut scores);
+        let choice = pick(&scores, &allowed).min(count - 1);
+        if state.active != Some(choice) {
+            state.held = 0;
+        }
+        state.held = state.held.saturating_add(1);
+        state.active = Some(choice);
+        actions[choice]
+    }
+
+    /// A multi-model bot's models, by name, in the order its selector numbers them (empty otherwise).
+    pub fn specialists(&self) -> Vec<&str> {
+        self.header.selector.as_ref().map_or_else(Vec::new, |spec| {
+            spec.specialists.iter().map(|s| s.name.as_str()).collect()
+        })
     }
 
     /// The allowed action with the highest logit.
@@ -1019,6 +1242,7 @@ impl Net {
                     .iter_mut()
                     .for_each(|x| *x = if *x >= 0.0 { *x } else { LEAKY_SLOPE * *x }),
                 Layer::Tanh => current.iter_mut().for_each(|x| *x = x.tanh()),
+                Layer::InputMap(map) => width = map.apply(&mut current, width),
                 Layer::ResidualStart => keep(&mut skip, &current),
                 Layer::ResidualAdd => add_back(&mut current, &skip),
                 Layer::Encoder(_) | Layer::Talker(_) | Layer::Transformer(_) => {
@@ -1103,6 +1327,10 @@ impl Net {
                     .iter_mut()
                     .for_each(|x| *x = if *x >= 0.0 { *x } else { LEAKY_SLOPE * *x }),
                 Layer::Tanh => current.iter_mut().for_each(|x| *x = x.tanh()),
+                Layer::InputMap(map) => {
+                    let width = current.len();
+                    map.apply(&mut current, width);
+                }
                 Layer::ResidualStart => keep(&mut skip, &current),
                 Layer::ResidualAdd => add_back(&mut current, &skip),
                 Layer::Encoder(encoder) => {
@@ -1167,6 +1395,7 @@ impl Net {
                     .iter_mut()
                     .for_each(|x| *x = if *x >= 0.0 { *x } else { LEAKY_SLOPE * *x }),
                 Layer::Tanh => current.iter_mut().for_each(|x| *x = x.tanh()),
+                Layer::InputMap(map) => width = map.apply(&mut current, width),
                 Layer::ResidualStart => keep(&mut skip, &current),
                 Layer::ResidualAdd => add_back(&mut current, &skip),
                 Layer::Transformer(transformer) => {
@@ -1191,6 +1420,138 @@ impl Net {
             }
         }
         out.copy_from_slice(&current);
+    }
+}
+
+/// A model of a multi-model bot: its policy and its value network (whose estimate the selector reads), its
+/// own view of the game and its goal head.
+struct Specialist {
+    policy: Net,
+    value: Net,
+    /// Which of the selector's `views` it sees the game through; none: the bot's own observation.
+    view: Option<usize>,
+    goal: Option<Net>,
+    value_shift: f32,
+    value_scale: f32,
+}
+
+/// A multi-model bot's hand-over rules and models, as `nitro.selector.SelectorEnvs` trained them.
+struct Selector {
+    hold_steps: u32,
+    held_cap: f32,
+    step_seconds: f32,
+    specialists: Vec<Specialist>,
+    /// The distinct views its models need.
+    views: Vec<crate::views::ViewConfig>,
+    /// Where its own numbers go in what it sees.
+    extras_at: usize,
+    goal_heads: bool,
+}
+
+/// Numbers a selector of `count` models adds to the observation (`nitro.selector.extra_size`).
+fn selector_extra(count: usize, goal_heads: bool) -> usize {
+    2 * count + 2 + if goal_heads { 2 * count } else { 0 }
+}
+
+/// A selector's models and hand-over rules from its header, reading their weights with `take`.
+fn assemble_selector(
+    header: &PolicyHeader,
+    spec: &SelectorSpec,
+    take: &mut impl FnMut(usize) -> Result<Vec<f32>, PolicyError>,
+) -> Result<Selector, PolicyError> {
+    let extras_at = spec.extras_at.unwrap_or(header.obs_size);
+    if extras_at > header.obs_size {
+        return Err(PolicyError::BadHeader(
+            "the selector's own numbers are placed beyond the observation".into(),
+        ));
+    }
+    let game = &header.game;
+    let mut views: Vec<crate::views::ViewConfig> = Vec::new();
+    let mut specialists = Vec::with_capacity(spec.specialists.len());
+    for specialist in &spec.specialists {
+        let (view, obs_size) = match specialist.view {
+            None => (None, header.obs_size),
+            Some(view) => {
+                if let Some(problem) = view.problem(game.team_size, game.opponents) {
+                    return Err(PolicyError::BadHeader(format!(
+                        "model '{}': {problem}",
+                        specialist.name
+                    )));
+                }
+                let size = view.obs_size().map_err(PolicyError::BadHeader)?;
+                let index = views.iter().position(|v| *v == view).unwrap_or_else(|| {
+                    views.push(view);
+                    views.len() - 1
+                });
+                (Some(index), size)
+            }
+        };
+        if !(specialist.value_scale > 0.0
+            && specialist.value_scale.is_finite()
+            && specialist.value_shift.is_finite())
+        {
+            return Err(PolicyError::BadHeader(format!(
+                "model '{}': its value standardisation is not a finite shift and a positive scale",
+                specialist.name
+            )));
+        }
+        let policy = assemble_net(
+            &specialist.policy,
+            header.format,
+            obs_size,
+            header.num_actions,
+            take,
+        )?;
+        let value = assemble_net(&specialist.value, header.format, obs_size, 1, take)?;
+        let goal = match (&specialist.goal, spec.goal_heads) {
+            (Some(layers), true) => Some(assemble_net(
+                layers,
+                header.format,
+                obs_size,
+                GOAL_CLASSES,
+                take,
+            )?),
+            (None, false) => None,
+            _ => {
+                return Err(PolicyError::BadHeader(format!(
+                    "model '{}': a goal head goes with the selector's goal_heads, on every model",
+                    specialist.name
+                )));
+            }
+        };
+        specialists.push(Specialist {
+            policy,
+            value,
+            view,
+            goal,
+            value_shift: specialist.value_shift,
+            value_scale: specialist.value_scale,
+        });
+    }
+    Ok(Selector {
+        hold_steps: spec.hold_steps,
+        held_cap: spec.held_cap_seconds,
+        step_seconds: game.tick_skip as f32 / 120.0,
+        specialists,
+        views,
+        extras_at,
+        goal_heads: spec.goal_heads,
+    })
+}
+
+/// Which model drives a car and for how many decisions: reset where a training episode would start (the
+/// bot: outside live play), as each one starts with none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SelectorState {
+    /// The model driving now; none at the start.
+    pub active: Option<usize>,
+    /// Decisions it has driven, this one included.
+    pub held: u32,
+}
+
+impl SelectorState {
+    pub fn reset(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -1240,6 +1601,41 @@ fn assemble_net(
             LayerSpec::Relu => Layer::Relu,
             LayerSpec::LeakyRelu => Layer::LeakyRelu,
             LayerSpec::Tanh => Layer::Tanh,
+            LayerSpec::InputMap { .. } if format < INPUT_MAP_FORMAT => {
+                return Err(PolicyError::BadHeader(format!(
+                    "an input map needs format {INPUT_MAP_FORMAT}"
+                )));
+            }
+            LayerSpec::InputMap {
+                inputs,
+                outputs,
+                clip,
+            } => {
+                if index != 0 || inputs != size || outputs == 0 || clip.is_nan() || clip < 0.0 {
+                    return Err(PolicyError::Shape(format!(
+                        "the input map must come first and read all {size} observation numbers"
+                    )));
+                }
+                let positions = take(outputs)?;
+                let mut index = Vec::with_capacity(outputs);
+                for &at in &positions {
+                    if !(at >= 0.0 && at.fract() == 0.0 && (at as usize) < inputs) {
+                        return Err(PolicyError::Shape(format!(
+                            "the input map reads number {at}, beyond the observation's {inputs}"
+                        )));
+                    }
+                    index.push(at as usize);
+                }
+                let (scale, offset, divisor) = (take(outputs)?, take(outputs)?, take(outputs)?);
+                size = outputs;
+                Layer::InputMap(Box::new(InputMap {
+                    index,
+                    scale,
+                    offset,
+                    divisor,
+                    clip,
+                }))
+            }
             LayerSpec::ResidualStart | LayerSpec::ResidualAdd if format < RESIDUAL_FORMAT => {
                 return Err(PolicyError::BadHeader(format!(
                     "a residual block needs format {RESIDUAL_FORMAT}"
@@ -1934,6 +2330,47 @@ mod tests {
     }
 
     #[test]
+    fn an_input_map_picks_scales_standardises_and_clips_before_the_network() {
+        let layers = r#"{"kind": "input_map", "inputs": 3, "outputs": 2, "clip": 1.0},
+            {"kind": "linear", "inputs": 2, "outputs": 2}"#;
+        // Index 2 then 0; scales 2, 1; offsets 0, 1; divisors 1, 2; then the identity.
+        let weights = [
+            2.0, 0.0, 2.0, 1.0, 0.0, 1.0, 1.0, 2.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+        ];
+        let made = |format: u32, weights: &[f32]| {
+            let text =
+                header(layers, 3, 2).replace(r#""format": 1"#, &format!(r#""format": {format}"#));
+            let mut bytes = file(&text, weights);
+            bytes[8] = format as u8;
+            bytes
+        };
+        let at = |format: u32| Policy::from_bytes(&made(format, &weights));
+        let err = at(8).err().unwrap().to_string();
+        assert!(err.contains("needs format 9"), "{err}");
+        let policy = at(INPUT_MAP_FORMAT).unwrap();
+        let mut out = [0.0; 2];
+        policy.logits(&[0.5, 9.0, 0.3], &mut out);
+        assert!(
+            (out[0] - 0.6).abs() < 1e-6 && (out[1] + 0.25).abs() < 1e-6,
+            "{out:?}"
+        );
+        policy.logits(&[-5.0, 0.0, 5.0], &mut out);
+        assert_eq!(out, [1.0, -1.0], "clipped");
+        let mut rows = [0.0; 4];
+        policy.logits_rows(&[0.5, 9.0, 0.3, -5.0, 0.0, 5.0], 2, &mut rows, &Team::ALONE);
+        assert!(
+            (rows[0] - 0.6).abs() < 1e-6 && rows[2..] == [1.0, -1.0],
+            "{rows:?}"
+        );
+        let mut beyond = weights;
+        beyond[0] = 3.0;
+        assert!(
+            Policy::from_bytes(&made(INPUT_MAP_FORMAT, &beyond)).is_err(),
+            "an index beyond the observation"
+        );
+    }
+
+    #[test]
     fn game_settings_ignore_keys_this_version_does_not_read() {
         // Game keys the bot does not read are left alone.
         let old = header("", 4, 90).replace(
@@ -2608,10 +3045,10 @@ mod tests {
             PolicyError::NotAPolicyFile
         ));
         let mut wrong_version = file(&good, &[0.0; 6]);
-        wrong_version[8] = 9;
+        wrong_version[8] = FORMAT_VERSION as u8 + 1;
         assert!(matches!(
             Policy::from_bytes(&wrong_version).unwrap_err(),
-            PolicyError::UnsupportedVersion(9)
+            PolicyError::UnsupportedVersion(v) if v == FORMAT_VERSION + 1
         ));
         assert!(matches!(
             Policy::from_bytes(&file(&good, &[0.0; 5])).unwrap_err(),
@@ -2651,6 +3088,319 @@ mod tests {
                 PolicyError::BadHeader(_)
             ));
         }
+    }
+
+    /// A multi-model bot over one observation number and two actions: specialist "a" always wants action 0
+    /// and values a moment at twice the observation; "b" wants action 1 and values every moment 0.25. The
+    /// selector's two scores are `rows` (7 inputs each) applied to what it sees.
+    fn selector_file(rows: [[f32; 7]; 2], hold_steps: u32, count: usize, format: u32) -> Vec<u8> {
+        let linear = |i: usize, o: usize| {
+            format!(r#"[{{"kind": "linear", "inputs": {i}, "outputs": {o}}}]"#)
+        };
+        let specialist = |name: &str| {
+            format!(
+                r#"{{"name": "{name}", "policy": {}, "value": {}}}"#,
+                linear(1, 2),
+                linear(1, 1)
+            )
+        };
+        let specialists: Vec<String> = ["a", "b", "c"][..count]
+            .iter()
+            .map(|n| specialist(n))
+            .collect();
+        let inputs = 1 + 2 * count + 2;
+        let text = header("", 1, 2)
+            .replacen(r#""format": 1"#, &format!(r#""format": {format}"#), 1)
+            .replacen(
+                r#""layers": []"#,
+                &format!(
+                    r#""layers": {}, "selector": {{"hold_steps": {hold_steps}, "held_cap_seconds": 5.0,
+                    "specialists": [{}]}}"#,
+                    linear(inputs, count),
+                    specialists.join(", ")
+                ),
+                1,
+            );
+        let mut weights: Vec<f32> = if count == 2 {
+            rows.concat()
+        } else {
+            vec![0.0; inputs * count]
+        };
+        weights.extend(vec![0.0; count]); // the selector's biases
+        #[rustfmt::skip]
+        let a = [0.0, 0.0, 1.0, 0.0, /* value */ 2.0, 0.0];
+        #[rustfmt::skip]
+        let b = [0.0, 0.0, 0.0, 1.0, /* value */ 0.0, 0.25];
+        for index in 0..count {
+            weights.extend(if index == 0 { a } else { b });
+        }
+        let mut bytes = file(&text, &weights);
+        bytes[8] = format as u8;
+        bytes
+    }
+
+    /// Each pick's scores and mask.
+    type Picks = Vec<(Vec<f32>, Vec<u8>)>;
+
+    /// One decision with argmax picks, returning the action and every pick.
+    fn decide_logged(policy: &Policy, obs: f32, state: &mut SelectorState) -> (usize, Picks) {
+        let mut seen = Vec::new();
+        let action = policy.decide_seeing(&[obs], &[1, 1], &[], state, &mut |logits, mask| {
+            seen.push((logits.to_vec(), mask.to_vec()));
+            Policy::argmax(logits, mask)
+        });
+        (action, seen)
+    }
+
+    #[test]
+    fn a_selector_bot_plays_the_chosen_specialists_action_and_holds_its_choice() {
+        let mut follow_obs = [[0.0; 7]; 2];
+        follow_obs[0][0] = 1.0; // "a" scores the observation, "b" its negative
+        follow_obs[1][0] = -1.0;
+        let policy = Policy::from_bytes(&selector_file(follow_obs, 3, 2, MULTI_FORMAT)).unwrap();
+        assert!(policy.is_selector());
+        assert_eq!(policy.specialists(), ["a", "b"]);
+        let mut state = SelectorState::default();
+        let (action, picks) = decide_logged(&policy, 0.5, &mut state);
+        assert_eq!(picks.len(), 3, "each specialist, then the selector");
+        assert_eq!(
+            (picks[0].0.clone(), picks[1].0.clone()),
+            (vec![1.0, 0.0], vec![0.0, 1.0])
+        );
+        assert_eq!(picks[2], (vec![0.5, -0.5], vec![1, 1]), "free at the start");
+        assert_eq!(
+            (action, state),
+            (
+                0,
+                SelectorState {
+                    active: Some(0),
+                    held: 1
+                }
+            )
+        );
+        // "b" now scores higher, but "a" holds for 3 decisions.
+        for held in 2..=3 {
+            let (action, picks) = decide_logged(&policy, -1.0, &mut state);
+            assert_eq!(
+                picks[2].1,
+                vec![1, 0],
+                "only the active specialist is allowed"
+            );
+            assert_eq!(
+                (action, state),
+                (
+                    0,
+                    SelectorState {
+                        active: Some(0),
+                        held
+                    }
+                )
+            );
+        }
+        let (action, picks) = decide_logged(&policy, -1.0, &mut state);
+        assert_eq!(picks[2].1, vec![1, 1], "free again after the hold");
+        assert_eq!(
+            (action, state),
+            (
+                1,
+                SelectorState {
+                    active: Some(1),
+                    held: 1
+                }
+            )
+        );
+        state.reset();
+        assert_eq!(state, SelectorState::default());
+    }
+
+    #[test]
+    fn a_selector_sees_the_observation_who_drives_how_long_whether_free_and_each_value() {
+        let step = 8.0f32 / 120.0;
+        for (state, obs, expected) in [
+            (
+                SelectorState::default(),
+                0.5,
+                [0.5, 0.0, 0.0, 0.0, 1.0, 1.0, 0.25],
+            ),
+            (
+                SelectorState {
+                    active: Some(1),
+                    held: 2,
+                },
+                -1.0,
+                [-1.0, 0.0, 1.0, 2.0 * step / 5.0, 0.0, -2.0, 0.25],
+            ),
+            (
+                SelectorState {
+                    active: Some(0),
+                    held: 100,
+                },
+                0.0,
+                [0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.25],
+            ),
+        ] {
+            for (index, &want) in expected.iter().enumerate() {
+                let mut rows = [[0.0; 7]; 2];
+                rows[0][index] = 1.0;
+                let policy = Policy::from_bytes(&selector_file(rows, 3, 2, MULTI_FORMAT)).unwrap();
+                let (_, picks) = decide_logged(&policy, obs, &mut state.clone());
+                let got = picks[2].0[0];
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "input {index}: {got} not {want} ({state:?})"
+                );
+            }
+        }
+    }
+
+    /// A multi-model bot: specialist "a" sees the bot's own observation (one number), with its value
+    /// standardised (shift 1, scale 2); "b" sees a lone car's native view; both have goal heads; the
+    /// selector's own numbers go first (`extras_at` 0) and its two scores read "a"'s value and "b"'s chance
+    /// that its team scores.
+    fn multi_model_file(format: u32) -> (Vec<u8>, usize) {
+        let view = r#"{"observation": "native", "team_size": 1, "opponents": false, "action_masks": "standard"}"#;
+        let size = serde_json::from_str::<crate::views::ViewConfig>(view)
+            .unwrap()
+            .obs_size()
+            .unwrap();
+        let linear = |i: usize, o: usize| {
+            format!(r#"[{{"kind": "linear", "inputs": {i}, "outputs": {o}}}]"#)
+        };
+        let inputs = 1 + 2 * 2 + 2 + 2 * 2;
+        let text = header("", 1, 2)
+            .replacen(r#""format": 1"#, &format!(r#""format": {format}"#), 1)
+            .replacen(
+                r#""layers": []"#,
+                &format!(
+                    r#""layers": {}, "selector": {{"hold_steps": 2, "held_cap_seconds": 5.0, "extras_at": 0,
+                    "goal_heads": true, "specialists": [
+                    {{"name": "a", "policy": {}, "value": {}, "goal": {}, "value_shift": 1.0, "value_scale": 2.0}},
+                    {{"name": "b", "policy": {}, "value": {}, "goal": {}, "view": {view}}}]}}"#,
+                    linear(inputs, 2),
+                    linear(1, 2),
+                    linear(1, 1),
+                    linear(1, 3),
+                    linear(size, 2),
+                    linear(size, 1),
+                    linear(size, 3),
+                ),
+                1,
+            );
+        let mut weights = vec![0.0f32; inputs * 2];
+        weights[4] = 1.0; // score 0 reads "a"'s value (seen at 4)
+        weights[inputs + 8] = 1.0; // score 1 reads "b"'s chance that its team scores (seen at 8)
+        weights.extend([0.0, 0.0]);
+        weights.extend([0.0, 0.0, 1.0, 0.0]); // a's policy: action 0
+        weights.extend([2.0, 0.0]); // a's value: 2 x the observation
+        weights.extend([0.0; 3 + 3]); // a's goal head: even chances
+        weights.extend(vec![0.0; size * 2]);
+        weights.extend([0.0, 1.0]); // b's policy: action 1
+        weights.extend(vec![0.0; size]);
+        weights.push(0.5); // b's value
+        weights.extend(vec![0.0; size * 3]);
+        weights.extend([0.0, std::f32::consts::LN_2, 0.0]); // b's goal head: 1/4, 1/2, 1/4
+        let mut bytes = file(&text, &weights);
+        bytes[8] = format as u8;
+        (bytes, size)
+    }
+
+    #[test]
+    fn a_multi_model_bots_models_see_their_own_views_guess_goals_and_are_standardised() {
+        let (bytes, size) = multi_model_file(MULTI_FORMAT);
+        let policy = Policy::from_bytes(&bytes).unwrap();
+        assert_eq!(policy.views().len(), 1);
+        let view_obs = vec![0.25; size];
+        let view_mask = [0u8, 1];
+        let mut picks: Picks = Vec::new();
+        let mut state = SelectorState::default();
+        let action = policy.decide_seeing(
+            &[3.0],
+            &[1, 1],
+            &[(&view_obs, &view_mask)],
+            &mut state,
+            &mut |logits, mask| {
+                picks.push((logits.to_vec(), mask.to_vec()));
+                Policy::argmax(logits, mask)
+            },
+        );
+        assert_eq!(
+            picks[1],
+            (vec![0.0, 1.0], vec![0, 1]),
+            "b on its own view and mask"
+        );
+        let scores = &picks[2].0;
+        assert!(
+            (scores[0] - 2.5).abs() < 1e-6,
+            "(2 x 3 - 1) / 2: {scores:?}"
+        );
+        assert!(
+            (scores[1] - 0.5).abs() < 1e-6,
+            "b's chance that its team scores: {scores:?}"
+        );
+        assert_eq!(
+            (action, state.active),
+            (0, Some(0)),
+            "a drives and plays its action"
+        );
+        let (older, _) = multi_model_file(INPUT_MAP_FORMAT);
+        assert!(matches!(
+            Policy::from_bytes(&older),
+            Err(PolicyError::BadHeader(message)) if message.contains("needs format 10")
+        ));
+    }
+
+    #[test]
+    fn a_multi_model_bot_needs_format_10_two_models_a_hold_and_whole_networks() {
+        let rows = [[0.0; 7]; 2];
+        assert!(Policy::from_bytes(&selector_file(rows, 3, 2, MULTI_FORMAT)).is_ok());
+        for bytes in [
+            selector_file(rows, 3, 2, INPUT_MAP_FORMAT),
+            selector_file(rows, 0, 2, MULTI_FORMAT),
+            selector_file(rows, 3, 1, MULTI_FORMAT),
+        ] {
+            assert!(matches!(
+                Policy::from_bytes(&bytes).unwrap_err(),
+                PolicyError::BadHeader(_)
+            ));
+        }
+        // A held-time cap of 0 (the selector would divide by it).
+        let mut no_cap = selector_file(rows, 3, 2, MULTI_FORMAT);
+        let cap = br#""held_cap_seconds": 5.0"#;
+        let at = no_cap.windows(cap.len()).position(|w| w == cap).unwrap();
+        no_cap[at + cap.len() - 3] = b'0';
+        assert!(matches!(
+            Policy::from_bytes(&no_cap).unwrap_err(),
+            PolicyError::BadHeader(_)
+        ));
+        let mut short = selector_file(rows, 3, 2, MULTI_FORMAT);
+        short.truncate(short.len() - 4);
+        assert!(matches!(
+            Policy::from_bytes(&short).unwrap_err(),
+            PolicyError::WeightCount { .. }
+        ));
+        // A value network giving two numbers does not fit.
+        let wide = selector_file(rows, 3, 2, MULTI_FORMAT);
+        let header_len = u32::from_le_bytes(wide[12..16].try_into().unwrap()) as usize;
+        let header = std::str::from_utf8(&wide[16..16 + header_len]).unwrap();
+        let bad = header.replacen(
+            r#""value": [{"kind": "linear", "inputs": 1, "outputs": 1}]"#,
+            r#""value": [{"kind": "linear", "inputs": 1, "outputs": 2}]"#,
+            1,
+        );
+        assert_ne!(bad, header);
+        let weights: Vec<f32> = wide[16 + header_len..]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .chain([0.0])
+            .collect();
+        let mut bytes = file(&bad, &weights);
+        bytes[8] = MULTI_FORMAT as u8;
+        assert!(matches!(
+            Policy::from_bytes(&bytes).unwrap_err(),
+            PolicyError::Shape(_)
+        ));
     }
 
     #[test]

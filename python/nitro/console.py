@@ -164,6 +164,14 @@ def iteration_report(row: Mapping[str, Any], facts: Facts) -> list[str]:
         fp16.append(f"{skipped:.1f} updates skipped")
     if fp16:
         lines.append(_item("FP16", " | ".join(fp16)))
+    switches = _number(row.get("selector_switches_per_minute"))
+    if switches is not None:
+        shares = [
+            f"{key.removeprefix('selector_share_')} {value:.0%}"
+            for key in row
+            if key.startswith("selector_share_") and (value := _number(row.get(key))) is not None
+        ]
+        lines.append(_item("Models", " | ".join([*shares, f"{switches:.1f} hand-overs a car-minute"])))
     if facts.next_save:
         lines.append(_item("Next save", facts.next_save))
     lines += [_item("Warning", warning) for warning in facts.warnings[-3:]]

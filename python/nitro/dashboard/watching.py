@@ -40,6 +40,7 @@ PIECE = 256 * 1024  # characters of one answer
 # A bot's recorded games: the newest (`watch.nlrec`, beside the page `nitro watch` writes) and the ones
 # before it, kept in its `recordings` folder up to this many and this much.
 LAST = "last"
+SCORED = "scored"  # a real game scored with the bot's rewards (`nitro score-replay`)
 KEPT = "recordings"
 KEEP_RECORDINGS = 5
 KEEP_BYTES = 48 * 1024 * 1024
@@ -230,13 +231,66 @@ class Watching:
         if not SECONDS[0] <= seconds <= SECONDS[1]:
             return {"error": f"a recorded game is {SECONDS[0]} to {SECONDS[1]} seconds long"}
         args = ["watch", name, "--runs", str(self._runs), "--no-open", "--seconds", str(seconds)]
-        args += ["--seed", str(_seed()), *self._game_options(folder, options)]
+        # The reward chart and the practice moments come with every game recorded here.
+        args += ["--seed", str(_seed()), "--rewards", "--moments", *self._game_options(folder, options)]
         at = options.get("at")
         if at is not None:
             if int(at) not in {int(save.name) for save in folder.complete_checkpoints()}:
                 return {"error": f"{name} has no save at {int(at):,} agent steps (any more)"}
             args += ["--at", str(int(at))]
         self._keep_last(folder)
+        self._jobs.start(name, "watch", args, folder.root)
+        return {"started": True}
+
+    @_safe
+    def practice_add(self, name: str, text: str, weight: float | None = None) -> dict[str, Any]:
+        """Adds the moments in `text` (a moments file the viewer made: Practice this moment, or a start placed
+        by hand) to the bot's practice starts (`nitro practice`), used from its next start."""
+        from nitro import practice
+
+        folder = self._folder(name)
+        if not isinstance(text, str) or len(text) > 1_000_000:
+            return {"error": "these are not moments from the viewer"}
+        try:
+            moments = practice.read_moments(text)
+            practice.add(folder, moments, None if weight is None else float(weight))
+        except (practice.PracticeError, ConfigError) as err:
+            return {"error": f"nothing was added: {err}"}
+        total = practice.count(folder)
+        return {
+            "added": len(moments),
+            "total": total,
+            "message": f"Added to {name}'s practice starts ({total} in all). Its games start from them from "
+            "its next start.",
+        }
+
+    @_safe
+    def choose_game(self) -> dict[str, Any]:
+        """Asks for a real game to score with a bot's rewards: a replay (converted already), a converted
+        replay or a recording."""
+        if self._window is None:
+            return {"error": "no window to ask from"}
+        import webview
+
+        chosen = self._window.create_file_dialog(
+            webview.FileDialog.OPEN,
+            file_types=("Games (*.replay;*.rlpr;*.zst)", "All files (*.*)"),
+        )
+        if not chosen:
+            return {"cancelled": True}
+        return {"game": str(chosen[0])}
+
+    @_safe
+    def watch_score(self, name: str, game: str) -> dict[str, Any]:
+        """Starts scoring a real game with the bot's rewards (`nitro score-replay`, in its own process;
+        `job(name, "watch")` says how it goes); the game then opens as the recording `scored`."""
+        folder = self._folder(name)
+        running = self._jobs.get(name, "watch")
+        if running is not None and not running.done:
+            return {"error": f"a game of {name} is being recorded already"}
+        if not Path(game).is_file():
+            return {"error": f"there is no file {game}"}
+        args = ["score-replay", name, str(Path(game).resolve()), "--runs", str(self._runs), "--no-open"]
         self._jobs.start(name, "watch", args, folder.root)
         return {"started": True}
 
@@ -255,7 +309,12 @@ class Watching:
             with contextlib.suppress(OSError, ValueError, EOFError):
                 found.append({"id": ident, **_note(str(file), *_stamp(file))})
         page = folder / "watch.html"
-        return {"recordings": found, "page": str(page) if page.is_file() else ""}
+        scored = None
+        with contextlib.suppress(OSError, ValueError, EOFError):
+            file = folder / f"replay_score{SUFFIX}"
+            if file.is_file():
+                scored = {"id": SCORED, **_note(str(file), *_stamp(file))}
+        return {"recordings": found, "page": str(page) if page.is_file() else "", "scored": scored}
 
     @_safe
     def recording(self, name: str, ident: str = LAST, piece: int = 0) -> dict[str, Any]:
@@ -264,7 +323,8 @@ class Watching:
         folder = self._folder(name).root
         if not _IDENT.match(str(ident)):
             return {"error": "there is no such recording"}
-        file = folder / f"watch{SUFFIX}" if ident == LAST else folder / KEPT / f"{ident}{SUFFIX}"
+        named = {LAST: folder / f"watch{SUFFIX}", SCORED: folder / f"replay_score{SUFFIX}"}
+        file = named.get(ident, folder / KEPT / f"{ident}{SUFFIX}")
         if not file.is_file():
             return {"error": "that recording is not there any more"}
         return pieces(_text(str(file), *_stamp(file)), piece)

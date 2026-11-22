@@ -26,6 +26,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from nitro import _core, selector
 from nitro.config import NitroConfig
 from nitro.envs import EnvPool, probe_config
 from nitro.evaluate import SAMPLED, check_pick, evaluate, pick_rule
@@ -313,6 +314,10 @@ def decide_every(blue: Side, orange: Side) -> tuple[int, tuple[int, int]]:
     return small, (ours // small, theirs // small)
 
 
+def _multi(side: Side) -> bool:
+    return bool(side.config.selector.specialists)
+
+
 def match_sides(blue: Side, orange: Side, team_size: int | None = None) -> tuple[Side, Side]:
     """Both sides' settings for the match: at `team_size` a side when given (each must be able to play it,
     `dashboard.bots.watch_sizes`), else at the size both trained at. Two attention bots read any number of
@@ -321,7 +326,15 @@ def match_sides(blue: Side, orange: Side, team_size: int | None = None) -> tuple
     from nitro.dashboard.bots import watch_sizes
 
     size = blue.config.env.team_size if team_size is None else team_size
-    any_size = blue.config.model.uses_attention and orange.config.model.uses_attention
+    for side in (blue, orange):
+        own = side.config.env.team_size
+        if _multi(side) and size != own:
+            raise EvalError(
+                f"{side.label} is a multi-model bot, which plays the game size it trained at only "
+                f"({own}v{own}), not {size}v{size}."
+            )
+    # A multi-model bot's models see the game their own way: its selector keeps its own room.
+    any_size = all(side.config.model.uses_attention and not _multi(side) for side in (blue, orange))
     if any_size and team_size is None and orange.config.env.team_size != size:
         theirs = orange.config.env.team_size
         raise EvalError(
@@ -342,7 +355,7 @@ def match_sides(blue: Side, orange: Side, team_size: int | None = None) -> tuple
             config = play_settings(config, size)
         sides.append(dataclasses.replace(side, config=config))
     rooms = [observation_room(side.config) for side in sides]
-    attention = [side.config.model.uses_attention for side in sides]
+    attention = [side.config.model.uses_attention and not _multi(side) for side in sides]
     if any_size:
         room = max(rooms)
     elif attention.count(True) == 1:
@@ -359,7 +372,7 @@ def match_sides(blue: Side, orange: Side, team_size: int | None = None) -> tuple
                     side.config, env=dataclasses.replace(side.config.env, obs_team_size=room)
                 ),
             )
-            if side.config.model.uses_attention
+            if side.config.model.uses_attention and not _multi(side)
             else side
             for side in sides
         ]
@@ -437,13 +450,17 @@ def play(
 
 def _player(
     side: Side, game: NitroConfig, obs_size: int, num_actions: int, device: torch.device
-) -> nn.Module:
+) -> nn.Module | selector.Saved:
     """`side`'s networks for the match's games (`game`, which produce `obs_size` observation values). An
     attention network and a plain one without places for cars read each other's games (`match_sides`
     leaves a padded game a place for each car and no more): the attention network with every car marked
     present (`_Flagged`), the plain one without the marks (`_Unflagged`)."""
-    from nitro import _core
-
+    if _multi(side):
+        playing = dataclasses.replace(side.config, env=game.env)
+        try:
+            return selector.saved(side.state, playing, num_actions, device)
+        except selector.SelectorError as err:
+            raise EvalError(f"{side.label} cannot play under these settings: {err}") from None
     env = game.env
     flags = observation_room(game) > 0
     attention = side.config.model.uses_attention

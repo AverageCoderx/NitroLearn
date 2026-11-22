@@ -160,6 +160,24 @@ MORE: dict[str, str] = {
         "\n"
         "Watch out for: A large value means more lost work if the PC stops without Ctrl+C. The time between saves depends on speed: at the 1v1 preset's measured 394k agent steps a second, 200 million steps is about 8 to 9 minutes; a 6.2-million-parameter bot ran at about 88k steps a second in its first iterations, so the same count is nearer 40 minutes. Each save also restarts every game, as with checkpoint_minutes."
     ),
+    "run.skills_every": (
+        "What it does: Every this many saves, training pauses and plays the save it just made through the practice skills, as nitro skills does : touching a ball, landing on the wheels, collecting boost, a shot, a save, an aerial touch, a kickoff against a scripted rusher, a 50/50 against a scripted chaser and a ball off a side wall. The rows go into the run's skills.csv and the weakness map (where the bot does worst) into weakness.json; the console shows one message with the results and how long it took.\n"
+        "\n"
+        "When to change it: When you want to watch the skills grow over a run without running nitro skills by hand.\n"
+        "\n"
+        "How to use it: 0 means off, the default. 1 scores every save, 4 every fourth. The situations are the same every time (held out from training), so two saves are compared on the same tries.\n"
+        "\n"
+        "Watch out for: Training waits while it plays, so it slows the run a little; the message says how long it took. A problem while scoring is reported and never stops training. The skills are for reading a bot, not evidence that one setting beats another."
+    ),
+    "run.skills_games": (
+        "What it does: With run.skills_every, how many situations each skill is played in when a save is scored.\n"
+        "\n"
+        "When to change it: Raise it for steadier numbers; lower it if scoring takes too long.\n"
+        "\n"
+        "How to use it: The default is 128; nitro skills by hand plays 512. Between 8 and 4096.\n"
+        "\n"
+        "Watch out for: With fewer situations a skill's number moves more by luck from one save to the next, and small groups in the weakness map are flagged as too few to trust."
+    ),
     "run.keep_checkpoints": (
         "What it does: How many of the newest saves stay in the run's checkpoints folder. Older ones are deleted as new ones arrive, except the milestone saves kept by run.milestone_steps.\n"
         "\n"
@@ -179,6 +197,50 @@ MORE: dict[str, str] = {
         "How to use it: The default and the presets keep one per billion steps (1,000,000,000). An old save is picked by its step count: nitro watch --at, start_from.at, or the save's folder name in checkpoints.\n"
         "\n"
         "Watch out for: Each milestone is a full save, so a small value on a very long run adds up on disk (93 MB a save for a 6.2-million-parameter bot). Milestones are the first save at or after each multiple, so the exact step count depends on how often you save."
+    ),
+    "run.saves_disk_gb": (
+        "What it does: Caps the disk space the run's saves (its checkpoints folder) may take, in GB. After each save, while they take more, the oldest saves are deleted first, then the oldest milestone saves. The newest save and saves marked to keep are never deleted. Each deletion is said in the console and train.log. 0 means no limit.\n"
+        "\n"
+        "When to change it: On a long run with a big network, when the saves and milestones would fill the disk.\n"
+        "\n"
+        "How to use it: Set it to the space you can spare, for example 50. Check the console after the next save: it says what it deleted. keep_checkpoints and milestone_steps still choose what is kept first; this only steps in when those keep too much.\n"
+        "\n"
+        "Watch out for: Milestone saves go too once only they are left over the cap, so older versions of the bot can be lost. When even the saves that are never deleted take more than the cap, it says so once and deletes nothing more.\n"
+        "\n"
+        "Measured: Not a speed or learning setting; tested on saves of known sizes."
+    ),
+    "run.metrics_max_mb": (
+        "What it does: Keeps metrics.csv (the run's numbers, one row every iteration) under this size, in MB. When it is bigger at a save, every other row is dropped; the first and the newest rows stay. 0 means no limit.\n"
+        "\n"
+        "When to change it: On a run of many days, when metrics.csv reaches hundreds of MB and the dashboard or the report gets slow.\n"
+        "\n"
+        "How to use it: Set it to 100 or so. The report and the dashboard's charts show only a few hundred points, so they keep the same points; only the finer detail between them goes.\n"
+        "\n"
+        "Watch out for: The dropped rows are gone for good: nitro ab, W&B uploads and your own scripts that read every row see fewer rows from before the compaction. Rows kept are never changed.\n"
+        "\n"
+        "Measured: Not a speed or learning setting; the charts were checked to keep their points."
+    ),
+    "run.auto_restart": (
+        "What it does: Starts training again by itself when it stops unexpectedly (a crash, the graphics card driver resetting) or when the computer restarts while it trains. It carries on from the newest save, exactly as a resume does.\n"
+        "\n"
+        "When to change it: Switch it on for long runs left alone, overnight or for days.\n"
+        "\n"
+        "How to use it: Switch it on and start the bot as usual. A stop you ask for (Stop in the dashboard, Ctrl+C) is never undone. After a computer restart it starts again once you log in: it adds a start-up entry for your user (Windows: the Startup folder; Linux: autostart), removed when no bot needs it and when NitroLearn is uninstalled. The bot's page says when and why it started again.\n"
+        "\n"
+        "Watch out for: Work since the newest save is lost at a crash, as always; save more often (checkpoint_minutes) to lose less. A problem that comes straight back stops it after auto_restart_limit tries.\n"
+        "\n"
+        "Measured: Not a speed or learning setting. Tested: a training killed mid-iteration starts again and ends exactly as a run that never stopped."
+    ),
+    "run.auto_restart_limit": (
+        "What it does: With auto_restart: how many times in a row training is started again without a new save in between. One crash more and it stops trying, and the bot's page says why.\n"
+        "\n"
+        "When to change it: Raise it if a rare crash keeps coming on a machine that is otherwise fine; lower it to stop sooner.\n"
+        "\n"
+        "How to use it: The default is 3. A new save resets the count, so a run that crashes once a day carries on for good.\n"
+        "\n"
+        "Watch out for: A setting with a mistake or a missing file fails at once each time: fix it, then start the bot again.\n"
+        "\n"
+        "Measured: Not a speed or learning setting; tested with a trainer that always fails."
     ),
     "run.report_minutes": (
         "What it does: How often, in minutes, the run rewrites its report.html: a single page in the run folder with charts of speed, reward, how the bot's choices and predictions develop, and any warnings. It opens in any browser without a server.\n"
@@ -284,7 +346,7 @@ MORE: dict[str, str] = {
         "Measured: in a real RLBot match the game's input delay was exactly 1 tick, with no variation, and a check of a logged match found no extra tick in the game's physics, so the exported bot sends its controls on the training rhythm."
     ),
     "env.observation": (
-        'What it does: What the bot sees each step, as a list of numbers. "native" is NitroLearn\'s own (112 numbers in 1v1). "nitro_v2" adds what strong bots use: things relative to the bot\'s car, the goals and the ball, speeds, the demo respawn timer and the time left to flip (148 numbers in 1v1). "gigalearn_advanced", "gigalearn_default" and "gigalearn_padder" are exact copies of GigaLearn\'s AdvancedObs and DefaultObs and of AdvancedObsPadderGGL (a community GigaLearn observation), for bots brought over from GigaLearn.\n'
+        'What it does: What the bot sees each step, as a list of numbers. "native" is NitroLearn\'s own (112 numbers in 1v1). "nitro_v2" adds what strong bots use: things relative to the bot\'s car, the goals and the ball, speeds, the demo respawn timer and the time left to flip (148 numbers in 1v1). "gigalearn_advanced", "gigalearn_default" and "gigalearn_padder" are exact copies of GigaLearn\'s AdvancedObs and DefaultObs and of AdvancedObsPadderGGL (a community GigaLearn observation), for bots brought over from GigaLearn. "rlgym_padder" is rlgym-tools\' AdvancedObsPadder, for bots brought over from RLGym-PPO (nitro import-rlgym).\n'
         "\n"
         'When to change it: Choose it when you start a new bot. The default, "nitro_v2", measured better than "native" (below); "native" is the smaller one. The GigaLearn ones are for a bot that keeps training the network it had in GigaLearn.\n'
         "\n"
@@ -299,7 +361,7 @@ MORE: dict[str, str] = {
         "Better on one task of three and worse on none, so it is the default."
     ),
     "env.action_masks": (
-        'What it does: Decides which of the 90 actions the bot may pick at each moment, for example which count on the ground and which in the air; the others are masked out. "standard" is NitroLearn\'s rule set. "gigalearn" is GigaLearn\'s exact rule set, quirks included: one air action is never allowed, and the air yaw actions hold handbrake, which powerslides on landing.\n'
+        'What it does: Decides which of the 90 actions the bot may pick at each moment, for example which count on the ground and which in the air; the others are masked out. "standard" is NitroLearn\'s rule set. "gigalearn" is GigaLearn\'s exact rule set, quirks included: one air action is never allowed, and the air yaw actions hold handbrake, which powerslides on landing. "none" allows every action always, as RLGym-PPO trains, for bots brought over from it (nitro import-rlgym).\n'
         "\n"
         "When to change it: Only for a bot brought over from GigaLearn, which learned with GigaLearn's rules. Choose it when you start the bot.\n"
         "\n"
@@ -501,6 +563,17 @@ MORE: dict[str, str] = {
         "Watch out for: exported bots with it use bot file format 8, which the nitro_bot that comes with NitroLearn reads. Fixed once the bot has saves: a bot cannot switch it, and transfer learning needs both bots alike.\n"
         "\n"
         "Measured: the exported bot gives the same answers as training's networks (within 1e-4); how it learns is not measured."
+    ),
+    "model.input_map": (
+        "What it does: for a bot brought over from another framework (nitro import-rlgym), turns NitroLearn's observation into exactly the numbers its network was trained on: picks each number, rescales it, and standardises and clips it as RLGym-PPO did. The value is how many numbers the network reads; the map itself is kept in the save and the exported bot.\n"
+        "\n"
+        "When to change it: never by hand. The import writes it; 0 (off) for every other bot.\n"
+        "\n"
+        "How to use it: leave it as the import wrote it.\n"
+        "\n"
+        "Watch out for: fixed once the bot has saves. It cannot be combined with attention or residual networks, and nitro surgery refuses such a bot.\n"
+        "\n"
+        "Measured: imported bots choose as the original within 1e-5 on real game states (the import's own check)."
     ),
     "model.layer_norm": (
         "What it does: after each hidden layer, rescales that layer's numbers to a steady range before the next layer reads them. This keeps learning stable as the networks change.\n"
@@ -1600,6 +1673,171 @@ MORE: dict[str, str] = {
         "\n"
         "Measured: the cost of measuring is estimated from the size of the held-back set; not timed."
     ),
+    "selector.specialists": (
+        'What it does: makes this a multi-model bot. Instead of one network, the bot holds several of your trained bots (its "models") and a small network of its own, the selector, that picks which model drives each car, moment by moment. Each model keeps seeing the game the way it learned to (its own observation and game size), so a bot trained alone on one move can drive inside a full 1v1 bot. [model] describes the selector\'s own network.\n'
+        "\n"
+        'When to change it: when you have two or more trained bots that are each good at something different and want one bot that uses each where it is best. The easiest way is New bot, then "A multi-model bot from my bots", which writes all of this for you.\n'
+        "\n"
+        'How to use it: a list of 2 to 8 bot names (their folders in the runs folder), e.g. ["kickoff", "dribble"]. Each model is taken from its newest save and copied into this bot\'s saves, so it never needs those bots again. They must all decide at this bot\'s tick skip.\n'
+        "\n"
+        "Watch out for: every model runs at every decision, so training and the exported bot need about as much work as all the models together. Not yet with start_from, replay copying, exploiters, several game sizes or several graphics cards. nitro eval and nitro watch play a multi-model bot at the game size it trained at; in RLBot it also plays a smaller match when its selector has room for it and every model can see it, and otherwise sits still and says why. Fixed once the bot has saves: to change the models, make a new bot.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.min_hold_seconds": (
+        "What it does: once the selector hands a car to one of its models, that model keeps driving for at least this long before the selector may choose again, so it does not flick between models every step.\n"
+        "\n"
+        "When to change it: shorten it if hand-overs need to be quick; lengthen it if the selector keeps switching back and forth.\n"
+        "\n"
+        "How to use it: seconds, 0 to 10; 0.5 by default. The time is turned into whole decisions and rounded up. 0 lets it switch every step. While a choice holds, the selector learns nothing about which model to pick on those steps; its value network still learns from them.\n"
+        "\n"
+        "Watch out for: a very short hold makes the selector's job noisier, a very long one can leave the wrong model driving through a whole play. The exported bot keeps the hold from the save.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.switch_cost": (
+        "What it does: takes a small amount of reward away each time the selector hands a car to a different model, so it learns to switch only when switching pays. The first choice in a game is free.\n"
+        "\n"
+        "When to change it: if the selector switches more often than seems useful (its hand-overs a car-minute stay high and the play looks jumpy).\n"
+        "\n"
+        "How to use it: in the same units as your rewards: compare it with what a touch or a goal pays in your reward list. 0 (the default) means switches are free and only min_hold_seconds holds them back.\n"
+        "\n"
+        "Watch out for: too high a cost can teach the selector never to switch at all. The reward columns leave this cost out, so they still show the game's own rewards.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.min_share": (
+        "What it does: sets, per model, the smallest share of the driving you want it to get, so a model the selector would otherwise ignore still gets to play. A model below its share earns a small bonus every step it drives; the bonus grows while it stays below and shrinks once it is above. It never forces a choice.\n"
+        "\n"
+        "When to change it: when one model hardly ever gets to drive and you want it used.\n"
+        "\n"
+        "How to use it: one percentage per model, in the order of specialists, e.g. [0, 15, 10]; 0 = no minimum. Empty = none. The shares must add up to less than 100. The Overview shows each model's share live, with a line at its aim.\n"
+        "\n"
+        "Watch out for: the bonus is extra reward, so pushing a share above what helps costs the bot some play. Start low (5 to 15) and watch the shares and the reward.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.share_bonus_rate": (
+        "What it does: how strongly a model's min_share bonus answers when it is below its share: a part that answers at once and a part that keeps growing until the share is met.\n"
+        "\n"
+        "When to change it: raise it if a share takes too long to reach its aim; lower it if the shares swing around their aims.\n"
+        "\n"
+        "How to use it: 0 to 1; 0.5 by default. It does nothing without min_share.\n"
+        "\n"
+        "Watch out for: the bonus never goes above 5 typical step rewards, however far below its share a model is.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.standardise_values": (
+        "What it does: each model's own value network says how good it thinks the moment is, and the selector reads these. Models trained apart judge on different scales; this puts them on one scale by measuring each model's estimates against how that model usually rates this bot's games.\n"
+        "\n"
+        "When to change it: when the models were trained with very different rewards, so their values are not comparable.\n"
+        "\n"
+        "How to use it: true or false. Off, the selector reads each value as its model gives it. The exported bot keeps the scale the selector last trained with.\n"
+        "\n"
+        "Watch out for: switching it on part-way changes what the selector reads; it then has to learn again how to read them.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.goal_heads": (
+        "What it does: gives each model a small goal guesser of its own, learned from this bot's games: from what that model sees, who scores in the next few seconds (its team, the other team or nobody). The selector sees each model's two chances beside its value. The guessers learn without rewards; the models' play is not changed by them.\n"
+        "\n"
+        "When to change it: when the selector picks badly between models that judge the moment very differently, or as an experiment.\n"
+        "\n"
+        "How to use it: true or false, at the bot's start (fixed once the bot has saves). goal_head_seconds sets how far ahead they look. The metrics show selector_goal_accuracy: how often the guesses were right.\n"
+        "\n"
+        "Watch out for: they take a little card memory while their states wait for their answers.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.goal_head_seconds": (
+        "What it does: how far ahead the goal guessers look.\n"
+        "\n"
+        "When to change it: shorter makes the guess about the next play; longer about the run of play.\n"
+        "\n"
+        "How to use it: seconds, 1 to 60; 10 by default.\n"
+        "\n"
+        "Watch out for: a game that ends by a time limit before this horizon is left out of their learning.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.train_models": (
+        "What it does: trains the models too, not only the selector: each learns from the steps it drove, with its own optimizer and value network, and is pulled back toward the bot it started as (model_pull) so it keeps its specialty. The model handed a car learns the moments it is handed, so the models learn the hand-overs.\n"
+        "\n"
+        "When to change it: when the models should learn to work together inside this bot, after the selector has learned to pick (models_start_after).\n"
+        "\n"
+        "How to use it: true or false. model_lr sets their learning rate, model_pull how strongly they stay themselves.\n"
+        "\n"
+        "Watch out for: each trained model needs about three times its size in card memory for its learning. The trained models are kept in the bot's saves and in the exported bot.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.model_lr": (
+        "What it does: the models' learning rate when they train.\n"
+        "\n"
+        "When to change it: lower it if the models lose their specialties; raise it if they learn too slowly.\n"
+        "\n"
+        "How to use it: one number for all models, or one per model; above 0 and at most 1. 1e-5 by default.\n"
+        "\n"
+        "Watch out for: it does nothing without train_models.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.model_pull": (
+        "What it does: how strongly each training model is pulled back toward the bot it started as, so it keeps what it was good at.\n"
+        "\n"
+        "When to change it: raise it if a model drifts away from its specialty; lower it to let the models change more.\n"
+        "\n"
+        "How to use it: 0 or more; 0.1 by default. 0 = no pull.\n"
+        "\n"
+        "Watch out for: it does nothing without train_models.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.models_start_after": (
+        "What it does: a warm-up at the start: for this many agent steps only the selector learns and the models are held as they came, so the selector's choices settle before the models learn from them.\n"
+        "\n"
+        "When to change it: longer if the selector still picks at random when the models start learning.\n"
+        "\n"
+        "How to use it: agent steps; 0 = the models learn from the start. The dashboard's New multi-model bot page writes 20,000,000, a guess. The steps already trained count, so it carries on across a stop and a start.\n"
+        "\n"
+        "Watch out for: it does nothing without train_models. The goal guessers learn throughout.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.models_ramp_steps": (
+        "What it does: after the warm-up, raises the models' learning rate from 0 to model_lr over this many agent steps, easing them in.\n"
+        "\n"
+        "When to change it: if the models change too suddenly once the warm-up ends.\n"
+        "\n"
+        "How to use it: agent steps; 0 = the full rate at once.\n"
+        "\n"
+        "Watch out for: it does nothing without train_models.\n"
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.train_schedule": (
+        'What it does: "together" trains the selector and the models after every collection of games; "alternate" trains the models alone for a few iterations (the selector\'s choices held), then the selector alone, and so on.\n'
+        "\n"
+        'When to change it: try "alternate" if the selector and the models seem to get in each other\'s way.\n'
+        "\n"
+        'How to use it: "together" (the default) or "alternate"; alternate_iterations sets the turns\' length.\n'
+        "\n"
+        'Watch out for: "alternate" cannot be used with a shared trunk for the selector (model.shared).\n'
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
+    "selector.alternate_iterations": (
+        'What it does: with train_schedule = "alternate", how many iterations each turn lasts.\n'
+        "\n"
+        "When to change it: longer turns let each side settle before the other moves.\n"
+        "\n"
+        "How to use it: a whole number, 1 or more; 10 by default.\n"
+        "\n"
+        'Watch out for: it does nothing unless train_schedule is "alternate".\n'
+        "\n"
+        "Measured: not measured in this version. How well a multi-model bot plays is for your own games to show."
+    ),
     "replay_mix.enabled": (
         "What it does: while the bot trains, a share of its learning steps copy the players in your converted replays, the same learning the replay copy does before training, so a bot that is already good keeps picking up how real players play while it trains against itself. After each update the learner takes a few copy steps on decisions drawn from the replays. They move the policy and any shared trunk, never the value network, with an optimizer and learning rate of their own (replay_mix.lr), kept in the bot's saves.\n"
         "\n"
@@ -1732,6 +1970,50 @@ MORE: dict[str, str] = {
         "\n"
         "Measured: not measured."
     ),
+    "strength.anchors": (
+        "What it does: draws a chart of how strong the bot is getting. A few saves become anchors: the first save, then the first save of every anchor_every_steps, up to this many. Anchors are kept for good (never deleted with old saves) and the bot never trains against them. After each save the bot plays a short match from kickoffs against every anchor, and its share of the goals gives a rating on a fixed scale: the first anchor is 0, and 400 more means about ten goals for every one against. An anchor keeps the rating it had when it was pinned, so the scale never drifts. The Overview charts the rating with its 95% range; strength.json in the bot's folder holds every match.\n"
+        "\n"
+        "When to change it: switch it on (3 to 5 is plenty) to see whether a long run is still getting stronger, beyond its reward. It is for your own reading of a run: it does not prove one setting better than another.\n"
+        "\n"
+        "How to use it: 0 (off) or up to 20. The bot needs opponents (env.opponents). Each anchor adds a match after every rated save; the training waits for the matches.\n"
+        "\n"
+        "Watch out for: early anchors are far weaker than a trained bot, so it may take every goal against them; the rating then rests on the later anchors. Deleting an anchor's save folder by hand drops it from the matches.\n"
+        "\n"
+        "Measured: the scale puts players of known strength in the right order with the right gaps in the tests; its cost in training time is not measured yet."
+    ),
+    "strength.anchor_every_steps": (
+        "What it does: with strength.anchors, how far apart the anchors are: after the first save, the next anchor is the first save in each new block of this many agent steps, until there are strength.anchors of them.\n"
+        "\n"
+        "When to change it: lower it for a short run so its anchors spread over it; raise it for a run of tens of billions of steps.\n"
+        "\n"
+        "How to use it: agent steps, at least 1. The default is one anchor per billion steps.\n"
+        "\n"
+        "Watch out for: anchors are pinned only on rated saves (strength.rate_every), so the gap is at least a save apart.\n"
+        "\n"
+        "Measured: not measured."
+    ),
+    "strength.points": (
+        "What it does: with strength.anchors, how many points the bot plays against each anchor for one rating. A point runs from a kickoff to a goal, or ends without one after the bot's no-touch time or 60 seconds.\n"
+        "\n"
+        "When to change it: raise it for a narrower range on the chart; lower it if the matches slow training too much.\n"
+        "\n"
+        "How to use it: 10 to 5000. 100 points give a range of roughly plus or minus 70 rating points against one even anchor; four times the points halve it.\n"
+        "\n"
+        "Watch out for: training waits while the matches play, after every rated save.\n"
+        "\n"
+        "Measured: not measured yet."
+    ),
+    "strength.rate_every": (
+        "What it does: with strength.anchors, rates every this many saves instead of every save, to spend less time on matches.\n"
+        "\n"
+        "When to change it: raise it when saves come often (run.checkpoint_minutes small) and the matches take a noticeable share of the training time.\n"
+        "\n"
+        "How to use it: 1 = every save, 2 = every other save, and so on.\n"
+        "\n"
+        "Watch out for: anchors are pinned only on saves that are rated.\n"
+        "\n"
+        "Measured: not measured."
+    ),
     "wandb.mode": (
         'What it does: "online" sends the numbers to wandb.ai while the run trains. "offline" writes W&B\'s files into the run folder only, so they can be uploaded later.\n'
         "\n"
@@ -1850,6 +2132,149 @@ MORE: dict[str, str] = {
 # The "Nerd explanation" of each setting (keys as MORE): how it works inside, the maths where it helps, and a
 # small settings-file example between lines of three backticks. Plain text; describe.py passes it on as 'nerd'.
 NERD: dict[str, str] = {
+    "selector.specialists": (
+        "The selector is a PPO policy whose actions are the models' numbers. Each step every model samples an action from its own view of the game (the core builds each view: the car, its nearest teammates and opponents, in that model's observation), and the chosen model's action is played. The selector sees the game's observation plus who drives (one-hot), how long (seconds over 5, at most 1), whether it may choose, and each model's value.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "```"
+    ),
+    "selector.min_hold_seconds": (
+        "hold_steps = ceil(min_hold_seconds x 120 / tick_skip), at least 1. While held, the selector's action mask allows only the driving model, so those steps have log-probability 0 and give no policy gradient; the value network learns from every step.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "min_hold_seconds = 1.0\n"
+        "```"
+    ),
+    "selector.switch_cost": (
+        "Subtracted from the selector's reward on the step it hands a car to another model (not on an episode's first choice). The models' own learning (train_models) uses the game's rewards without it.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "switch_cost = 0.05\n"
+        "```"
+    ),
+    "selector.min_share": (
+        "Per model a bonus b_k paid every step it drives, from a proportional-integral controller on the last collection's relative shortfall e = (target - share) / target, clamped to -1..1: integral += rate x typical x e (kept within 0..5 typical), bonus = integral + 6 x rate x typical x e (within 0..5 typical); typical = the mean |reward| per car-step of the collection.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "min_share = [0, 30]\n"
+        "```"
+    ),
+    "selector.share_bonus_rate": (
+        "The controller's gain: the integral grows by rate x typical x e per collection; the immediate part is 6 x rate x typical x e.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "min_share = [0, 30]\n"
+        "share_bonus_rate = 0.25\n"
+        "```"
+    ),
+    "selector.standardise_values": (
+        "Per model a running mean and standard deviation of its normalised value over the learner's car-steps, updated once per collection (weight 0.1 after the first); the selector sees (value - mean) / std. The exported bot writes the last mean and std as value_shift and value_scale.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "standardise_values = true\n"
+        "```"
+    ),
+    "selector.goal_heads": (
+        "Per model a 128x128 ReLU network on its own view with three outputs (no goal, own team scores, other team scores), trained by cross-entropy (Adam) on a uniform sample of the learner's car-steps, each labelled once the horizon has passed (a timeout inside the horizon drops the state). The selector sees softmax outputs 2 and 3 per model after the values.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "goal_heads = true\n"
+        "```"
+    ),
+    "selector.goal_head_seconds": (
+        "The horizon in decisions: round(goal_head_seconds x 120 / tick_skip). States wait across collections until their label is known (up to 32 collections' worth, in FP16).\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "goal_heads = true\n"
+        "goal_head_seconds = 5.0\n"
+        "```"
+    ),
+    "selector.train_models": (
+        "Each model gets its own Learner (own Adam, value network and PopArt statistics from its save) and learns by PPO only on the samples it drove; a stretch ends where it hands the car over, valued by its own value of the next state (a truncation). The loss adds model_pull x KL(start || policy) against a frozen copy of its starting policy.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "train_models = true\n"
+        "```"
+    ),
+    "selector.model_lr": (
+        "The models' learners' policy and value learning rate (one for all, or one per model), times the warm-up's share (models_rate_at).\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "train_models = true\n"
+        "model_lr = [1e-5, 3e-5]\n"
+        "```"
+    ),
+    "selector.model_pull": (
+        "The weight of KL(starting policy || policy), computed on each minibatch's states, in each model's loss.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "train_models = true\n"
+        "model_pull = 0.2\n"
+        "```"
+    ),
+    "selector.models_start_after": (
+        "models_rate_at(steps) = 0 below models_start_after (no update, no pull, value networks held), then min(1, (steps - start) / models_ramp_steps), or 1 with no ramp; keyed on the run's agent steps.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "train_models = true\n"
+        "models_start_after = 20000000\n"
+        "```"
+    ),
+    "selector.models_ramp_steps": (
+        "The ramp of models_rate_at: linear from 0 to 1 over this many agent steps after models_start_after; recorded as models_lr_share in metrics.csv.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "train_models = true\n"
+        "models_ramp_steps = 10000000\n"
+        "```"
+    ),
+    "selector.train_schedule": (
+        "'alternate': iterations i with (i // alternate_iterations) even train only the models (the selector's policy frozen, its value still learning); odd ones only the selector.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "train_models = true\n"
+        'train_schedule = "alternate"\n'
+        "```"
+    ),
+    "selector.alternate_iterations": (
+        "The length of each turn of train_schedule = 'alternate', in iterations.\n"
+        "\n"
+        "```toml\n"
+        "[selector]\n"
+        'specialists = ["kickoff", "dribble"]\n'
+        "train_models = true\n"
+        'train_schedule = "alternate"\n'
+        "alternate_iterations = 5\n"
+        "```"
+    ),
     "paths.collision_meshes": (
         "The simulator (RocketSim) builds each arena's floor, walls, ramps and goals from triangle meshes dumped from the game. NitroLearn looks for them in this order: the path written here (relative to the settings file's folder), a collision_meshes folder next to the settings file, then NitroLearn's own collision_meshes folder. The folder must hold a soccar subfolder with the soccar mesh files.\n"
         "\n"
@@ -2036,6 +2461,45 @@ NERD: dict[str, str] = {
         "\n"
         "0 keeps only the newest keep_checkpoints saves."
     ),
+    "run.saves_disk_gb": (
+        "After each save, the sizes of the finished saves in the checkpoints folder are added up. While the total is over the cap, saves are deleted in this order: ordinary saves oldest first, then milestone saves oldest first. The newest save and any save holding the `kept` file are skipped.\n"
+        "\n"
+        "```toml\n"
+        "[run]\n"
+        "saves_disk_gb = 50\n"
+        "```\n"
+        "\n"
+        "keep_checkpoints prunes first; the cap only deletes what that keeps. When only protected saves are left over the cap, a warning is given once."
+    ),
+    "run.metrics_max_mb": (
+        "At each save, when metrics.csv is over the size, it is rewritten keeping rows 0, 2, 4 ... and the newest row, unchanged. The report thins each column to rows at a power-of-two stride, so halving the rows leaves the report's points exactly as they were; the dashboard's charts (every k-th row) keep points that were already shown.\n"
+        "\n"
+        "```toml\n"
+        "[run]\n"
+        "metrics_max_mb = 100\n"
+        "```\n"
+        "\n"
+        "Each compaction halves the rows, so a run that keeps growing is compacted again later. Columns written only now and then can lose some of their rows."
+    ),
+    "run.auto_restart": (
+        "`nitro train` / `nitro resume` becomes a keeper process that runs the trainer as its child (`nitro resume <bot>`). A child that ends with any exit code but 0 is started again from the newest save after 30 seconds, exactly as a resume. The dashboard's Stop, Ctrl+C and a run reaching --steps end the keeper.\n"
+        "\n"
+        "```toml\n"
+        "[run]\n"
+        "auto_restart = true\n"
+        "auto_restart_limit = 3\n"
+        "```\n"
+        "\n"
+        "While it runs, keep_going.json in the bot's folder says so, and a start-up entry (Windows: a shortcut in the Startup folder; Linux: ~/.config/autostart) runs `nitro carry-on --runs <folder>` at log-in, which starts every bot that was kept training. The entry is recorded in .tools/shortcuts.json, so uninstalling removes it."
+    ),
+    "run.auto_restart_limit": (
+        "A crash after a new save since the trainer's last start counts 0; each crash without one counts 1 more. When the count passes the limit the keeper stops and the bot's page shows why (the trainer's last console line).\n"
+        "\n"
+        "```toml\n"
+        "[run]\n"
+        "auto_restart_limit = 5\n"
+        "```"
+    ),
     "run.report_minutes": (
         "The report (report.html in the bot's folder) is written from metrics.csv: one row per iteration, every column the learner logs. Rewriting it reads the whole file, so on a long run a short interval costs a little processor time.\n"
         "\n"
@@ -2167,7 +2631,7 @@ NERD: dict[str, str] = {
         "The GigaLearn copies, in GigaLearn's own order and scales (ball, previous action, pads, own car, then the other cars): gigalearn_advanced (AdvancedObs) 109 numbers in 1v1, 29 per car, pads with their timers as GigaLearn reads them; gigalearn_default (DefaultObs) 89, 19 per car, pads as 0/1; gigalearn_padder (AdvancedObsPadderGGL) 109 in 1v1, 26 for the own car and 32 per other car, with env.obs_team_size - 1 teammate and env.obs_team_size opponent places (0 = the game's own size), empty places all zeros and cars beyond them left out."
     ),
     "env.action_masks": (
-        'Both rules allow the ground actions on the ground and the air actions in the air, and the jump actions while the car can jump (a flip is left, or it is upside down near the floor). "standard" never allows a boosting action on an empty tank. "gigalearn" (GigaLearn\'s DefaultAction masks) never allows action 24, picks the ground actions it allows in the air by yaw with handbrake, and adds the jump actions back after taking away the boosting ones, so a jump with boost stays allowed on an empty tank.\n'
+        'Both rules allow the ground actions on the ground and the air actions in the air, and the jump actions while the car can jump (a flip is left, or it is upside down near the floor). "standard" never allows a boosting action on an empty tank. "gigalearn" (GigaLearn\'s DefaultAction masks) never allows action 24, picks the ground actions it allows in the air by yaw with handbrake, and adds the jump actions back after taking away the boosting ones, so a jump with boost stays allowed on an empty tank. "none" allows all 90 actions in every situation.\n'
         "\n"
         "```toml\n"
         "[env]\n"
@@ -2355,6 +2819,16 @@ NERD: dict[str, str] = {
         "```\n"
         "\n"
         "The sum is kept in FP32 even under FP16, so the stream of block outputs stays exact."
+    ),
+    "model.input_map": (
+        "For an imported bot, number i of what the network reads = clamp((obs[index_i] x scale_i - offset_i) / divisor_i, -clip, clip), with no clamp when clip is 0. The import fills index, scale, offset (RLGym-PPO's observation mean) and divisor (its standard deviation) and clip (5); they stay fixed and travel in the save and the exported bot.\n"
+        "\n"
+        "```toml\n"
+        "[model]\n"
+        "input_map = 0\n"
+        "```\n"
+        "\n"
+        "0 is off: the network reads the observation itself."
     ),
     "model.layer_norm": (
         "LayerNorm rescales each sample's layer output to mean 0 and spread 1, then applies a learned scale and shift per number: y = gamma x (x - mean) / sqrt(variance + 1e-5) + beta. It keeps the numbers in a steady range however the weights grow, which steadies learning.\n"
@@ -3125,6 +3599,58 @@ NERD: dict[str, str] = {
         "```toml\n"
         "[exploiters]\n"
         "window_games = 2000\n"
+        "```"
+    ),
+    "run.skills_every": (
+        "After every N-th save (counted from the run's start), training calls the skills battery of nitro skills on that save with seed 1000001 and run.skills_games situations per skill, on the training device, inside torch.random.fork_rng so training's random draws are untouched. Rows go to skills.csv, the weakness maps to weakness.json. An exception is logged and training continues."
+        "\n"
+        "```toml\n"
+        "[run]\n"
+        "skills_every = 5\n"
+        "```"
+    ),
+    "run.skills_games": (
+        "Situations per skill in a scheduled battery (run.skills_every), split over the task's arenas. The measure's spread falls with the square root of the count."
+        "\n"
+        "```toml\n"
+        "[run]\n"
+        "skills_every = 5\n"
+        "skills_games = 256\n"
+        "```"
+    ),
+    "strength.anchors": (
+        "Anchors are save folders marked kept (pruning skips them) and anchor; strength.json lists them with their fixed ratings. After each rated save the save plays strength.points points per anchor from kickoffs (no-touch time or 60 s ends a point), Blue against Orange, seeded from (run seed, save steps, anchor steps). The rating is the Bradley-Terry maximum-likelihood fit of goals for and against with the anchors' ratings fixed, in Elo units (400 per factor ten in odds), with half a goal added each way per match; the 95% range comes from the likelihood's curvature. Points without a goal do not count."
+        "\n"
+        "```toml\n"
+        "[strength]\n"
+        "anchors = 4\n"
+        "```"
+    ),
+    "strength.anchor_every_steps": (
+        "An anchor is pinned on a rated save when no anchor exists yet, or when the save's agent_steps // anchor_every_steps is above the newest anchor's, until there are strength.anchors anchors."
+        "\n"
+        "```toml\n"
+        "[strength]\n"
+        "anchors = 4\n"
+        "anchor_every_steps = 500_000_000\n"
+        "```"
+    ),
+    "strength.points": (
+        "Points per anchor per rating. Against one even anchor the 95% range is about plus or minus 1.96 x 400 / ln(10) x 2 / sqrt(goals) rating points: roughly 70 for 100 goals."
+        "\n"
+        "```toml\n"
+        "[strength]\n"
+        "anchors = 4\n"
+        "points = 200\n"
+        "```"
+    ),
+    "strength.rate_every": (
+        "Rates the save when (save number - 1) is a multiple of rate_every, counting the run's saves from 1. Anchors are pinned only on rated saves."
+        "\n"
+        "```toml\n"
+        "[strength]\n"
+        "anchors = 4\n"
+        "rate_every = 2\n"
         "```"
     ),
     "exploiters.retire_share": (

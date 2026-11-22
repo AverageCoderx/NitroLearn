@@ -14,8 +14,8 @@ const isChanged = e => { const o = originalOf(e); return !o || JSON.stringify(ca
 // A reward's key: its name, with #2, #3, ... for a second or third of that name (its note and its place in
 // the folders are kept under it; reward_layout.py).
 function rewardKey(i) {
-  const list = S.rw.rewards, name = list[i].view.name;
-  const n = list.slice(0, i + 1).filter(e => e.view.name === name).length;
+  const list = S.rw.rewards, name = keyName(list[i].view);
+  const n = list.slice(0, i + 1).filter(e => keyName(e.view) === name).length;
   return name + (n > 1 ? "#" + n : "");
 }
 function noteKey(i) { return "reward:" + rewardKey(i); }
@@ -37,10 +37,11 @@ function marked(text, query) {
   while ((i = low.indexOf(q, at)) !== -1) { out += esc(s.slice(at, i)) + `<mark class="hit">${esc(s.slice(i, i + q.length))}</mark>`; at = i + q.length; }
   return codeMarks(out + esc(s.slice(at)));
 }
-function rewardShown(e) { return rewardMatches(kindOf(e.view.name), S.rwQuery, [e.label || ""]); }
+function rewardShown(e) { return rewardMatches(viewKind(e.view), S.rwQuery, [e.label || ""]); }
 
 // What makes a reward the same as another (rewards.identity): its name; an "all of" group's parts too.
 function rewardIdentity(view) {
+  if (view.name === "built") return "built:" + (view.title || "");
   if (view.name !== "all_of") return view.name || null;
   const parts = (view.parts || []).map(p => JSON.stringify(canon(p))).sort();
   return parts.length ? "all_of:" + parts.join(",") : null;
@@ -52,9 +53,17 @@ function addedCopies(list) {
   return [...now].filter(([id, n]) => n > Math.max(1, had.get(id) || 0)).map(([id]) => id);
 }
 function rewardIndex(name) { return ((S.rw && S.rw.rewards) || []).findIndex(e => e.view.name === name); }
+// The kinds of reward and their texts (half a megabyte, the same for every bot): asked for once, in the
+// background when a bot's page opens, then never sent again while they stay the same (api.reward_kinds).
+function keepKinds(out) {
+  if (!out.error) S.rwKinds = { digests: out.digests, catalog: out.catalog, blocks: out.blocks, help: out.help, guide: out.guide };
+}
+async function prefetchKinds() { if (!S.rwKinds) keepKinds(await call("reward_kinds")); }
 async function loadRewards() {
   const bot = S.bot;
-  const out = await call("rewards", bot, S.rwWindow);
+  const kinds = S.rwKinds;
+  const out = withHeld(await call("rewards", bot, S.rwWindow, kinds && kinds.digests), kinds);
+  keepKinds(out);
   if (S.bot !== bot) return;
   S.rw = out.error ? { bot, error: out.error } : Object.assign(out, { bot });
   if (S.view === "bot" && S.tab === "rewards") renderRewards($("#tab"));
@@ -111,6 +120,7 @@ function renderRewardList() {
   const html = folders || loose || looseHint ? folders + looseHead + `<div class="rw-loose" data-rwdrop="">${loose || looseHint}</div>` : '<div class="empty">No reward matches that search.</div>';
   keepFocus(() => put(list, html));
   renderDuplicates();
+  builtAfterRender();
 }
 
 // ---------- folders and order: a view only, kept in the bot's folder (reward_layout.py), no Apply ----------
@@ -238,7 +248,7 @@ function renderDuplicates() {
 }
 function extraCopies() { return new Set((S.rw.duplicates || []).flatMap(d => d.indexes.slice(1))); }
 function moveMenuHTML(i, place) {
-  const k = kindOf(S.rw.rewards[i].view.name), key = place.key;
+  const k = viewKind(S.rw.rewards[i].view), key = place.key;
   const item = (attrs, label, off) => `<button type="button" role="menuitem" data-rwkey="${esc(key)}" ${attrs} ${off ? "disabled" : ""}>${label}</button>`;
   return `<div class="rw-menu" role="menu" aria-label="Move ${esc(k.title)}">
     ${item('data-rwmv="up"', "↑ Up", place.first)}${item('data-rwmv="down"', "↓ Down", place.last)}
@@ -267,6 +277,7 @@ function rewardBlock(k, view) {
   if (view.zero_sum) lines.push(`zero_sum = { team_spirit = ${tomlValue("number", view.zero_sum.team_spirit) || "0"}, opponent_scale = ${tomlValue("number", view.zero_sum.opponent_scale) || "1"} }`);
   if (k.group) lines.push(`parts = [${(view.parts || []).map(p => `{ name = ${JSON.stringify(p.name)} }`).join(", ")}]`);
   if (view.enabled === false) lines.push("enabled = false");
+  if (k.built) { lines.splice(2, 0, `title = ${JSON.stringify(view.title || "")}`); lines.push(...builtBlockLines(view)); }
   return lines.join("\n");
 }
 function rewardNerdHTML(k, view) {
@@ -286,7 +297,7 @@ function rewardNerdHTML(k, view) {
   </div>`;
 }
 function rewardHTML(e, i, place) {
-  const v = e.view, k = kindOf(v.name), on = v.enabled !== false;
+  const v = e.view, k = viewKind(v), on = v.enabled !== false;
   const changed = isChanged(e), fresh = !originalOf(e);
   const share = shareOf(e.label);
   const note = (S.data.notes || {})[noteKey(i)] || "";
@@ -323,6 +334,7 @@ function rewardHTML(e, i, place) {
       ${rwInput(i, "zero_sum.team_spirit", zs.team_spirit, "Team spirit (0 to 1)", `title="${esc((S.rw.help || {})["zero_sum.team_spirit"] || "")}"`)}
       ${rwInput(i, "zero_sum.opponent_scale", zs.opponent_scale, "Opponent share", `title="${esc((S.rw.help || {})["zero_sum.opponent_scale"] || "")}"`)}
     </div>` : ""}
+    ${k.built ? builtEditorHTML(v, i) : ""}
     ${k.group ? `<div class="rw-sub"><span class="lead">Parts: pays only when every part is positive (an "and"). At least two.</span>
       ${(v.parts || []).map((p, j) => `<span class="chip">${esc(kindOf(p.name).title)}<button type="button" class="more" data-rwpartdel="${i}:${j}" aria-label="Remove part ${esc(p.name)}">×</button></span>`).join("")}
       <select class="field" style="width:auto;" id="rw-${i}-part-add" data-rw="${i}" data-k="parts.add" aria-label="Add a part"><option value="">+ add a part…</option>${partChoices.map(c => `<option value="${esc(c.name)}">${esc(c.title)}</option>`).join("")}</select>
@@ -374,7 +386,7 @@ function labelKind(label) {
   const m = /^(.*?)(?:_(\d+))?$/.exec(label), base = kindOf(label).about ? label : m[1];
   return { k: kindOf(base), n: base !== label ? m[2] : "" };
 }
-function rewardTitle(label) { const { k, n } = labelKind(label); return k.about ? k.title + (n ? " " + n : "") : label; }
+function rewardTitle(label) { const { k, n } = labelKind(label); return builtTitleOf(label) || (k.about ? k.title + (n ? " " + n : "") : label); }
 function isContinuous(r) { return !!labelKind(r.label).k.every_step || (r.fire_rate != null && r.fire_rate > CONTINUOUS_RATE); }
 // The rows to show, sorted; with some hidden, the shares are over the shown rows (adding up to 100%).
 function arrange(list) {
@@ -502,6 +514,7 @@ function newView(k) {
   const view = { name: k.name, known: true, enabled: true, weight: 1, zero_sum: null, params: {} };
   (k.params || []).forEach(p => { view.params[p.path] = k.own ? null : p.default; });  // a reward of one's own: its defaults, unwritten
   if (k.group) view.parts = [];
+  if (k.built) newBuiltView(view);
   return view;
 }
 function rewardEdit(i, key, raw) {
@@ -575,7 +588,7 @@ function catalogHTML() {
   const used = new Set(((S.rw && S.rw.rewards) || []).map(e => e.view.name)), q = S.rwCatQuery;
   // A reward the bot has already: shown as Added, and picking it shows the bot's own (an "all of" group can
   // be added again with other parts).
-  const added = k => !k.group && used.has(k.name);
+  const added = k => !k.group && !k.repeatable && used.has(k.name);
   const item = k => `<div class="catalog-item${added(k) ? " added" : ""}"><button type="button" class="catalog-pick" ${added(k) ? `data-rwjump="${esc(k.name)}" title="Already in this bot: show it"` : `data-rwadd="${esc(k.name)}" title="Add ${esc(k.title)}"`}>
       <span class="row" style="gap:8px;"><b>${marked(k.title, q)}</b><span class="kind mono muted" style="font-size:11.5px;">${marked(k.name, q)}</span>${k.every_step ? '<span class="badge">every step</span>' : ""}${k.group ? '<span class="badge">group</span>' : ""}${ownBadge(k)}${added(k) ? '<span class="tag strong">✓ Added</span>' : used.has(k.name) ? '<span class="badge">in use</span>' : ""}</span>
       <span class="about">${marked(k.about, q)}</span><span class="pick-word" aria-hidden="true">${added(k) ? "Show it in the list" : "+ Add to this bot"}</span></button>
@@ -587,7 +600,7 @@ function catalogHTML() {
     if (g === "library" || g === "moves") list.sort((a, b) => (a.family || "").localeCompare(b.family || "") || a.name.localeCompare(b.name));
     return list.length ? `<div class="catalog-head">${esc(title)} <span class="muted">${list.length}</span></div>` + list.map(item).join("") : "";
   }).join("");
-  return html || '<div class="muted" style="padding:14px 2px;">No reward matches that search.</div>';
+  return (html + builtTemplatesHTML(q, chosen)) || '<div class="muted" style="padding:14px 2px;">No reward matches that search.</div>';
 }
 
 async function rewardSetModal() {
@@ -612,7 +625,7 @@ async function useRewardSet(ident, how) {
   const fresh = [], left = [];
   (out.rewards || []).forEach(view => {
     const id = rewardIdentity(view);
-    if (id && have.has(id)) left.push(kindOf(view.name).title);
+    if (id && have.has(id)) left.push(viewKind(view).title);
     else { fresh.push({ from: null, view }); if (id) have.add(id); }
   });
   closeModal();
@@ -659,7 +672,7 @@ ACTIONS["rw-save-go"] = async () => {
 };
 on("click", t => {
   if (t.dataset.rwset) return useRewardSet(t.dataset.rwset, t.dataset.how);
-  if (t.dataset.rwjump != null || t.dataset.rwadd != null && !kindOf(t.dataset.rwadd).group && rewardIndex(t.dataset.rwadd) >= 0) {
+  if (t.dataset.rwjump != null || t.dataset.rwadd != null && !kindOf(t.dataset.rwadd).group && !kindOf(t.dataset.rwadd).repeatable && rewardIndex(t.dataset.rwadd) >= 0) {
     const i = rewardIndex(t.dataset.rwjump != null ? t.dataset.rwjump : t.dataset.rwadd);
     closeModal();
     return i >= 0 ? jumpToReward(i) : undefined;

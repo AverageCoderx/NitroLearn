@@ -193,7 +193,7 @@ def test_reward_changes_wait_for_apply_which_refuses_a_problem(tmp_path: Path) -
     api = Api(ROOT, runs)
     state = api.rewards("r")
     built_in = [kind for kind in state["catalog"] if not kind.get("own")]
-    assert not state["pending"] and len(built_in) == 13 and "zero_sum.team_spirit" in state["help"]
+    assert not state["pending"] and len(built_in) == 14 and "zero_sum.team_spirit" in state["help"]
     entries = [{"from": e["from"], "view": e["view"]} for e in state["rewards"]]
     entries[0]["view"]["weight"] = "lots"
     entries[3]["view"]["weight"] = 75

@@ -147,7 +147,6 @@ fuzz_uu = 50
         ('[[rewards]]\nname = "touch_ball"\npaid_on_goal = 3\n', "rewards[0].paid_on_goal"),
         ('[[rewards]]\nname = "touch_ball"\nramp = { to = 2.0 }\n', "rewards[0].ramp"),
         ("[env.physics]\ngravity_z = -600\n", "env.physics"),
-        ('[selector]\nspecialists = ["a"]\n', "selector"),
         ("[actions]\n", "actions"),
         ('[[lessons]]\npackage = "x"\n', "lessons"),
     ],

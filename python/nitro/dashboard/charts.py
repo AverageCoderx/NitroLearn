@@ -52,6 +52,7 @@ DEFAULT_PINNED = (
     "fired_goal",
     "episode_seconds",
     "rating_mu",
+    "strength",
     "entropy",
     "explained_variance",
 )
@@ -982,6 +983,9 @@ def view(
     m = m or bots.metrics(folder)
     per_minute = decisions_a_minute(folder)
     charts = catalog(m.header, per_minute) if m.header else []
+    strength = _strength(folder, m, first)
+    if strength is not None:
+        charts.append(strength[0])
     by_id = {chart.id: chart for chart in charts}
     wanted = list(by_id) if ids is None else [i for i in ids if i in by_id]
     # The file as read (a resume writes it anew, maybe with as many rows), and what the points depend on.
@@ -990,8 +994,10 @@ def view(
     done = cached[1] if cached is not None and cached[0] == key else {}
     missing = [i for i in wanted if i not in done]
     if missing:
-        done = {**done, **_points(m, first, [by_id[i] for i in missing], points)}
+        done = {**done, **_points(m, first, [by_id[i] for i in missing if i != STRENGTH], points)}
         _SERIES[folder.metrics] = (key, done)
+    if strength is not None:
+        done = {**done, STRENGTH: strength[1]}
     return {
         "folders": folders(),
         "charts": [chart.view() for chart in charts],
@@ -1001,8 +1007,34 @@ def view(
     }
 
 
+STRENGTH = "strength"
+
+
+def _strength(folder: RunFolder, m: bots.Metrics, first: int) -> tuple[Chart, list[list[float]]] | None:
+    """The strength chart against the pinned anchors (`nitro.strength`), from its own file: the ratings of
+    the saves made from metrics row `first` on."""
+    from nitro.strength import FILE, read
+
+    ratings = read(folder.root / FILE)["ratings"]
+    if not ratings:
+        return None
+    since = m.value("agent_steps", first) if first and first < m.count else None
+    shown = [[r["agent_steps"], r["rating"]] for r in ratings if since is None or r["agent_steps"] >= since]
+    chart = Chart(
+        STRENGTH,
+        "selfplay",
+        "Strength against the pinned anchors",
+        "The bot's rating after each save against a few saves pinned as fixed points (strength.anchors): the "
+        "first anchor is 0, 400 more means about ten goals for every one against. nitro strength prints "
+        "each rating's 95% range. For your own reading of the run.",
+        nerd="strength.json",
+    )
+    return chart, shown
+
+
 def _points(m: bots.Metrics, first: int, charts: list[Chart], points: int) -> dict[str, list[list[float]]]:
     rows = m.rows_from(first)
+    m.prefetch(rows)  # every chart reads these rows: their numbers read once, in one pass
     steps = [m.value("agent_steps", row) for row in rows]
     kept = [(row, x) for row, x in zip(rows, steps, strict=True) if x is not None]
     if not kept:

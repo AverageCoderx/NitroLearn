@@ -167,7 +167,8 @@ def test_a_failed_rebuild_puts_the_set_aside_core_back(
 def test_the_dashboard_lists_and_builds_rewards_of_ones_own(tmp_path: Path) -> None:
     catalog = dashboard_rewards.catalog()
     own = [kind for kind in catalog if kind.get("own")]
-    assert len(catalog) - len(own) == 13 and "example_ball_height" in {kind["name"] for kind in own}
+    # 13 built in, and the reward builder
+    assert len(catalog) - len(own) == 14 and "example_ball_height" in {kind["name"] for kind in own}
     example = next(kind for kind in own if kind["name"] == "example_ball_height")
     assert (
         example["every_step"] and example["params"][0]["path"] == "power" and example["params"][0]["nullable"]
@@ -210,7 +211,7 @@ def test_every_library_file_opens_with_what_it_pays_and_its_credits() -> None:
         assert "Adapted from Necto" in text and "CC BY-NC-SA 4.0" in text, name
         assert "https://creativecommons.org/licenses/by-nc-sa/4.0/" in text, name
     apache = sorted(name for name, text in headers.items() if "rlgym-sim" in text)
-    assert apache == ["align_ball_goal.rs", "ball_y_coordinate.rs"]
+    assert apache == ["align_ball_goal.rs", "ball_y_coordinate.rs", "rlgym_common.rs"]
     for name in apache:
         assert "Apache License, Version 2.0" in headers[name] and "Modified:" in headers[name], name
     credited = {

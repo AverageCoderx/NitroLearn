@@ -50,6 +50,7 @@ function wizKinds() {
   });
   kinds.push({ id: "replays", size: 2, picture: fieldSVG(2, true), title: "Learn from my replays first", about: "Copies how the players in your replay files play, then trains from there." });
   kinds.push({ id: "gigalearn", size: 1, title: "From a GigaLearn bot", about: "Brings a bot you trained with GigaLearn over, so it keeps training here as the same bot." });
+  if (homeBots().length >= 2) kinds.push({ id: "multi", size: 1, title: "A multi-model bot from my bots", about: "Several of your trained bots in one: a small selector picks which of them drives, moment by moment." });
   if (homeBots().length) kinds.push({ id: "from-bot", size: 1, picture: plate(fromBot(), 54), title: "Start from one of my bots", about: "A new bot with another bot's settings, which can keep what that bot already learned." });
   if (w.kind === "file") { const src = sourceOf(w.source); kinds.push({ id: "file", size: (src && src.team_size) || 1, title: src ? src.title : "A settings file", about: src ? src.about : "" }); }
   return kinds;
@@ -483,6 +484,7 @@ async function wizardGo(target) {
   } finally { w.moving = false; }
 }
 function pickKind(id) {
+  if (id === "multi") { S.wiz = null; return openMultiModel(); }  // its own page (41_multimodel.js)
   const w = S.wiz;
   w.kind = id; w.formError = "";
   if (id !== "file") w.source = "";

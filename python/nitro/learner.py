@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import itertools
 import logging
 import math
@@ -88,6 +89,8 @@ class LearnStats:
     signals: dict[str, float] = field(default_factory=dict)
     # The critic's mean value of the fresh starts learned from, raw reward units; NaN without any.
     start_value: float = math.nan
+    # KL(starting policy || policy) on sampled states, with an anchor (`Learner.set_anchor`); NaN without.
+    start_kl: float = math.nan
 
     @property
     def losses_finite(self) -> bool:
@@ -424,6 +427,10 @@ class Learner:
         # While set, every pass trains the value network alone and the policy stays as it is: the value
         # warm-up after a copy of replays (pretrain.value_warmup_steps).
         self.policy_frozen = False
+        # A policy each update is pulled toward with weight `anchor_weight` (the KL from it), as a
+        # multi-model bot's models are toward the bots they started as; None = no pull.
+        self.anchor: ActorCritic | None = None
+        self.anchor_weight = 0.0
         # Whole learning steps as CUDA graphs on a graphics card (ppo.graphed_steps).
         self.graphed = GraphedSteps(self) if config.graphed_steps and device.type == "cuda" else None
         # The cards this bot learns on with run.cards: every statistic that steers learning, and every
@@ -437,6 +444,14 @@ class Learner:
         self._driven_rows: tuple[torch.Tensor, int, torch.Tensor] | None = None
         # Whether ppo.value_share's rows per step were logged (once, at the first joint update).
         self._value_share_said = False
+
+    def set_anchor(self, policy_weights: dict[str, torch.Tensor]) -> None:
+        """Pulls every later update toward the policy these weights give (`anchor_weight` x the KL from it);
+        weights not given (the value network) are this model's, unused by the pull."""
+        anchor = copy.deepcopy(self.model)
+        anchor.load_state_dict({**anchor.state_dict(), **policy_weights})
+        anchor.eval().requires_grad_(False)
+        self.anchor = anchor
 
     def _loss_scaler(self) -> torch.amp.GradScaler:
         return torch.amp.GradScaler(
@@ -520,13 +535,27 @@ class Learner:
         rollout: Rollout,
         rows: torch.Tensor | None = None,
         heads: HeadValues | None = None,
+        *,
+        samples_kept: torch.Tensor | None = None,
     ) -> LearnStats:
         """One PPO update on the rollout.
 
         `rows` (bool per agent) limits it to the agents the learner drives (self-play against frozen past
         versions, nitro.selfplay); every other agent's data is left out. `heads`: the extra value heads on
         the rollout before the update (`head_values_on`), which the goal critic and the twin critics need.
+        `samples_kept` ([T, N] bool): only these samples are learned from (a multi-model bot's model learns
+        from the steps it drove).
         """
+        if samples_kept is not None and (
+            self.graphed is not None
+            or self.cards is not None
+            or self.config.advantage_keep_rest < 1
+            or self.extra_heads
+        ):
+            raise ValueError(
+                "learning from chosen samples does not work with graphed steps, several cards, "
+                "ppo.advantage_keep_rest or extra value heads"
+            )
         if self.config.advantage_keep_rest < 1:
             refused = {
                 "several cards": self.cards is not None,
@@ -548,8 +577,9 @@ class Learner:
         obs, mask, actions, old_log_probs = (
             select(t) for t in (rollout.obs, rollout.mask, rollout.actions, rollout.log_probs)
         )
-        kept_targets = targets.reshape(-1)
-        kept_values = values.reshape(-1)
+        keep = None if samples_kept is None else select(samples_kept).reshape(-1).nonzero().squeeze(1)
+        kept_targets = targets.reshape(-1) if keep is None else targets.reshape(-1)[keep]
+        kept_values = values.reshape(-1) if keep is None else values.reshape(-1)[keep]
         explained_variance = 1 - (kept_targets - kept_values).var() / kept_targets.var().clamp_min(1e-8)
         self.value_norm.update(kept_targets, self.cards)
         signals = self._signals(rollout, rewards, select, advantages, values, heads)
@@ -567,7 +597,18 @@ class Learner:
         mask = mask.reshape(samples, -1)
         actions = actions.reshape(samples)
         old_log_probs = old_log_probs.reshape(samples)
-        starts = self._start_values(select(rollout.episode_step), kept_values)
+        episode_step = select(rollout.episode_step)
+        if keep is not None:
+            obs, mask, actions, old_log_probs = (t[keep] for t in (obs, mask, actions, old_log_probs))
+            episode_step = episode_step.reshape(-1)[keep]
+            samples = keep.numel()
+            minibatch = samples // self.config.minibatches
+            if minibatch < 2:
+                raise ValueError(
+                    f"{self.config.minibatches} minibatches need at least twice that many chosen samples, "
+                    f"got {samples}"
+                )
+        starts = self._start_values(episode_step, kept_values)
         self.overlapped = self.cards is not None and self.cards.overlap
         # The probes look at collected samples only; they come first, so their indices stay valid below.
         probe = torch.arange(0, samples, max(1, samples // _PROBE_STATES), device=self.device)[:_PROBE_STATES]
@@ -582,7 +623,7 @@ class Learner:
         )
 
         def flat_rows(t: torch.Tensor) -> torch.Tensor:
-            return t.reshape(-1)
+            return t.reshape(-1) if keep is None else t.reshape(-1)[keep]
 
         flat_advantages = flat_rows(advantages)
         flat_targets = flat_rows(self.value_norm.normalize(targets))
@@ -674,6 +715,11 @@ class Learner:
         weight_sizes = self._group_norms(after)
         probe_after = self._log_probs(probe_obs, probe_mask)
         policy_change = masked_kl(probe_before, probe_after, probe_mask).mean()
+        start_kl = math.nan
+        if self.anchor is not None:
+            with torch.no_grad(), torch.autocast(self.device.type, dtype=torch.float16, enabled=self.fp16):
+                start = masked_log_probs(self.anchor.logits(probe_obs).float(), probe_mask)
+            start_kl = float(masked_kl(start, probe_after, probe_mask).mean())
         if self.cards is not None:  # every card reports the same
             policy_change = self.cards.mean(policy_change)
         # Low-variance estimate of KL(collecting policy || the learner's copy of it) on the actions taken;
@@ -761,6 +807,7 @@ class Learner:
             growths=dict(zip(self.scale_free, got["growths"], strict=True)) if "growths" in got else {},
             signals=measured_signals,
             start_value=start_sum / start_count * one("reward_scale") if start_count > 0 else math.nan,
+            start_kl=start_kl,
         )
 
     @property
@@ -1288,6 +1335,14 @@ class Learner:
             loss = policy.loss - bonus * entropy + value_loss
             for head_loss in pulls:
                 loss = loss + head_loss
+            if self.anchor is not None and self.anchor_weight > 0:
+                with (
+                    torch.no_grad(),
+                    torch.autocast(self.device.type, dtype=torch.float16, enabled=self.fp16),
+                ):
+                    anchor_logits = self.anchor.logits(obs)
+                start = masked_log_probs(anchor_logits.float(), mask)
+                loss = loss + self.anchor_weight * weighted_mean(masked_kl(start, log_probs, mask), samples)
             measured = torch.stack(
                 [
                     policy.loss.detach(),

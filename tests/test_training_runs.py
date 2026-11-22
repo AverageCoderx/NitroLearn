@@ -220,6 +220,25 @@ def test_each_rewards_pay_is_logged_and_a_switched_off_reward_is_not(tmp_path: P
     assert {f"paid_{label}" for label in labels} | {f"paid_abs_{label}" for label in labels} <= set(header)
 
 
+def test_a_built_reward_trains_like_the_hand_written_one_it_copies(tmp_path: Path) -> None:
+    """A reward built from blocks is paid and logged under its title, and pays what the built-in reward it
+    copies pays on the same games."""
+    text = SETTINGS + (
+        '[[rewards]]\nname = "built"\ntitle = "chase"\nweight = 3\n'
+        'terms = [{ measure = "speed_toward_ball" }]\n'
+        '[[rewards]]\nname = "velocity_player_to_ball"\nweight = 3\n'
+    )
+    file = tmp_path / "settings.toml"
+    file.write_text(text, encoding="utf-8")
+    parsed = parse_toml(text, NitroConfig, file=file, base_dir=tmp_path)
+    settings = dataclasses.replace(parsed, paths=dataclasses.replace(parsed.paths, collision_meshes=MESHES))
+    training = TrainingRun(settings, RunFolder.create(tmp_path, "built", file))
+    row = training.iteration()
+    training.metrics.close()
+    assert row["raw_chase"] != 0
+    assert row["paid_chase"] == pytest.approx(row["paid_velocity_player_to_ball"], rel=1e-6)
+
+
 def test_a_reward_of_ones_own_trains_like_a_built_in_one(tmp_path: Path) -> None:
     """The example reward compiled in from Rust is paid and logged like any other."""
     text = SETTINGS + (

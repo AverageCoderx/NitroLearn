@@ -6,8 +6,8 @@ use rocketsim::{
 };
 
 use crate::snapshot::{
-    BALL_FLOOR_Z, Body, CarDetail, CarSnapshot, Controls, GameSnapshot, MAX_CARS, NUM_BOOST_PADS,
-    PadSnapshot, StepEvents, Team,
+    BALL_FLOOR_Z, Body, CarDetail, CarMoves, CarSnapshot, Controls, GameSnapshot, MAX_CARS,
+    NUM_BOOST_PADS, PadSnapshot, StepEvents, Team,
 };
 
 /// Floor contact: an arena surface facing up (normal z above this) and low down. The curve from the
@@ -343,6 +343,23 @@ impl Sim {
         self.arena.set_car_state(car, core);
         self.arena
             .edit_car_state_full(car, |s| s.set_contact_flags(on_ground, [false; 4]));
+    }
+
+    /// Gives car `car` the jump and flip state of `moves` (after `place`, which starts it fresh).
+    pub fn set_moves(&mut self, car: usize, moves: &CarMoves) {
+        self.arena.edit_car_state_full(car, |s| {
+            s.has_jumped = moves.has_jumped;
+            s.has_double_jumped = moves.has_double_jumped;
+            s.has_flipped = moves.has_flipped;
+            s.is_jumping = moves.is_jumping;
+            s.is_flipping = moves.is_flipping;
+            s.jump_ticks = (moves.jump_time * 120.0).round().max(0.0) as u32;
+            s.flip_time = moves.flip_time;
+            s.flip_rel_torque = moves.flip_rel_torque;
+            s.air_time = moves.air_time;
+            s.air_time_since_jump = moves.air_time_since_jump;
+        });
+        self.arena.reset_car_transient_contacts(car);
     }
 
     // RocketSim's calls.

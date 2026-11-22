@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 # How often `nitro watch --follow` looks for a newer save.
 _FOLLOW_SECONDS = 20.0
+DEFAULT_PRACTICE_WEIGHT = 0.2  # nitro.practice.DEFAULT_WEIGHT (not imported here: it needs NumPy)
 
 
 def _settings(file: Path | None) -> NitroConfig:
@@ -151,8 +152,9 @@ def _check_settings(args: argparse.Namespace) -> int:
         print(ConfigError(args.settings, [problem]), file=sys.stderr)
     else:
         print(f"{args.settings}: no problems found.")
-    print(_observation_size(config))
-    print(_network_size(config))
+    if not config.selector.specialists:  # a selector's network reads more than the game's observation
+        print(_observation_size(config))
+        print(_network_size(config))
     for note in config.advice():
         print(f"Note: {note}")
     return 1 if meshes.status is Status.FAIL else 0
@@ -259,7 +261,26 @@ def _train(args: argparse.Namespace) -> int:
         f"The run keeps its own copy of the settings: {folder.settings}. To change a setting later, stop "
         "the run, edit that copy, and resume."
     )
+    if (limit := _keeper_limit(folder)) is not None:
+        from nitro import keeper
+
+        return keeper.keep(folder, args.steps, args.then_train, limit)
     return _run(config, folder, None, args.steps, args.then_train)
+
+
+def _keeper_limit(folder: RunFolder) -> int | None:
+    """run.auto_restart_limit when this start should keep the run training through crashes (run.auto_restart)
+    and is not itself the trainer a keeper started; None otherwise (also for settings with mistakes: the
+    trainer then says what is wrong)."""
+    from nitro import keeper
+
+    if keeper.kept():
+        return None
+    try:
+        run = load_config(folder.settings).run
+    except (ConfigError, OSError):
+        return None
+    return run.auto_restart_limit if run.auto_restart else None
 
 
 def _check_source(config: NitroConfig, runs: Path) -> str | None:
@@ -346,6 +367,49 @@ def _convert_replays(args: argparse.Namespace) -> int:
                 "`nitro convert-replays --reconvert` converts them again with it (this takes hours for a big "
                 "store)."
             )
+    return 0
+
+
+def _get_replays(args: argparse.Namespace) -> int:
+    from nitro import replay_dataset, replays
+
+    url = args.source
+    if url and "://" not in url:
+        url = Path(url).resolve().as_uri()  # a manifest on this computer (a packed copy, before uploading)
+    try:
+        if args.list:
+            manifest = replay_dataset.fetch_manifest(url or replay_dataset.MANIFEST_URL)
+            print(manifest.credit)
+            for size, row in sorted(manifest.available().items()):
+                print(
+                    f"{size}: {row['replays']:,} replays in {row['chunks']} chunks, "
+                    f"{row['bytes'] / 2**30:.1f} GB"
+                )
+            return 0
+        if args.convert and not (args.meshes / "soccar").is_dir():
+            raise replays.ReplayError(
+                f"the arena meshes were not found in {args.meshes} (run nitro fetch-meshes)"
+            )
+        replay_dataset.get_replays(
+            args.size, args.count, url or replay_dataset.MANIFEST_URL, convert=args.convert
+        )
+        if not args.convert:
+            return 0
+        replays.lower_priority()
+        done = replays.convert_to_store(
+            [replay_dataset.size_folder(args.size)], args.meshes, 0, args.workers, fit_timing=args.fit_timing
+        )
+    except replay_dataset.NotPublished as err:
+        print(err, file=sys.stderr)
+        return 1
+    except (replay_dataset.DatasetError, replays.ReplayError) as err:
+        print(f"Cannot get replays: {err}", file=sys.stderr)
+        return 1
+    print(
+        f"Converted {done.kept:,} into the store ({sum(done.failed.values()):,} could not be). To copy them, "
+        f"add the folder {replay_dataset.size_folder(args.size)} to the bot's replay folders "
+        "(pretrain.replays)."
+    )
     return 0
 
 
@@ -441,6 +505,10 @@ def _resume(args: argparse.Namespace) -> int:
     if not folder.info.is_file():
         print(f"There is no run called '{args.name}' in {args.runs}.", file=sys.stderr)
         return 1
+    if (limit := _keeper_limit(folder)) is not None:
+        from nitro import keeper
+
+        return keeper.keep(folder, args.steps, args.then_train, limit)
     so_far = folder.copy_so_far()
     state = None if so_far is not None else folder.load_latest()  # a copy so far: the copy carries on
     if state is not None and "pretrained" in state:
@@ -473,6 +541,12 @@ def _resume(args: argparse.Namespace) -> int:
     return _run(config, folder, state, args.steps, args.then_train, applied)
 
 
+def _carry_on(args: argparse.Namespace) -> int:
+    from nitro import keeper
+
+    return keeper.carry_on(args.runs)
+
+
 def _log_to(file: Path) -> None:
     """Everything goes to the run's train.log; warnings and errors also to the console."""
     logger = logging.getLogger("nitro")
@@ -500,6 +574,7 @@ def _run(
     """Trains `folder`, noting in running.json that it runs and taking a stop.request file (the dashboard's
     Stop and Apply) as Ctrl+C once: save, then stop. A run that copies replays first ([pretrain]) stops
     once the copy is saved, unless `then_train`. `applied`: started again after the dashboard's Apply."""
+    from nitro import keeper
     from nitro.dashboard.bots import APPLY_RESTART, RUNNING, STOP_REQUEST, claim
     from nitro.dashboard.jobs import AFTER_PID, JOB_TOKEN, spawn
 
@@ -519,6 +594,18 @@ def _run(
             file=sys.stderr,
         )
         return 1
+    if keeper.kept() and request.is_file():
+        # The dashboard's Stop while the keeper started this trainer (the keeper cleared older requests).
+        try:
+            what = request.read_text(encoding="utf-8").strip()
+        except OSError:
+            what = "stop"
+        if what != "apply":
+            keeper.note_user_stop(folder)
+            request.unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+            print("Stop asked for from the dashboard: not starting.", flush=True)
+            return 0
     request.unlink(missing_ok=True)
     finished = threading.Event()
     then = {"after": "stop"}
@@ -533,6 +620,8 @@ def _run(
             except OSError:
                 what = "stop"
             request.unlink(missing_ok=True)
+            if what != "apply":
+                keeper.note_user_stop(folder)
             if not asked:  # once only: a second Ctrl+C would quit without saving
                 asked = True
                 then["after"] = "apply" if what == "apply" else "stop"
@@ -554,6 +643,11 @@ def _run(
         finished.set()
         marker.unlink(missing_ok=True)
         request.unlink(missing_ok=True)
+    if then["after"] == "apply" and keeper.kept():
+        if code == 0:
+            print("Starting again with the changes.", flush=True)
+            return keeper.RESTART_CODE  # its keeper starts it again (run.auto_restart)
+        return code
     if then["after"] == "apply":
         # Here, not in the dashboard: closing its window after Apply must not leave the bot stopped. The new
         # trainer waits for this process to end first, so the graphics card's memory is free.
@@ -610,6 +704,7 @@ def _run_until_stopped(
     from nitro.exploiter_folders import ExploiterError
     from nitro.health import TrainingProblem
     from nitro.runs import resume_command
+    from nitro.selector import SelectorError
     from nitro.tracking import TrackingError
     from nitro.training import TrainingRun
     from nitro.transfer import TransferError
@@ -665,7 +760,7 @@ def _run_until_stopped(
     except TrackingError as err:
         print(f"\nCannot start: {err}", file=sys.stderr)
         return 1
-    except (TransferError, pretrain.PretrainError, ExploiterError) as err:
+    except (TransferError, pretrain.PretrainError, ExploiterError, SelectorError) as err:
         print(f"\nCannot start: {err}", file=sys.stderr)
         if not folder.complete_checkpoints():
             print(_before_first_save(folder), file=sys.stderr)
@@ -815,6 +910,91 @@ def _copy_save(args: argparse.Namespace) -> int:
     return 0
 
 
+def _score_replay(args: argparse.Namespace) -> int:
+    from nitro import replay_score, viewer
+    from nitro.runs import RunFolder
+    from nitro.viewer import recording as recordings
+
+    folder = RunFolder(args.runs / args.name)
+    if not folder.info.is_file():
+        print(f"There is no run called '{args.name}' in {args.runs}.", file=sys.stderr)
+        return 1
+    try:
+        from nitro import reward_check
+
+        config = folder.load_settings(text=reward_check.trial_settings(folder, args.rewards))
+        data = replay_score.score(config, args.game, args.seconds, args.fps)
+    except (replay_score.ScoreError, reward_check.CheckError, ConfigError, OSError) as err:
+        print(err, file=sys.stderr)
+        return 1
+    data["title"] = f"{args.game.name} scored with {args.name}'s rewards"
+    data["subtitle"] = (
+        f"A recorded game's players, not the bot; the chart is what {args.name}'s rewards would have paid "
+        "them."
+    )
+    shared = folder.root.parent / ".viewer"
+    arena = viewer.keep_arena_script(shared, config.paths.collision_meshes)
+    out = folder.root / "replay_score.html"
+    _replace_text(out, viewer.page(data, arena_src=f"../{shared.name}/{arena.name}" if arena else None))
+    recordings.save(folder.root / f"replay_score{recordings.SUFFIX}", data)
+    totals = replay_score.totals(data)
+    print(f"What {args.name}'s rewards paid each player over the game (Blue first):")
+    for label, paid in totals.items():
+        print(f"  {label:<28}" + "".join(f"{v:>10.1f}" for v in paid))
+    print(f"Wrote {out}")
+    if not args.no_open:
+        webbrowser.open(out.resolve().as_uri())
+    return 0
+
+
+def _practice(args: argparse.Namespace) -> int:
+    from nitro import practice
+    from nitro.runs import RunFolder
+    from nitro.viewer import recording as recordings
+
+    folder = RunFolder(args.runs / args.name)
+    if not folder.info.is_file():
+        print(f"There is no run called '{args.name}' in {args.runs}.", file=sys.stderr)
+        return 1
+    try:
+        if args.file is not None:
+            file = args.file
+            # The match viewer saves the file as a download and shows its bare name in the command.
+            downloaded = Path.home() / "Downloads" / file.name
+            if not file.exists() and file.parent == Path() and downloaded.is_file():
+                file = downloaded
+            moments = practice.read_moments(file.read_text(encoding="utf-8-sig"))
+        elif args.at is not None:
+            source = args.recording or folder.root / f"watch{recordings.SUFFIX}"
+            if not source.is_file():
+                print(
+                    f"No recording at {source}: record one with  nitro watch {args.name} --moments",
+                    file=sys.stderr,
+                )
+                return 1
+            moment = practice.from_recording(recordings.load(source), args.at, args.car)
+            moments = [(args.group, moment)]
+        elif args.weight is not None:
+            moments = []
+        else:
+            print("Give a moments file, or --at SECONDS (from a recording), or --weight.", file=sys.stderr)
+            return 1
+        csv_file = practice.add(folder, moments, args.weight)
+    except (practice.PracticeError, ValueError, OSError) as err:
+        print(f"Nothing was added: {err}", file=sys.stderr)
+        return 1
+    except ConfigError as err:
+        print(f"Nothing was added: the settings would not load afterwards.\n{err}", file=sys.stderr)
+        return 1
+    total = practice.count(folder)
+    print(
+        f"'{args.name}' has {total} practice start{'s' if total != 1 else ''} in {csv_file}"
+        f"{f' ({len(moments)} added)' if moments else ''}. They are used from the run's next start "
+        f"(nitro resume {args.name})."
+    )
+    return 0
+
+
 def _reward_check(args: argparse.Namespace) -> int:
     from nitro import reward_check
     from nitro.runs import RunFolder
@@ -916,6 +1096,9 @@ def _watch(args: argparse.Namespace) -> int:
         print(f"{problem}.", file=sys.stderr)
         return 1
     follow = args.follow and args.at is None
+    if (args.rewards or args.moments) and (args.live or args.feed):
+        print("--rewards and --moments are for a recorded game; they do not go with --live.", file=sys.stderr)
+        return 1
     from nitro.watch import WatchError
 
     try:
@@ -1097,7 +1280,15 @@ def _write_watch(folder: RunFolder, state: dict[str, Any], args: argparse.Namesp
     from nitro.watch import page, record
 
     config = _watch_settings(folder, state, args)
-    recording = record(config, state, args.seconds, args.seed, args.fps)
+    recording = record(
+        config,
+        state,
+        args.seconds,
+        args.seed,
+        args.fps,
+        rewards=getattr(args, "rewards", False),
+        moments=getattr(args, "moments", False),
+    )
     title = f"{folder.root.name} at {state['agent_steps']:,} agent steps"
     size = config.env.team_size
     subtitle = (
@@ -1109,7 +1300,9 @@ def _write_watch(folder: RunFolder, state: dict[str, Any], args: argparse.Namesp
     arena = viewer.keep_arena_script(shared, config.paths.collision_meshes)
     arena_src = f"../{shared.name}/{arena.name}" if arena is not None else None
     out = folder.root / "watch.html"
-    _replace_text(out, page(recording, title, subtitle, follow=follow, arena_src=arena_src))
+    _replace_text(
+        out, page(recording, title, subtitle, follow=follow, arena_src=arena_src, run=folder.root.name)
+    )
     recordings.save(folder.root / f"watch{recordings.SUFFIX}", recording.data(title, subtitle))
     return out
 
@@ -1212,7 +1405,9 @@ def _skills(args: argparse.Namespace) -> int:
     from nitro.eval import EvalError, load_side
     from nitro.evaluate import check_pick, pick_rule
     from nitro.runs import RunFolder
-    from nitro.skills import DEFAULT_TASKS, append_csv, run_battery, skills_file
+    from nitro.selector import not_yet
+    from nitro.skills import DEFAULT_TASKS, run_battery, save_results, skills_file
+    from nitro.weakness import REPORT, describe
 
     folder = RunFolder(args.runs / args.name)
     try:
@@ -1228,19 +1423,79 @@ def _skills(args: argparse.Namespace) -> int:
     except EvalError as err:
         print(err, file=sys.stderr)
         return 1
+    if why := not_yet(side.config, "scored on skills"):
+        print(f"'{args.name}' cannot be scored on skills: {why}.", file=sys.stderr)
+        return 1
     tasks = tuple(args.tasks) if args.tasks else DEFAULT_TASKS
     print(f"Scoring {side.label} on {len(tasks)} skills, {args.games} situations each...")
     if args.temperature != 1:
         print(f"Picking actions: {pick_rule(args.temperature)}.")
-    results = run_battery(side, tasks, args.games, args.seed, args.temperature)
+    skipped: list[str] = []
+    results = run_battery(side, tasks, args.games, args.seed, args.temperature, skipped)
     for result in results:
         print(result.line())
+    for line in skipped:
+        print(line)
+    save_results(folder.root, side.agent_steps, results, args.seed, args.games, args.temperature)
+    if args.weak:
+        print("Where it does worst (groups by how the situation started, worst first):")
+        for result in results:
+            if result.weak is not None:
+                for line in describe(result.weak):
+                    print("  " + line)
     saved = folder.root / skills_file(args.temperature)
-    append_csv(saved, side.agent_steps, results, args.seed)
+    also = f" and {folder.root / REPORT}" if args.temperature == 1 else ""
     print(
-        f"Saved to {saved}. The bar is what a fresh bot trained on that one skill alone "
-        "reaches; it says whether the skill is there, not how good the bot is."
+        f"Saved to {saved}{also}. The bar is what a fresh bot trained on that one skill alone reaches "
+        "(for the drills kickoff_duel, fifty_fifty and wall_read: what a scripted player reaches in the same "
+        "situations); it says whether the skill is there, not how good the bot is."
     )
+    return 0
+
+
+def _gauntlet(args: argparse.Namespace) -> int:
+    from nitro.eval import EvalError, load_side
+    from nitro.gauntlet import DEFAULT_OPPONENTS, append_report, run_gauntlet
+    from nitro.gauntlet_card import REPORT, verdict
+    from nitro.runs import RunFolder
+    from nitro.selector import not_yet
+
+    folder = RunFolder(args.runs / args.name)
+    try:
+        side = load_side(folder, args.at)
+    except EvalError as err:
+        print(err, file=sys.stderr)
+        return 1
+    if why := not_yet(side.config, "played in the gauntlet"):
+        print(f"'{args.name}' cannot play the gauntlet: {why}.", file=sys.stderr)
+        return 1
+    opponents = tuple(args.opponents) if args.opponents else DEFAULT_OPPONENTS
+    print(f"{side.label} against {', '.join(opponents)}, {args.games} points each...")
+    try:
+        lines = run_gauntlet(side, opponents, args.games, args.seed)
+    except EvalError as err:
+        print(err, file=sys.stderr)
+        return 1
+    append_report(folder.root / REPORT, side.agent_steps, lines, args.seed, args.games)
+    for line in lines:
+        print("  " + verdict(line.entry()))
+    print(
+        f"Saved to {folder.root / REPORT}. The share is of the goals scored, with a 95% interval; points "
+        "start at kickoff. For your own reading: the scripted players are a fixed yardstick, not proof that "
+        "one setting beats another."
+    )
+    return 0
+
+
+def _strength(args: argparse.Namespace) -> int:
+    from nitro.runs import RunFolder
+    from nitro.strength import FILE, lines, read
+
+    folder = RunFolder(args.runs / args.name)
+    if not folder.info.is_file():
+        print(f"There is no run called '{args.name}' in {args.runs}.", file=sys.stderr)
+        return 1
+    print("\n".join(lines(read(folder.root / FILE))))
     return 0
 
 
@@ -1270,6 +1525,25 @@ def _import_gigalearn(args: argparse.Namespace) -> int:
             keep_action_delay=args.keep_action_delay,
         )
     except (GigaLearnImportError, FileNotFoundError) as err:
+        print(f"Cannot import: {err}", file=sys.stderr)
+        return 1
+    print("\n".join(report.lines()))
+    return 0 if report.run is not None else 1
+
+
+def _import_rlgym(args: argparse.Namespace) -> int:
+    from nitro.rlgym_import import RlgymImportError, import_bot
+
+    try:
+        report = import_bot(
+            args.checkpoint,
+            args.source,
+            args.into,
+            args.runs,
+            meshes=args.meshes,
+            keep_action_delay=args.keep_action_delay,
+        )
+    except (RlgymImportError, FileNotFoundError, SyntaxError) as err:
         print(f"Cannot import: {err}", file=sys.stderr)
         return 1
     print("\n".join(report.lines()))
@@ -1573,6 +1847,14 @@ def build_parser() -> argparse.ArgumentParser:
             "is saved",
         )
 
+    carry_on = commands.add_parser(
+        "carry-on",
+        parents=[runs],
+        help="start again every bot that was training with run.auto_restart when the computer went off (its "
+        "start-up entry runs this)",
+    )
+    carry_on.set_defaults(run=_carry_on)
+
     copy_save = commands.add_parser(
         "copy-save",
         parents=[runs],
@@ -1602,6 +1884,70 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", type=Path, help="where to write the result (default: in the run's reward_checks folder)"
     )
     trial.set_defaults(run=_reward_check)
+
+    scoring = commands.add_parser(
+        "score-replay",
+        help="score a real game with a bot's rewards and watch it with the reward chart",
+        description="What would your rewards pay a pro? Plays back a recorded game (a replay converted with "
+        "nitro convert-replays, the .replay file itself once converted, or an .rlpr recording) and pays its "
+        "players with the bot's rewards, step by step, as training would pay the bot. Writes "
+        "replay_score.html in the bot's folder: the game in the match viewer with the reward chart, the "
+        "biggest moments a click away. A gap in the recording that ends at a kickoff with the ball near a "
+        "net counts as a goal there.",
+    )
+    scoring.add_argument("name", help="the run whose rewards pay (its folder in --runs)")
+    scoring.add_argument(
+        "game", type=Path, help="the game: a .replay, a converted replay or an .rlpr recording"
+    )
+    scoring.add_argument(
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+    )
+    scoring.add_argument(
+        "--seconds", type=float, default=300.0, help="at most this much of the game (default: 300)"
+    )
+    scoring.add_argument("--fps", type=int, default=30, help="pictures per second of game time (default: 30)")
+    scoring.add_argument("--no-open", action="store_true", help="don't open the page in the browser")
+    scoring.add_argument(
+        "--rewards",
+        type=Path,
+        metavar="FILE",
+        help="score with the [[rewards]] of this reward set or settings file instead of the run's own (the "
+        "dashboard's Test this reward on a recorded game)",
+    )
+    scoring.set_defaults(run=_score_replay)
+
+    practice = commands.add_parser(
+        "practice",
+        help="add moments of a watched game to a bot's training starts (practice starts)",
+        description="Adds moments (one car and the ball, exactly as they were) to the run's practice starts "
+        "(practice_starts.csv in its folder) and gives its settings one snapshots start for them. From a "
+        "moments file the match viewer saved (Practice this moment, or the start editor), or from a "
+        "recording made with nitro watch --moments. Used from the run's next start.",
+    )
+    practice.add_argument("name", help="the run's name (its folder in --runs)")
+    practice.add_argument("file", type=Path, nargs="?", help="a moments file the match viewer saved (.csv)")
+    practice.add_argument(
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+    )
+    practice.add_argument(
+        "--at", type=float, metavar="SECONDS", help="the moment this many seconds into the recording"
+    )
+    practice.add_argument(
+        "--car", type=int, default=0, help="with --at: which car's moment (0 = the first, default 0)"
+    )
+    practice.add_argument(
+        "--recording",
+        type=Path,
+        help="with --at: the recording (default: the run's last one, watch.nlrec, made with --moments)",
+    )
+    practice.add_argument("--group", default="practice", help="a label for the moment (default: practice)")
+    practice.add_argument(
+        "--weight",
+        type=float,
+        help="how often games start from the practice starts, compared with the other starts' weights "
+        f"(default {DEFAULT_PRACTICE_WEIGHT:g} when the start is added; given alone, changes it)",
+    )
+    practice.set_defaults(run=_practice)
 
     convert_command = commands.add_parser(
         "convert-replays",
@@ -1636,6 +1982,48 @@ def build_parser() -> argparse.ArgumentParser:
         "on a fast PC converting 10 at once, so about 12 hours for 40,000 replays",
     )
     convert_command.set_defaults(run=_convert_replays)
+
+    fetch_replays = commands.add_parser(
+        "get-replays",
+        help="download high-level replays for replay copying (no ballchasing key needed) and convert them",
+        description="Downloads Grand Champion and above games from Rolv Arild's High-Level Rocket League "
+        "Replay Dataset (best games first; only what is asked for; a stopped download carries on where "
+        "it stopped) into replays/dataset/<size>, then converts them into the store like convert-replays.",
+    )
+    fetch_replays.add_argument(
+        "--size", choices=["1v1", "2v2", "3v3"], default="1v1", help="game size (default 1v1)"
+    )
+    fetch_replays.add_argument(
+        "--count",
+        type=int,
+        default=1000,
+        help="new replays wanted, best first (default 1000; 0 = all published)",
+    )
+    fetch_replays.add_argument(
+        "--convert",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="convert them into the store after downloading (default on; --no-convert only downloads)",
+    )
+    fetch_replays.add_argument(
+        "--fit-timing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="convert with the more accurate timing, as convert-replays does (on by default)",
+    )
+    fetch_replays.add_argument(
+        "--workers", type=int, default=0, help="replays converted at once (default: every thread of this PC)"
+    )
+    fetch_replays.add_argument(
+        "--meshes", type=Path, default=Path("collision_meshes"), help="the arena meshes folder"
+    )
+    fetch_replays.add_argument("--list", action="store_true", help="only show what can be downloaded")
+    fetch_replays.add_argument(
+        "--from",
+        dest="source",
+        help="another replay list (a manifest.json address or file) instead of the usual",
+    )
+    fetch_replays.set_defaults(run=_get_replays)
 
     pre = commands.add_parser(
         "pretrain", parents=[runs], help="teach a bot to copy recorded games (behaviour cloning)"
@@ -1737,6 +2125,18 @@ def build_parser() -> argparse.ArgumentParser:
         "any port); closing the window or Ctrl+C stops it; --seconds does not apply; with --follow each new "
         "save takes over",
     )
+    watch.add_argument(
+        "--rewards",
+        action="store_true",
+        help="keep what each reward paid each car in every step: the page shows it as a chart under the "
+        "game, in step with it (a recorded game only)",
+    )
+    watch.add_argument(
+        "--moments",
+        action="store_true",
+        help="keep each car's exact state at every decision, so a moment can be added to the bot's training "
+        "starts from the page (Practice this moment) or with nitro practice (a recorded game only)",
+    )
     # For programs that show the live game themselves: the feed's lines on standard output, no window.
     watch.add_argument("--feed", action="store_true", help=argparse.SUPPRESS)
     watch.set_defaults(run=_watch)
@@ -1807,10 +2207,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     skills = commands.add_parser(
         "skills",
-        help="score a run's save on the practice skills (ball touch, recovery, boost, shot, save, aerial)",
+        help="score a run's save on the practice skills (ball touch, recovery, boost, shot, save, aerial, "
+        "kickoff, 50/50, wall read)",
         description="Plays a run's save through each practice task's held-out situations with an idle "
-        "opponent and scores it by the task's own measure against the task's bar. Appends the rows to "
-        "runs/<name>/skills.csv.",
+        "opponent (a scripted one in the kickoff and 50/50 drills) and scores it by the task's own measure "
+        "against the task's bar. Appends the rows to runs/<name>/skills.csv and the weakness map to "
+        "runs/<name>/weakness.json.",
     )
     skills.add_argument("name", help="the run's name (its folder in --runs)")
     skills.add_argument(
@@ -1822,6 +2224,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     skills.add_argument("--tasks", nargs="+", choices=skill_tasks, help="which skills (default: all)")
     skills.add_argument("--games", type=int, default=512, help="situations per skill (default: 512)")
+    skills.add_argument(
+        "--weak",
+        action="store_true",
+        help="also print where the bot does worst: the kinds of start (ball area, height, car speed, "
+        "heading, distance) where it scores below its overall result",
+    )
     skills.add_argument(
         "--seed", type=int, default=1_000_001, help="which held-out situations (default: 1000001)"
     )
@@ -1835,6 +2243,42 @@ def build_parser() -> argparse.ArgumentParser:
         "(skills_likeliest.csv for 0)",
     )
     skills.set_defaults(run=_skills)
+
+    gauntlet = commands.add_parser(
+        "gauntlet",
+        help="a report card: a run's save against fixed scripted opponents (chaser, goalie, kickoff, aerial)",
+        description="Plays a run's save (Blue) from kickoffs against scripted players that never learn "
+        "(a ball-chaser, a goalie that shadows its goal, a kickoff rusher, an aerial-minded chaser), each "
+        "driving every Orange car, and reports its share of the goals against each with a 95% interval. "
+        "Appends the card to runs/<name>/gauntlet.json, which the dashboard shows. The same seed plays the "
+        "same games.",
+    )
+    gauntlet.add_argument("name", help="the run's name (its folder in --runs)")
+    gauntlet.add_argument(
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+    )
+    gauntlet.add_argument("--at", type=int, help="play the save at this many agent steps (default: newest)")
+    gauntlet.add_argument(
+        "--opponents",
+        nargs="+",
+        choices=("idle", "chaser", "goalie", "kickoff", "aerial"),
+        help="which scripted opponents (default: chaser goalie kickoff aerial)",
+    )
+    gauntlet.add_argument("--games", type=int, default=200, help="points against each (default: 200)")
+    gauntlet.add_argument("--seed", type=int, default=1_000_001, help="which games (default: 1000001)")
+    gauntlet.set_defaults(run=_gauntlet)
+
+    strength = commands.add_parser(
+        "strength",
+        help="a run's strength ratings against its pinned anchor saves (strength.anchors)",
+        description="Prints the anchors and the rating of every save rated against them, as the "
+        "Overview charts them.",
+    )
+    strength.add_argument("name", help="the run's name (its folder in --runs)")
+    strength.add_argument(
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+    )
+    strength.set_defaults(run=_strength)
 
     surgery = commands.add_parser(
         "surgery",
@@ -1889,6 +2333,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--runs", type=Path, default=Path("runs"), help="folder that holds the bots (default: runs)"
     )
     importer.set_defaults(run=_import_gigalearn)
+
+    rlgym = commands.add_parser(
+        "import-rlgym",
+        help="bring an RLGym-PPO or rlgym-learn bot over to keep training the same network here",
+        description="Makes a NitroLearn bot from an RLGym-PPO or rlgym-learn save and its project's Python: "
+        "the same networks, observation (DefaultObs, AdvancedObs, AdvancedObsPadder), LookupAction actions, "
+        "rewards and learning settings, so it trains on where it was. Your own rewards are "
+        "listed to port by hand; what cannot be brought over stops the import before anything is written. "
+        "The imported policy is checked against RLGym's own observation code and the original networks on "
+        "real game states first. Continue with `nitro resume <name>`.",
+    )
+    rlgym.add_argument(
+        "checkpoint", type=Path, help="the save: the bot's checkpoints folder or one save in it"
+    )
+    rlgym.add_argument(
+        "--source",
+        type=Path,
+        required=True,
+        help="your bot's project folder (or the .py that makes the Learner)",
+    )
+    rlgym.add_argument("--into", required=True, help="name of the new NitroLearn bot")
+    rlgym.add_argument(
+        "--keep-action-delay",
+        action="store_true",
+        help="keep RLGym's timing (the game read one tick into each step) instead of the lowest delay",
+    )
+    rlgym.add_argument("--meshes", type=Path, help="the collision meshes folder (default: NitroLearn's)")
+    rlgym.add_argument(
+        "--runs", type=Path, default=Path("runs"), help="folder that holds the runs (default: runs)"
+    )
+    rlgym.set_defaults(run=_import_rlgym)
 
     export = commands.add_parser("export", help="turn a run's newest save into an RLBot v5 bot folder")
     export.add_argument("name", help="the run's name (its folder in --runs)")

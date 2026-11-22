@@ -24,7 +24,7 @@ pytest.importorskip("pyarrow")
 from nitro import _core, pretrain, replays
 from nitro.config.loader import parse_toml
 from nitro.config.schema import NitroConfig, PretrainConfig, WandbConfig
-from nitro.runs import RunFolder
+from nitro.runs import RunFolder, read_copy_progress
 from test_replays import random_arrays, replay_folder, replicar_file, replicar_match, stand_in_tool
 from test_tracking import FakeRun
 
@@ -968,13 +968,13 @@ def test_the_copy_writes_how_far_it_is_for_the_dashboard(
 
     def hear(line: str) -> None:
         if line.startswith("  round 1:"):
-            seen.append(pretrain.read_live(work))
+            seen.append(read_copy_progress(work))
 
     assert pretrain.start_source(config, folder, hear) is not None
     during = seen[0]
     assert during is not None and not during["finished"] and (during["learned"], during["limit"]) == (2, 4)
     assert during["doing"] == "learned round 1" and [r["round"] for r in during["rounds"]] == [1]
-    done = pretrain.read_live(work)
+    done = read_copy_progress(work)
     assert done is not None and done["finished"] and done["learned"] == 4 and len(done["rounds"]) == 2
     assert done["seconds_left"] is None and done["skill"] is None and done["games"] == "1v1"
 
@@ -1036,7 +1036,7 @@ def test_skill_checks_play_where_the_copy_started_and_the_last_check(
         "skill check after round 3: against round 0's copy in 20 points it took 80% of the 10 goals" in h
         for h in heard
     )
-    live = pretrain.read_live(work)
+    live = read_copy_progress(work)
     assert live is not None and live["skill"]["versions"][-1]["round"] == 3
 
 

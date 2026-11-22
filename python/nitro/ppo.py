@@ -15,6 +15,13 @@ if TYPE_CHECKING:
     from nitro.multigpu import Cards
 
 
+def likeliest(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Each row's allowed action with the highest logit; of equal ones the last, as nitro_bot's
+    Policy::argmax (Rust's max_by keeps the last, PyTorch's argmax the first)."""
+    masked = torch.where(mask, logits.float(), -math.inf)
+    return masked.shape[1] - 1 - masked.flip(1).argmax(1)
+
+
 def masked_log_probs(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """FP32 log-probabilities over the allowed actions; forbidden actions get -inf (probability 0).
 

@@ -37,17 +37,27 @@ COPY_SO_FAR = "copy_so_far.json"
 # written): an empty file, a zip without its directory, bytes that are not a save, or a failed read.
 UNREADABLE = (OSError, EOFError, RuntimeError, ValueError, pickle.UnpicklingError)
 # Settings that shape the networks and the learner's saved state; a resumed run must keep them.
+# A replay copy's folder in a run ([pretrain]) and the progress it writes there as it goes.
+PRETRAIN_COPY = "pretrained"
+PRETRAIN_LIVE = "live.json"
 FIXED_SETTINGS = (
     "env.team_size", "env.opponents", "env.observation", "env.obs_team_size",
     "model.shared", "model.policy", "model.value", "model.layer_norm", "model.activation", "ppo.popart",
+    "model.input_map",
     "run.precision", "model.encoder", "model.attention_width", "model.attention_blocks",
     "model.attention_heads", "model.attention_skip", "model.transformer_layers", "model.transformer_width",
     "model.transformer_heads", "model.transformer_ff", "model.transformer_pads", "model.transformer_readout",
     "model.residual", "model.value_heads", "model.value_head_layers", "env.ball_prediction",
-    "env.action_masks",
+    "env.action_masks", "selector.specialists", "selector.goal_heads",
 )  # fmt: skip
 # Fixed settings added in a later version, with the value every earlier save had.
-_ADDED_LATER: dict[str, Any] = {"env.ball_prediction": (), "env.action_masks": "standard"}
+_ADDED_LATER: dict[str, Any] = {
+    "env.ball_prediction": (),
+    "env.action_masks": "standard",
+    "model.input_map": 0,
+    "selector.specialists": (),
+    "selector.goal_heads": False,
+}
 # Settings whose default changed for new bots, with the value every bot made before had: a bot whose run.json
 # does not list one under "new_defaults" and whose settings file leaves it out keeps that value, so updating
 # NitroLearn changes nothing for it.
@@ -263,6 +273,19 @@ def _moved(saved: Any, current: Any) -> bool:
     return any(len(path) > 1 for path in parts) and parts[0][-1] == parts[1][-1]
 
 
+def _size(folder: Path) -> int:
+    return sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
+
+
+def read_copy_progress(work: Path) -> dict[str, Any] | None:
+    """A replay copy's progress as it last wrote it into its folder `work` (`PRETRAIN_LIVE`), or None."""
+    try:
+        data = json.loads((work / PRETRAIN_LIVE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def numbered(names: Sequence[str]) -> list[str]:
     """The names as metrics labels: a repeated name gets a number from its second appearance on
     (`all_of`, `touch_ball`, `all_of` -> `all_of`, `touch_ball`, `all_of_2`), so no column is lost."""
@@ -470,6 +493,33 @@ class RunFolder:
             if old not in milestones.values() and not (old / _KEPT).is_file():
                 shutil.rmtree(old)
         return final
+
+    def cap_saves(self, gb: float, milestone_steps: int) -> tuple[list[str], bool]:
+        """Deletes saves while they take more than `gb` GB (run.saves_disk_gb): the oldest ordinary
+        saves first, then the oldest milestones; never the newest or one saved `kept`. Returns what was
+        deleted, in plain words, and whether the saves left still take more than `gb`."""
+        complete = self.complete_checkpoints()
+        sizes = {path: _size(path) for path in complete}
+        total, cap = sum(sizes.values()), gb * 1e9
+        milestones: dict[int, Path] = {}
+        if milestone_steps:
+            for path in complete:
+                milestones.setdefault(int(path.name) // milestone_steps, path)
+        free = [p for p in complete[:-1] if not (p / _KEPT).is_file()]
+        kept_long = set(milestones.values())
+        order = [p for p in free if p not in kept_long] + [p for p in free if p in kept_long]
+        deleted = []
+        for path in order:
+            if total <= cap:
+                break
+            shutil.rmtree(path, ignore_errors=True)
+            total -= sizes[path]
+            kind = "milestone save" if path in kept_long else "save"
+            deleted.append(
+                f"deleted the {kind} at {int(path.name):,} steps ({sizes[path] / 1e9:.2f} GB) to keep the "
+                f"saves under {gb:g} GB (run.saves_disk_gb)"
+            )
+        return deleted, total > cap
 
     def complete_checkpoints(self) -> list[Path]:
         """Finished checkpoints, oldest first (folders still named `.partial` were interrupted)."""

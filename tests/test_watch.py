@@ -357,7 +357,9 @@ def test_the_command_writes_the_page_the_recording_and_the_arena_beside_them(
     assert (data["format"], data["cars"], data["fps"]) == (LAYOUT, 2, 30.0) and "follow" not in data
     frames = layouts.unpack(data["frames"], HEAD + 2 * CAR)
     assert len(frames) == 1 + 2 * 30 and len(data["decisions"]) == 30
-    assert layouts.load(folder.root / "watch.nlrec") == data, "the recording itself, for other tools"
+    assert layouts.load(folder.root / "watch.nlrec") == {k: v for k, v in data.items() if k != "run"}, (
+        "the recording itself, for other tools (the run's name is the page's)"
+    )
     assert not list(folder.root.glob("*.part*")), "no unfinished file is left"
 
     os.utime(arena, ns=(1_000_000_000, 1_000_000_000))

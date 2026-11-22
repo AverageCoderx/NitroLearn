@@ -41,11 +41,11 @@ from nitro.learner import Learner
 from nitro.model import ActorCritic, build_networks, config_parts
 from nitro.ppo import discount_from_half_life
 from nitro.ratings import MU
-from nitro.runs import RunFolder, all_settings, fixed_settings, portable
+from nitro.runs import PRETRAIN_COPY, PRETRAIN_LIVE, RunFolder, all_settings, fixed_settings, portable
 
 log = logging.getLogger("nitro")
 RECORDING_PATTERNS = ("*.rlpr", "*.rlpr.zst")
-COPY = "pretrained"  # the run folder's copy of the replays' players ([pretrain])
+COPY = PRETRAIN_COPY  # the run folder's copy of the replays' players ([pretrain])
 COPY_LABEL = "a copy of the players in your replays ([pretrain])"
 
 
@@ -499,7 +499,7 @@ def _make_copy(config: NitroConfig, say: Callable[[str], None]) -> dict[str, Any
 # The large replay mode.
 PROGRESS = "progress.pt"  # in the copy's folder: where a stopped copy carries on from
 HELD = "held.pt"  # the held-back replays' samples, made once
-LIVE = "live.json"  # in the copy's folder: how far it is, for the dashboard
+LIVE = PRETRAIN_LIVE  # in the copy's folder: how far it is, for the dashboard
 VERSIONS = "versions"  # in the copy's folder: the earlier versions its skill checks play
 # A skill check's point starts at a kickoff and ends at a goal, the bot's own no-touch time or this.
 SKILL_POINT_SECONDS = 60.0
@@ -569,7 +569,7 @@ def _measure_packed(
 
 def previous_action(config: NitroConfig) -> slice:
     """Where the previous action (8 numbers) sits in the run's observation (nitro_core::obs)."""
-    if config.env.observation.startswith("gigalearn"):
+    if config.env.is_gigalearn:
         return slice(9, 17)  # GigaLearn's observations: the ball (9 numbers), then the previous action
     start = config_parts(config)[0] + 34  # the ball (and its prediction), then the 34 boost pads
     return slice(start, start + 8)
@@ -738,15 +738,6 @@ def _write_live(work: Path, data: dict[str, Any]) -> None:
         os.replace(partial, work / LIVE)
     except OSError:
         pass
-
-
-def read_live(work: Path) -> dict[str, Any] | None:
-    """A copy's progress as `_write_live` left it, or None."""
-    try:
-        data = json.loads((work / LIVE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
 
 
 def _keep_version(work: Path, round_number: int, model: ActorCritic) -> None:

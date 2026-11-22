@@ -43,6 +43,9 @@ pub struct EnvRules {
     pub obs_team_size: usize,
     /// The ball prediction's times as decisions ahead (`ball_prediction::decisions`); empty = off.
     pub ball_prediction: Vec<u32>,
+    /// How many decisions ahead the games predict the ball: the furthest any reader of it needs (this
+    /// observation, another model's view); 0 = no prediction.
+    pub prediction_len: u32,
     pub masks: MaskRule,
     pub terminals: TerminalConfig,
     pub rewards: Vec<RewardTerm>,
@@ -95,6 +98,45 @@ pub struct EpisodeRecord {
     /// or `KICKOFF_BACK`, the most forward spot any car started on (the one nearest the ball; RocketSim
     /// gives both teams the same spots); -1 for another setter. The same in every car's record.
     pub kickoff: i8,
+    /// How the episode started, as this car saw it (the weakness map's coarse features).
+    pub start: StartState,
+}
+
+/// The start of an episode from one car's side: the field turned so this car attacks +y (x turns with it).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StartState {
+    pub ball_x: f32,
+    pub ball_y: f32,
+    pub ball_z: f32,
+    pub ball_speed: f32,
+    pub car_speed: f32,
+    pub car_z: f32,
+    /// Cosine of the angle between where the car points and where the ball is, along the floor (1: at it).
+    pub facing: f32,
+    /// Car to ball (uu).
+    pub distance: f32,
+}
+
+impl StartState {
+    fn of(snap: &GameSnapshot, car: usize) -> Self {
+        let state = &snap.cars[car];
+        let turn = if state.team == Team::Blue { 1.0 } else { -1.0 };
+        let ball = snap.ball.pos;
+        let to_ball = ball - state.body.pos;
+        let flat = rocketsim::Vec3A::new(to_ball.x, to_ball.y, 0.0).normalize_or_zero();
+        let forward = state.body.forward();
+        let forward = rocketsim::Vec3A::new(forward.x, forward.y, 0.0).normalize_or_zero();
+        Self {
+            ball_x: ball.x * turn,
+            ball_y: ball.y * turn,
+            ball_z: ball.z,
+            ball_speed: snap.ball.vel.length(),
+            car_speed: state.body.vel.length(),
+            car_z: state.body.pos.z,
+            facing: forward.dot(flat),
+            distance: to_ball.length(),
+        }
+    }
 }
 
 /// The class of the kickoff the cars start from (`EpisodeRecord::kickoff`): the most forward spot taken,
@@ -279,11 +321,16 @@ struct EpisodeTracker {
     ball_y_after_touch: Option<f32>,
     /// `EpisodeRecord::kickoff`.
     kickoff: i8,
+    start: Vec<StartState>,
 }
 
 impl EpisodeTracker {
-    fn restart(&mut self, cars: usize, kickoff: i8) {
+    fn restart(&mut self, snap: &GameSnapshot, kickoff: i8) {
         self.kickoff = kickoff;
+        let cars = snap.cars.len();
+        self.start.clear();
+        self.start
+            .extend((0..cars).map(|car| StartState::of(snap, car)));
         self.first_touch.clear();
         self.first_touch.resize(cars, None);
         self.landed.clear();
@@ -344,6 +391,7 @@ impl EpisodeTracker {
                     .map_or(0, |scorer| if scorer == state.team { 1 } else { -1 }),
                 ball_first_touch: seconds(self.any_touch),
                 kickoff: self.kickoff,
+                start: self.start.get(car).copied().unwrap_or_default(),
             });
         }
     }
@@ -386,15 +434,24 @@ pub struct Env {
     setter: u8,
     /// Frames for the viewer every few ticks; None while training.
     capture: Option<Capture>,
+    /// Per car: the scripted benchmark opponent driving it, with what it remembers; None for the policy.
+    scripted: Vec<Option<(crate::scripted::Script, crate::scripted::Memory)>>,
     /// The physics of the step in progress (`step_begin`).
     input: PhysicsInput,
     /// With `shuffle_slots`: per car, its place among its team's in the observation this episode;
     /// empty otherwise. Drawn from a generator of its own, so the games play as without it.
     slots: Vec<u8>,
     slot_rng: fastrand::Rng,
-    /// The ball's predicted path with ball prediction on, and the bodies the observation reads from it.
+    /// The ball's predicted path when anything reads one: its bodies a decision apart now (`path_now`) and
+    /// those this observation reads.
     ball_path: Option<BallPath>,
+    path_now: Vec<Body>,
     predicted: Vec<Body>,
+    /// The team that scored in the last step, which ended the episode; None after any other step.
+    last_goal: Option<Team>,
+    /// Every step as the rewards see it, when a test records them.
+    #[cfg(test)]
+    record: Option<Vec<RecordedStep>>,
 }
 
 impl Env {
@@ -425,10 +482,8 @@ impl Env {
 
     fn with_sim(rules: Arc<EnvRules>, id: u32, seed: u64, sim: Sim) -> Self {
         let cars = sim.num_cars();
-        let ball_path = rules
-            .ball_prediction
-            .last()
-            .map(|&last| BallPath::for_observation(rules.tick_skip, last));
+        let ball_path = (rules.prediction_len > 0)
+            .then(|| BallPath::for_observation(rules.tick_skip, rules.prediction_len));
         let mut env = Self {
             rewards: RewardSet::new(rules.rewards.clone(), rules.tick_skip),
             counted: vec![true; cars],
@@ -448,17 +503,38 @@ impl Env {
             step_in_episode: 0,
             setter: 0,
             capture: None,
+            scripted: vec![None; cars],
             input: PhysicsInput::default(),
             slots: Vec::new(),
             slot_rng: fastrand::Rng::with_seed(seed ^ 0x51_07_5A_17),
             ball_path,
+            path_now: Vec::new(),
             predicted: Vec::new(),
+            last_goal: None,
+            #[cfg(test)]
+            record: None,
         };
         env.start_episode();
         env
     }
 
+    /// Hands every car of `team` to a scripted benchmark opponent (`crate::scripted`), or back to the
+    /// policy with None: from the next step its controls come from the script and the actions given for
+    /// those cars are ignored.
+    pub fn set_scripted(&mut self, team: Team, script: Option<crate::scripted::Script>) {
+        let mut snap = GameSnapshot::default();
+        self.sim.read(&mut snap);
+        for (car, slot) in self.scripted.iter_mut().enumerate() {
+            if snap.cars[car].team == team {
+                *slot = script.map(|s| (s, crate::scripted::Memory::default()));
+            }
+        }
+    }
+
     fn start_episode(&mut self) {
+        for (_, memory) in self.scripted.iter_mut().flatten() {
+            *memory = crate::scripted::Memory::default();
+        }
         let setter = self
             .rules
             .setters
@@ -486,7 +562,7 @@ impl Env {
             SetterKind::Kickoff { .. } => kickoff_class(&self.snap.cars),
             _ => -1,
         };
-        self.tracker.restart(self.snap.cars.len(), kickoff);
+        self.tracker.restart(&self.snap, kickoff);
         self.episodes += 1;
         self.step_in_episode = 0;
         if self.rules.shuffle_slots {
@@ -502,8 +578,11 @@ impl Env {
     fn predict_ball(&mut self) {
         if let Some(path) = &mut self.ball_path {
             let (start, fresh) = (Instant::now(), path.fresh);
+            self.path_now.clear();
+            self.path_now
+                .extend_from_slice(path.update(self.snap.ball, 1));
             crate::ball_prediction::pick(
-                path.update(self.snap.ball, 1),
+                &self.path_now,
                 &self.rules.ball_prediction,
                 &mut self.predicted,
             );
@@ -540,9 +619,76 @@ impl Env {
         &self.snap
     }
 
+    /// Appends the state the current observations were built from, as floats, for checks made outside
+    /// the core (an imported bot's parity check): the ball (position, rotation columns forward/right/up,
+    /// velocity, angular velocity: 18), the team that just scored (-1 none, 0 Blue, 1 Orange), every boost
+    /// pad (active 0/1, seconds until active), then per car its team, body (18), boost, the seven flags (on
+    /// the ground, jumped, double jumped, flipped, can flip, demolished, supersonic), demolition timer, flip
+    /// time left and the controls it last used (8).
+    pub fn write_state(&self, out: &mut Vec<f32>) {
+        let flag = |on: bool| f32::from(u8::from(on));
+        let body = |out: &mut Vec<f32>, b: &crate::snapshot::Body| {
+            out.extend(b.pos.to_array());
+            for column in [b.rot.x_axis, b.rot.y_axis, b.rot.z_axis] {
+                out.extend(column.to_array());
+            }
+            out.extend(b.vel.to_array());
+            out.extend(b.ang_vel.to_array());
+        };
+        let snap = &self.snap;
+        body(out, &snap.ball);
+        out.push(
+            snap.goal_scored
+                .map_or(-1.0, |team| flag(team == crate::snapshot::Team::Orange)),
+        );
+        for pad in &snap.pads {
+            out.extend([flag(pad.active), pad.cooldown]);
+        }
+        for (car, controls) in snap.cars.iter().zip(&self.last_actions) {
+            out.push(flag(car.team == crate::snapshot::Team::Orange));
+            body(out, &car.body);
+            out.extend([
+                car.boost,
+                flag(car.on_ground),
+                flag(car.has_jumped),
+                flag(car.has_double_jumped),
+                flag(car.has_flipped),
+                flag(car.can_flip),
+                flag(car.is_demoed),
+                flag(car.is_supersonic),
+                car.demo_timer,
+                car.flip_time_left,
+            ]);
+            out.extend(controls.to_floats());
+        }
+    }
+
     /// Starts writing a viewer frame every `every_ticks` ticks (`capture`), beginning with the current state.
     pub fn start_capture(&mut self, every_ticks: u32) {
         self.capture = Some(Capture::new(every_ticks, &mut self.sim, &self.last_actions));
+    }
+
+    /// Every car's moment now (`crate::snapshots::record`, as Blue sees it), in car order: what a
+    /// `snapshots` start holds, for starts picked from a watched game.
+    pub fn moments(&self) -> Vec<[f32; 41]> {
+        self.snap
+            .cars
+            .iter()
+            .zip(&self.events.details)
+            .map(|(car, detail)| {
+                crate::snapshots::to_values(&crate::snapshots::record(car, detail, self.snap.ball))
+            })
+            .collect()
+    }
+
+    /// Keeps each reward term's pay to each car of every step (`RewardSet::keep_parts`), for the viewer.
+    pub fn keep_reward_parts(&mut self, on: bool) {
+        self.rewards.keep_parts(on);
+    }
+
+    /// Each reward term's pay to each car in the last step, `[term * cars + car]` (empty unless kept).
+    pub fn reward_parts(&self) -> Vec<f32> {
+        self.rewards.parts().to_vec()
     }
 
     /// The frames written since the last call (empty when capturing is off).
@@ -618,7 +764,11 @@ impl Env {
             ..PhysicsInput::default()
         };
         for (car, &action) in actions.iter().enumerate() {
-            self.input.controls[car] = rules.actions.controls(action as usize);
+            self.input.controls[car] = if let Some((script, memory)) = &mut self.scripted[car] {
+                crate::scripted::controls(*script, &self.snap, car, memory)
+            } else {
+                rules.actions.controls(action as usize)
+            };
             self.input.drive |= 1 << car;
         }
         self.stats.step_time += start.elapsed();
@@ -705,6 +855,10 @@ impl Env {
                 &mut self.stats.episodes,
             );
         }
+        #[cfg(test)]
+        if let Some(record) = &mut self.record {
+            record.push((self.prev.clone(), self.snap.clone(), self.events.clone()));
+        }
         self.rewards.compute(
             &self.prev,
             &self.snap,
@@ -721,6 +875,11 @@ impl Env {
     /// Saves the final observation of a truncated episode, starts a new episode if one ended, and
     /// writes the observations the next action will be chosen from.
     fn conclude(&mut self, ending: Ending, rows: &mut AgentRows<'_>) {
+        self.last_goal = if ending == Ending::Terminal {
+            self.snap.goal_scored
+        } else {
+            None
+        };
         if ending != Ending::Terminal {
             self.predict_ball(); // a terminal state is never observed: a new start follows
         }
@@ -746,6 +905,48 @@ impl Env {
         self.write_observations(rows);
     }
 
+    /// The simulator, for tests that place the ball or cars.
+    #[cfg(test)]
+    pub(crate) fn sim_mut(&mut self) -> &mut Sim {
+        &mut self.sim
+    }
+
+    /// Per car, how the last step ended the episode for its team: 1 its team scored, -1 the other team
+    /// scored, 0 no goal (the game goes on, or ended another way).
+    pub fn goals_into(&self, out: &mut [i8]) {
+        for (sign, car) in out.iter_mut().zip(&self.snap.cars) {
+            *sign = self
+                .last_goal
+                .map_or(0, |scorer| if scorer == car.team { 1 } else { -1 });
+        }
+    }
+
+    /// Every car's view of the game now as `view` sees it: `obs` holds one row of `view.obs_size()` numbers
+    /// per car, `mask` one row of the action table's size; `steps` the view's ball prediction
+    /// (`ViewConfig::prediction`).
+    pub fn views_into(
+        &self,
+        view: &crate::views::ViewConfig,
+        steps: &[u32],
+        obs: &mut [f32],
+        mask: &mut [u8],
+    ) {
+        let cars = self.snap.cars.len();
+        let (width, actions) = (obs.len() / cars, mask.len() / cars);
+        for car in 0..cars {
+            view.write(
+                &self.snap,
+                car,
+                self.last_actions[car],
+                steps,
+                &self.path_now,
+                &self.rules.actions,
+                &mut obs[car * width..(car + 1) * width],
+                &mut mask[car * actions..(car + 1) * actions],
+            );
+        }
+    }
+
     /// Statistics since the last call.
     pub fn take_stats(&mut self) -> EnvStats {
         let fresh = self.fresh_stats();
@@ -762,6 +963,61 @@ impl Env {
     fn fresh_stats(&self) -> EnvStats {
         EnvStats::new(self.rules.rewards.len())
     }
+}
+
+/// One recorded step: the state before, the state after and what happened between.
+#[cfg(test)]
+pub(crate) type RecordedStep = (GameSnapshot, GameSnapshot, StepEvents);
+
+/// `steps` steps of one arena of `config` played with seeded random actions, recorded (for comparing
+/// rewards on real game states), and for each step whether it starts an episode.
+#[cfg(test)]
+pub(crate) fn record_episodes(
+    config: &crate::config::PoolConfig,
+    steps: usize,
+    seed: u64,
+) -> (Vec<RecordedStep>, Vec<bool>) {
+    use crate::pool::{BufferShape, OwnedBuffers};
+    let rules = Arc::new(config.rules().expect("rules"));
+    let cars = config.team_size * if config.opponents { 2 } else { 1 };
+    let mut owned = OwnedBuffers::new(BufferShape {
+        agents: cars,
+        obs_size: rules.obs_size(),
+        num_actions: rules.actions.len(),
+    });
+    let mut env = Env::new(Arc::clone(&rules), 0, seed);
+    env.record = Some(Vec::with_capacity(steps));
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let mut actions = vec![0; cars];
+    let mut ended = Vec::with_capacity(steps);
+    for _ in 0..steps {
+        actions.fill_with(|| rng.i32(0..crate::actions::NUM_ACTIONS as i32));
+        let mut rows = AgentRows {
+            obs: &mut owned.obs,
+            mask: &mut owned.mask,
+            reward: &mut owned.reward,
+            terminal: &mut owned.terminal,
+            truncated: &mut owned.truncated,
+            episode: &mut owned.episode,
+            step: &mut owned.step,
+            final_obs: &mut owned.final_obs,
+        };
+        env.step(&actions, &mut rows);
+        ended.push(owned.terminal[0] != 0 || owned.truncated[0] != 0);
+    }
+    let mut starts = vec![true];
+    starts.extend(&ended[..ended.len().saturating_sub(1)]);
+    (env.record.take().unwrap_or_default(), starts)
+}
+
+/// `record_episodes` without where episodes start.
+#[cfg(test)]
+pub(crate) fn record_random_play(
+    config: &crate::config::PoolConfig,
+    steps: usize,
+    seed: u64,
+) -> Vec<RecordedStep> {
+    record_episodes(config, steps, seed).0
 }
 
 #[cfg(test)]
@@ -1319,6 +1575,48 @@ mod tests {
         );
         assert!(touch.terminal, "{touch:?}");
         assert!((0.0..0.5).contains(&touch.first_touch) && touch.first_touch == touch.seconds);
+    }
+
+    #[test]
+    fn the_start_state_is_seen_from_each_cars_side() {
+        let mut snap = GameSnapshot::default();
+        snap.ball.pos = Vec3A::new(500.0, 2000.0, 300.0);
+        snap.ball.vel = Vec3A::new(0.0, 300.0, 400.0);
+        let car = |team, pos, yaw: f32| CarSnapshot {
+            team,
+            body: Body {
+                pos,
+                rot: rocketsim::Mat3A::from_rotation_z(yaw),
+                vel: Vec3A::new(0.0, 0.0, 0.0),
+                ang_vel: Vec3A::ZERO,
+            },
+            ..CarSnapshot::default()
+        };
+        // Blue points along +y at the ball; Orange points along +y away from it.
+        snap.cars = vec![
+            car(
+                Team::Blue,
+                Vec3A::new(500.0, 0.0, 17.0),
+                std::f32::consts::FRAC_PI_2,
+            ),
+            car(
+                Team::Orange,
+                Vec3A::new(500.0, 4000.0, 17.0),
+                std::f32::consts::FRAC_PI_2,
+            ),
+        ];
+        let (blue, orange) = (StartState::of(&snap, 0), StartState::of(&snap, 1));
+        assert_eq!(
+            (blue.ball_x, blue.ball_y, blue.ball_z),
+            (500.0, 2000.0, 300.0)
+        );
+        assert_eq!((orange.ball_x, orange.ball_y), (-500.0, -2000.0));
+        assert!((blue.facing - 1.0).abs() < 1e-5 && (orange.facing + 1.0).abs() < 1e-5);
+        assert!((blue.distance - Vec3A::new(0.0, 2000.0, 283.0).length()).abs() < 1e-2);
+        assert_eq!(
+            (blue.ball_speed, blue.car_speed, blue.car_z),
+            (500.0, 0.0, 17.0)
+        );
     }
 
     /// The same situation seen from the other side: rotated 180Â° about the vertical axis.

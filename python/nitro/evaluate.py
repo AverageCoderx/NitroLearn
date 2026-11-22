@@ -5,13 +5,15 @@ from __future__ import annotations
 import dataclasses
 import math
 from collections.abc import Sequence
+from typing import Any
 
 import torch
 
 from nitro import _core
 from nitro.config.schema import NitroConfig
 from nitro.envs import EnvPool
-from nitro.ppo import masked_log_probs, normalized_entropy
+from nitro.ppo import likeliest, masked_log_probs, normalized_entropy
+from nitro.selector import Player, Saved, distinct_views
 
 SAMPLED = (1.0, 1.0)  # both sides sampled as in training: evaluate's default pick
 
@@ -59,13 +61,6 @@ def check_pick(pick: tuple[float, float]) -> None:
             raise ValueError(f"a pick temperature must be 0 or above and finite (got {temperature})")
 
 
-def likeliest(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """Each row's allowed action with the highest logit; of equal ones the last, as nitro_bot's
-    Policy::argmax (Rust's max_by keeps the last, PyTorch's argmax the first)."""
-    masked = torch.where(mask, logits.float(), -math.inf)
-    return masked.shape[1] - 1 - masked.flip(1).argmax(1)
-
-
 def apply_pick(
     logits: torch.Tensor,
     mask: torch.Tensor,
@@ -97,17 +92,18 @@ def apply_pick(
 
 @torch.no_grad()
 def evaluate(
-    model: torch.nn.Module,
+    model: torch.nn.Module | Saved,
     config: NitroConfig,
     seed: int,
     episodes_per_arena: int,
     device: torch.device,
     fp16: bool,
-    opponent: torch.nn.Module | None = None,
+    opponent: torch.nn.Module | Saved | None = None,
     bot_cars: Sequence[int] | None = None,
     decide_every: tuple[int, int] = (1, 1),
     pick: tuple[float, float] = SAMPLED,
     entropy: list[float] | None = None,
+    scripted: Sequence[tuple[int, str]] = (),
 ) -> list[_core.EpisodeRecord]:
     """Plays `config`'s environments, seeded with `seed`, with the policy sampled as in training (by
     default).
@@ -125,6 +121,10 @@ def evaluate(
     0 = its likeliest action (as nitro_bot plays), else softmax(logits / T) (`apply_pick`). With
     `entropy`, each side's mean normalised entropy over the decisions it made (every step played) is
     appended to it, Blue's then Orange's (NaN for a side without cars).
+    Each (team, name) of `scripted` gives that team's cars (0 Blue, 1 Orange) in every arena to a scripted
+    benchmark opponent (`nitro.gauntlet`); the actions chosen for them are ignored. `model` and `opponent`
+    may each be a saved multi-model bot, whose selector and models then play their cars (sampled, or with
+    pick 0 the selector's likeliest choice).
     """
     if bot_cars is not None and opponent is None:
         raise ValueError("bot_cars needs an opponent policy for the other cars")
@@ -139,6 +139,13 @@ def evaluate(
         raise ValueError(
             "evaluation needs terminals.max_episode_seconds above 0, or an episode may never end"
         )
+    bundles = [side for side in (model, opponent) if isinstance(side, Saved)]
+    if bundles and (decide_every != (1, 1) or scripted or any(t not in (0, 1) for t in pick)):
+        raise ValueError(
+            "a multi-model bot plays at its own tick skip, sampled or likeliest, against bots, not scripted "
+            "players"
+        )
+    pool_views = distinct_views(bundles)
     # A skill is measured under the game's rules and on the same start states whatever training used: one
     # game size, team_size.
     envs = EnvPool(
@@ -146,7 +153,17 @@ def evaluate(
             config, run=dataclasses.replace(config.run, seed=seed), env=config.env.one_size()
         ),
         pin_memory=device.type == "cuda",
+        views=pool_views,
     )
+    if bundles:
+        return _evaluate_multi(
+            model, opponent, config, envs, pool_views, seed, episodes_per_arena, device, fp16, bot_cars,
+            pick, entropy,
+        )  # fmt: skip
+    assert not isinstance(model, Saved) and not isinstance(opponent, Saved)
+    for arena in range(config.env.num_arenas):
+        for team, name in scripted:
+            envs.set_scripted(arena, team, name)
     cars = sum(tensors.obs.shape[0] for tensors in envs.groups) // config.env.num_arenas
     generator = torch.Generator(device=device).manual_seed(seed)
     # Temperatures between 0 and 1 (or above) draw from a second stream, not the T=1 side's.
@@ -198,5 +215,88 @@ def evaluate(
         for player in players:
             player.train()
     if entropy is not None and spread is not None:
+        entropy.extend(total / count if count else math.nan for total, count in spread.tolist())
+    return [record for key in sorted(finished) for record in finished[key][:episodes_per_arena]]
+
+
+def _evaluate_multi(
+    model: torch.nn.Module | Saved,
+    opponent: torch.nn.Module | Saved | None,
+    config: NitroConfig,
+    envs: EnvPool,
+    pool_views: list[dict[str, Any]],
+    seed: int,
+    episodes_per_arena: int,
+    device: torch.device,
+    fp16: bool,
+    bot_cars: Sequence[int] | None,
+    pick: tuple[float, float],
+    entropy: list[float] | None,
+) -> list[_core.EpisodeRecord]:
+    """`evaluate` with a multi-model bot on at least one side: each side decides for every car and plays its
+    own; a multi-model side's selector state follows every car it drives."""
+    cars = sum(tensors.obs.shape[0] for tensors in envs.groups) // config.env.num_arenas
+    generator = torch.Generator(device=device).manual_seed(seed)
+    players: list[Any] = []
+    for index, side in enumerate((model, opponent)):
+        if isinstance(side, Saved):
+            players.append(
+                Player(side, config, envs, pool_views, device, fp16, seed + index, greedy=pick[index] == 0)
+            )
+        else:
+            if side is not None:
+                side.eval()
+            players.append(side)
+    spread = torch.zeros(2, 2, dtype=torch.float64, device=device)  # (Blue, Orange) x (sum, count)
+    finished: dict[tuple[int, int], list[_core.EpisodeRecord]] = {}
+    try:
+        while len(finished) < config.env.num_arenas * cars or any(
+            len(records) < episodes_per_arena for records in finished.values()
+        ):
+            for group, tensors in enumerate(envs.groups):
+                chosen: list[torch.Tensor | None] = []
+                spreads: list[torch.Tensor | None] = []
+                for player, temperature in zip(players, pick, strict=True):
+                    if player is None:
+                        chosen.append(None)
+                        spreads.append(None)
+                    elif isinstance(player, Player):
+                        decision = player.decide(group)
+                        chosen.append(decision.actions)
+                        spreads.append(decision.randomness.double())
+                    else:
+                        with torch.autocast(device.type, dtype=torch.float16, enabled=fp16):
+                            logits = player(tensors.obs.to(device))[0]
+                        mask = tensors.mask.to(device)
+                        log_probs = masked_log_probs(logits, mask)
+                        if temperature == 0:
+                            chosen.append(likeliest(logits, mask))
+                        else:
+                            chosen.append(
+                                torch.multinomial(log_probs.exp(), 1, generator=generator).squeeze(1)
+                            )
+                        spreads.append(normalized_entropy(log_probs, mask).double())
+                actions = chosen[0]
+                assert actions is not None
+                others = other_rows(actions.shape[0], cars, bot_cars, device)
+                if chosen[1] is not None:
+                    actions = torch.where(others, chosen[1], actions)
+                for team, (rows, row_spread) in enumerate(zip((~others, others), spreads, strict=True)):
+                    if row_spread is not None:
+                        spread[team, 0] += torch.where(rows, row_spread, 0.0).sum()
+                        spread[team, 1] += rows.sum()
+                tensors.actions.copy_(actions.to(torch.int32))
+                envs.step(group)
+                envs.wait(group)
+                for player in players:
+                    if isinstance(player, Player):
+                        player.after_step(group)
+            for record in envs.take_stats().episodes:
+                finished.setdefault((record.env, record.car), []).append(record)
+    finally:
+        for player in players:
+            if isinstance(player, torch.nn.Module):
+                player.train()
+    if entropy is not None:
         entropy.extend(total / count if count else math.nan for total, count in spread.tolist())
     return [record for key in sorted(finished) for record in finished[key][:episodes_per_arena]]

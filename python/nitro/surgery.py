@@ -36,6 +36,7 @@ from nitro.learner import Learner
 from nitro.model import ActorCritic
 from nitro.ppo import discount_from_half_life
 from nitro.runs import UNREADABLE, RunFolder, all_settings, fixed_settings, resume_command
+from nitro.selector import not_yet
 
 # Random observations the old and the new network are compared on after a widening, in FP32 on the CPU.
 # The largest difference allowed is this share of the largest output (logit or value), or this much when
@@ -238,6 +239,8 @@ def widen_run(
         where = f"at {at:,} agent steps" if at is not None else "yet"
         raise SurgeryError(f"'{source}' has no save {where}. Saves: {saves}.")
     config = folder.load_settings(state)
+    if why := not_yet(config, "widened"):
+        raise SurgeryError(f"'{source}' cannot be widened: {why}.")
     target = target or f"{source}-x{factor}"
     final = runs / target
     if final.exists():
@@ -253,6 +256,11 @@ def widen_run(
     if config.model.uses_attention:
         raise SurgeryError(
             f"'{source}' has attention networks (model.encoder); widening works on plain networks only."
+        )
+    if config.model.input_map:
+        raise SurgeryError(
+            f"'{source}' was brought over from another framework (model.input_map); widening it is not "
+            "built yet."
         )
     if config.model.residual or config.model.value_heads_apart:
         raise SurgeryError(

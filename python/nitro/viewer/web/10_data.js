@@ -95,6 +95,8 @@ NV.data = (() => {
       this.decisions = data.decisions || [];
       this.decisionsPerSecond = data.decisionsPerSecond || 15;
       this.attention = data.attention || null;
+      // A multi-model bot's models: each car's last decision figure says which one drives.
+      this.models = data.models || null;
       this.live = !!data.live;
       this.count = 0;
       this.raw = new Int16Array(0);

@@ -567,6 +567,9 @@ NV.ui = (() => {
     const figures = decision && decision[index + 1];
     el.think.classList.toggle("nv-think-empty", !figures);
     el.thinkNone.hidden = !!figures;
+    const driver = figures && rec.models && figures.length > 4 ? rec.models[figures[4]] : null;
+    el.driverRow.hidden = !driver;
+    if (driver) setText(el.driverText, driver);
     if (figures) {
       const [value, sure, random] = figures;
       readValues();

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,9 +12,9 @@ import torch
 
 from nitro import _core
 from nitro.build_info import check_core
-from nitro.config.rewards import AllOf, Custom, Reward, ZeroSum
+from nitro.config.rewards import AllOf, Built, Custom, Reward, ZeroSum
 from nitro.config.schema import NitroConfig
-from nitro.config.state_setters import Replay, StateSetter
+from nitro.config.state_setters import Replay, Snapshots, StateSetter
 from nitro.model import observation_room
 from nitro.recordings import replay_files
 
@@ -55,8 +56,15 @@ def tagged(item: Any) -> dict[str, Any]:
     if isinstance(item, Replay):
         # The core gets the concrete files; the patterns and the bundled flag are the Python side's.
         return {"name": item.name, "files": replay_files(item), "air_bias": item.air_bias}
+    if isinstance(item, Snapshots):
+        return {"name": item.name, "file": str(item.file)}
     if isinstance(item, AllOf):
         return {"name": item.name, "parts": [tagged(part) for part in item.parts]}
+    if isinstance(item, Built):  # a reward built from blocks: its title and terms, as written
+        built = {"name": "built", "title": item.title, "terms": [dict(term) for term in item.terms]}
+        if item.vars:
+            built["vars"] = [dict(var) for var in item.vars]
+        return built
     if isinstance(item, Custom):  # a reward of one's own: its name and its own settings
         return {"name": "custom", "kind": item.name, "settings": dict(item.settings)}
     params = dataclasses.asdict(item)
@@ -85,8 +93,9 @@ def core_setter(setter: StateSetter) -> dict[str, Any]:
     return {"kind": tagged(setter), "weight": setter.weight}
 
 
-def core_settings(config: NitroConfig) -> str:
-    """The JSON the Rust core expects (it re-checks everything)."""
+def core_settings(config: NitroConfig, views: Sequence[dict[str, Any]] = ()) -> str:
+    """The JSON the Rust core expects (it re-checks everything). `views`: other bots' views of the games
+    (a multi-model bot's models; `nitro.selector.views`)."""
     env = config.env
     setters = [core_setter(setter) for setter in config.state_setters]
     return json.dumps(
@@ -111,6 +120,7 @@ def core_settings(config: NitroConfig) -> str:
             **({"team_sizes": list(env.team_sizes)} if env.team_sizes else {}),
             **({"team_size_shares": list(env.team_size_shares)} if env.team_size_shares else {}),
             **({"shuffle_slots": True} if env.shuffle_slots else {}),
+            **({"views": list(views)} if views else {}),
         }
     )
 
@@ -134,11 +144,18 @@ class EnvPool:
     workers would overwrite observations still being copied and read actions not yet written.
     """
 
-    def __init__(self, config: NitroConfig, *, pin_memory: bool | None = None) -> None:
+    def __init__(
+        self,
+        config: NitroConfig,
+        *,
+        pin_memory: bool | None = None,
+        views: Sequence[dict[str, Any]] = (),
+    ) -> None:
+        """`views`: see `core_settings`."""
         if pin_memory is None:
             pin_memory = torch.cuda.is_available()
         check_core()  # an old core with new settings fails in confusing ways
-        self._core = _core.EnvPool(core_settings(config))
+        self._core = _core.EnvPool(core_settings(config, views))
         self.groups = tuple(
             GroupTensors.allocate(
                 self._core.group_agents(group),
@@ -179,11 +196,31 @@ class EnvPool:
         """Blocks until `group` has finished its step."""
         self._core.wait(group)
 
+    def game_states(self, group: int, arenas: int) -> torch.Tensor:
+        """`group`'s `arenas` arenas' whole game states, one row each (the layout of the core's
+        `Env::write_state`; arenas of one game size), for checks made outside the core. Call between steps."""
+        values = torch.tensor(self._core.game_states(group), dtype=torch.float32)
+        return values.reshape(arenas, -1)
+
     def card_start(self, group: int) -> tuple[int, int]:
         """The addresses of a C function and its argument that start one step of `group` as `step` does,
         for a CUDA host node to call (`env.card_starts_games`). Keep this pool alive while anything may
         call it; wait for the card before `wait`ing for the group."""
         return self._core.card_start(group)
+
+    def view_size(self, view: int) -> int:
+        """Numbers in view `view`'s observation (the pool's `views`)."""
+        return self._core.view_size(view)
+
+    def views_into(self, group: int, view: int, obs: torch.Tensor, mask: torch.Tensor) -> None:
+        """Every car of `group` as view `view` sees it now, into `obs` ([agents, view_size] float32) and
+        `mask` ([agents, num_actions] bool), contiguous CPU tensors. Call between steps."""
+        self._core.views_into(group, view, obs, mask)
+
+    def goals_into(self, group: int, out: torch.Tensor) -> None:
+        """Per car of `group`, how its last step ended for its team (1 scored, -1 conceded, 0 no goal), into
+        `out` (int8 [agents], contiguous on the CPU). Call between steps."""
+        self._core.goals_into(group, out)
 
     def take_stats(self) -> _core.EnvStats:
         """Reward and timing totals since the previous call."""
@@ -193,6 +230,11 @@ class EnvPool:
         """Which of `arena`'s cars (Blue, Orange, Blue, Orange...) count in `take_stats`; self-play leaves
         its frozen opponents out so the logged rewards are the learner's alone."""
         self._core.set_counted(arena, counted)
+
+    def set_scripted(self, arena: int, team: int, script: str | None) -> None:
+        """Gives `arena`'s cars of `team` (0 Blue, 1 Orange) to a scripted benchmark opponent
+        (`nitro.gauntlet`), or back to the policy with None; the actions chosen for them are ignored."""
+        self._core.set_scripted(arena, team, script)
 
     @property
     def num_actions(self) -> int:
@@ -210,3 +252,18 @@ class EnvPool:
     def take_capture(self, arena: int) -> list[float]:
         """The viewer frames `arena` wrote since the last call, flat."""
         return self._core.take_capture(arena)
+
+    def moments(self, arena: int) -> list[list[float]]:
+        """Every car's moment in `arena` now, in car order: the 41 numbers of a `snapshots` start
+        (`nitro_core::snapshots::COLUMNS`), as Blue sees the field."""
+        return self._core.moments(arena)
+
+    def keep_reward_parts(self, arena: int, on: bool = True) -> None:
+        """Keeps what each reward pays each car of `arena` in every step (`reward_parts`), or stops."""
+        self._core.keep_reward_parts(arena, on)
+
+    def reward_parts(self, arena: int) -> list[float]:
+        """What each reward paid each car of `arena` in its last step, after zero-sum and weight, flat
+        `[reward * cars + car]` (rewards in `reward_labels` order); each car's add up, in order, to its
+        reward. Empty unless kept."""
+        return self._core.reward_parts(arena)

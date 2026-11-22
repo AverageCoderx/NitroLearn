@@ -26,8 +26,10 @@ from nitro.skills import (
     battery_config,
     neutral_action,
     run_battery,
+    save_results,
 )
 from nitro.tasks import TASKS
+from nitro.weakness import read_report
 
 MESHES = Path(os.environ.get("NITRO_TEST_MESHES", Path(__file__).parents[1] / "collision_meshes"))
 
@@ -123,8 +125,64 @@ def test_a_saved_bot_is_scored_on_two_skills(tmp_path: Path) -> None:
     )
     folder = RunFolder.create(tmp_path / "runs", "my-bot", settings)
     save(folder, 500)
-    results = run_battery(load_side(folder, None), ("ball_touch", "recovery"), games=4, seed=3)
-    assert [r.task for r in results] == ["ball_touch", "recovery"]
+    side = load_side(folder, None)
+    results = run_battery(side, ("ball_touch", "recovery", "fifty_fifty"), games=4, seed=3)
+    assert [r.task for r in results] == ["ball_touch", "recovery", "fifty_fifty"]
     for result in results:
         assert result.games == 4, "one situation per arena, the bot's car only"
         assert result.value >= 0 and isinstance(result.above_bar, bool)
+        assert result.weak is not None and result.weak["situations"] == 4
+    again = run_battery(side, ("fifty_fifty",), games=4, seed=3)
+    assert again[0].value == results[2].value, "same seed, same score"
+    save_results(folder.root, 500, results, 3, 4)
+    assert len(read_report(folder.root / "weakness.json")[0]["tasks"]) == 3
+    lone = dataclasses.replace(
+        side,
+        config=dataclasses.replace(side.config, env=dataclasses.replace(side.config.env, opponents=False)),
+    )
+    skipped: list[str] = []
+    assert run_battery(lone, ("kickoff_duel",), games=4, seed=3, skipped=skipped) == []
+    assert skipped == [
+        "kickoff_duel: left out, it needs an opponent and this bot plays without one (env.opponents = false)"
+    ]
+
+
+@pytest.mark.skipif(not (MESHES / "soccar").is_dir(), reason=f"no collision meshes in {MESHES}")
+def test_training_scores_its_saves_on_a_schedule_and_survives_a_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from nitro import skills
+    from nitro.training import TrainingRun
+
+    settings = tmp_path / "bot.toml"
+    settings.write_text(
+        f'[paths]\ncollision_meshes = "{MESHES.resolve().as_posix()}"\n'
+        '[run]\ndevice = "cpu"\nskills_every = 2\nskills_games = 8\n'
+        "[env]\nnum_arenas = 2\nthreads = 2\n[model]\npolicy = [8]\nvalue = [8]\n"
+        "[ppo]\nsteps_per_iteration = 256\nminibatches = 2\n",
+        encoding="utf-8",
+    )
+    folder = RunFolder.create(tmp_path / "runs", "my-bot", settings)
+    run = TrainingRun(folder.load_settings(), folder)
+    run.iteration()
+    caplog.set_level("INFO", logger="nitro")
+    run.checkpoint()
+    assert not (folder.root / "skills.csv").exists(), "every second save"
+    run.iteration()
+    run.checkpoint()
+    with (folder.root / "skills.csv").open(encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    assert [r["task"] for r in rows] == list(DEFAULT_TASKS) and {r["games"] for r in rows} == {"8"}
+    assert len(read_report(folder.root / "weakness.json")) == 1
+    assert sum("Skills at" in r.message for r in caplog.records) == 1
+
+    def broken(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("no room for the cars")
+
+    monkeypatch.setattr(skills, "run_battery", broken)
+    run.iteration()
+    run.checkpoint()
+    run.iteration()
+    run.checkpoint(continue_after=False)
+    run.metrics.close()
+    assert any("training carries on" in r.message and "no room" in r.message for r in caplog.records)

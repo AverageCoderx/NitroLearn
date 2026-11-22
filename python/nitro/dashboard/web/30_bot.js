@@ -133,6 +133,7 @@ function headHTML(b) {
     ${b.start && !b.start.done && b.start.kind === "from" ? `<div class="muted" data-start-line style="font-size:13px;">${esc(b.start.line)}</div>` : ""}
     ${b.applying ? `<div class="banner">${esc(b.applying)}…</div>` : ""}
     ${b.restart_problem ? `<div class="banner">${esc(b.restart_problem)}.</div>` : ""}
+    ${b.kept ? `<div class="banner ${b.kept.bad ? "bad" : "warn"}" role="status"><span>${esc(b.kept.text)}</span></div>` : ""}
     ${b.exploiters ? `<div class="banner" data-exploiters><span>${esc(b.exploiters)}</span></div>` : ""}
     ${note ? `<div class="banner ${note.bad ? "bad" : "warn"}" role="status"><div class="grow">${esc(note.text)}</div><button type="button" class="btn small" data-tool="${esc(note.kind)}">${note.bad ? "See why" : "See the result"}</button><button type="button" class="btn small ghost" data-act="note-close">Close</button></div>` : ""}
     ${S.failed && S.failed.bot === b.name ? `<div class="banner bad" role="alert"><div class="grow"><b>${esc(S.failed.what)} did not work.</b> Its last lines:<pre>${esc(S.failed.why)}</pre></div><button type="button" class="btn small" data-act="failed-close">Close</button></div>` : ""}
@@ -161,7 +162,7 @@ function updateHead() {
   if (html !== S.head) { S.head = html; box.innerHTML = html; }
 }
 
-const TABS = { overview: "Overview", rewards: "Rewards", starts: "Starts", replays: "Replays in training", settings: "Settings", tools: "Tools", console: "Console", notes: "Notes" };
+const TABS = { overview: "Overview", coach: "Coach", rewards: "Rewards", starts: "Starts", replays: "Replays in training", settings: "Settings", tools: "Tools", console: "Console", notes: "Notes" };
 function tabsHTML() {
   const waiting = Object.keys((S.data && S.data.pending) || {}), mixed = waiting.filter(k => k.startsWith("replay_mix.")).length;
   const counts = { settings: waiting.length - mixed, replays: mixed, rewards: ((S.data && S.data.reward_changes) || []).length, starts: ((S.data && S.data.start_changes) || []).length };
@@ -182,24 +183,31 @@ function renderTab() {
 }
 VIEWS.bot = () => renderBot();
 on("click", t => {
-  if (t.dataset.tab) { S.tab = t.dataset.tab; renderBot(); renderPending(); if (S.tab === "console") pollConsole(); return scrollToTabs(); }
+  if (t.dataset.tab) {
+    S.tab = t.dataset.tab;
+    if ($("#bothead") && $(".tabs")) { updateHead(); updateTabs(); renderTab(); }  // the frame stays
+    else renderBot();
+    renderPending(); if (S.tab === "console") pollConsole(); return scrollToTabs();
+  }
   return SKIP;
 });
 
 // A bot's data: what the Python side knows of it (`bot`) and what its sectors and tools need (`bot_tools`).
 async function loadBot(name) {
-  const [data, tools] = await Promise.all([call("bot", name), call("bot_tools", name)]);
-  return { data, tools: tools.error ? {} : tools };
+  const held = S.data && S.data.name === name ? S.data : null;
+  const [data, tools] = await Promise.all([call("bot", name, held && held.digests), call("bot_tools", name)]);
+  return { data: withHeld(data, held), tools: tools.error ? {} : tools };
 }
 async function openBot(name, tab) {
   S.view = "bot"; S.bot = name; S.tab = tab || "overview"; S.data = null; S.tools = null; S.errors = {}; S.typed = {}; S.drafts = {}; S.consoleText = ""; S.consoleNext = 0; S.showChanges = false; S.tfPick = null;
-  S.rw = null; S.rwNotesOpen = {}; S.rwAbout = {}; S.st = null; S.rm = null; S.span = "all"; S.ch = null; S.chHover = null;
+  S.rw = null; S.coach = null; S.rwNotesOpen = {}; S.rwAbout = {}; S.st = null; S.rm = null; S.span = "all"; S.ch = null; S.chHover = null;
   render();
   const { data, tools } = await loadBot(name);
   if (S.view !== "bot" || S.bot !== name) return;  // another bot was opened meanwhile
   if (data.error) { toast(data.error, true); S.view = "home"; render(); return; }
   S.data = data; S.tools = tools; render(); followRunning();
   if (S.tab === "console") pollConsole();
+  if (S.tab !== "rewards") prefetchKinds();
 }
 
 // Every 5 s on a bot's page: its head, the tabs' counts and the waiting changes follow the bot, each drawn

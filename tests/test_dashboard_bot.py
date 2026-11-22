@@ -794,6 +794,9 @@ def test_a_save_is_scored_on_the_practice_skills(tmp_path: Path) -> None:
         "shot",
         "save",
         "aerial_touch",
+        "kickoff_duel",
+        "fifty_fifty",
+        "wall_read",
     ]
     assert all(float(row["value"]) >= 0 and isinstance(row["has"], bool) for row in rows)
     assert state["result"]["situations"] == 2 and state["result"]["who"] == "racer at 1,000 agent steps"
@@ -928,3 +931,42 @@ def test_a_comparisons_own_name_is_made_from_any_file_name(tmp_path: Path) -> No
         assert out["name"].startswith("racer-vs-") and len(out["name"]) <= 64
     out = api.tool_command("racer", "ab", {"a": "bot:racer", "b": mine["my fast bot"], "on": "speed"})
     assert out["name"] == "racer-vs-my-fast-bot-speed"
+
+
+def test_the_overview_shows_the_report_card_and_the_strength_chart(tmp_path: Path) -> None:
+    """The gauntlet's newest card and the strength chart in Your charts."""
+    from nitro.eval import MatchResult
+    from nitro.gauntlet import CardLine, append_report
+    from nitro.strength import FILE, rate, write
+
+    sync_api = playwright_or_skip()
+    runs = tmp_path / "runs"
+    folder = make_bot(runs, "racer", saves=1)
+    minutes_of_metrics(folder, 20)
+    append_report(
+        folder.root / "gauntlet.json",
+        600_000,
+        [CardLine("chaser", MatchResult(100, 97, 3, 0, 9.0, 60.0))],
+        1,
+        100,
+    )
+    data: dict[str, Any] = {"anchors": [], "ratings": []}
+    rate(data, 60_000, lambda a: (0, 0, 0), pin=True)
+    for steps, won in ((300_000, 60), (600_000, 75)):
+        rate(data, steps, lambda a, won=won: (won, 100 - won, 0), pin=False)
+    write(folder.root / FILE, data)
+    api = Api(tmp_path / "project", runs)
+    errors: list[str] = []
+    with sync_api.sync_playwright() as p:
+        browser = open_chromium(p)
+        try:
+            tab = opened(browser, api, errors, viewport={"width": 1440, "height": 920})
+            open_bot(tab, "racer")
+            chart = "[data-folder=yours] .chart[data-chart-id=strength]"
+            tab.wait_for_selector(f"{chart} canvas")
+            assert tab.text_content(f"{chart} h3") == "Strength against the pinned anchors"
+            card = tab.text_content("[aria-label='Report card against the scripted opponents']") or ""
+            assert "beats chaser 97% (92-99)" in card and "nitro gauntlet racer" in card
+        finally:
+            browser.close()
+    assert errors == []

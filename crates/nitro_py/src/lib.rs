@@ -28,6 +28,65 @@ impl PyMeshReport {
     }
 }
 
+type CsvRows<'py> = (
+    Bound<'py, pyo3::types::PyBytes>,
+    Bound<'py, pyo3::types::PyBytes>,
+    Vec<u64>,
+    u64,
+);
+
+/// Where the rows of a metrics file start and end from byte `start` (`nitro_core::csv_rows`), as the
+/// dashboard's reader keeps them: (starts and ends as little-endian i64 bytes, indices of rows holding a quote,
+/// the byte after the last whole line). The file is streamed, never held whole.
+#[pyfunction]
+fn csv_rows<'py>(
+    py: Python<'py>,
+    path: std::path::PathBuf,
+    start: u64,
+    width: usize,
+) -> PyResult<CsvRows<'py>> {
+    let found = py
+        .detach(|| nitro_core::csv_rows::rows(&path, start, width))
+        .map_err(|err| pyo3::exceptions::PyOSError::new_err(err.to_string()))?;
+    let bytes = |values: &[u64]| -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|v| (*v as i64).to_le_bytes())
+            .collect()
+    };
+    Ok((
+        pyo3::types::PyBytes::new(py, &bytes(&found.starts)),
+        pyo3::types::PyBytes::new(py, &bytes(&found.ends)),
+        found.quoted,
+        found.end,
+    ))
+}
+
+/// Rows of a metrics file as numbers (`nitro_core::csv_rows::numbers`): `starts` and `ends` as
+/// little-endian i64 bytes, in file order; (`width` f64 per row as little-endian bytes, NaN when empty; the
+/// rows the caller reads itself).
+#[pyfunction]
+fn csv_numbers<'py>(
+    py: Python<'py>,
+    path: std::path::PathBuf,
+    starts: &[u8],
+    ends: &[u8],
+    width: usize,
+) -> PyResult<(Bound<'py, pyo3::types::PyBytes>, Vec<u64>)> {
+    let read = |bytes: &[u8]| -> Vec<u64> {
+        bytes
+            .chunks_exact(8)
+            .map(|b| i64::from_le_bytes(b.try_into().unwrap()) as u64)
+            .collect()
+    };
+    let (starts, ends) = (read(starts), read(ends));
+    let (values, unsure) = py
+        .detach(|| nitro_core::csv_rows::numbers(&path, &starts, &ends, width))
+        .map_err(|err| pyo3::exceptions::PyOSError::new_err(err.to_string()))?;
+    let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    Ok((pyo3::types::PyBytes::new(py, &bytes), unsure))
+}
+
 /// Loads arena collision meshes into RocketSim (once per process).
 #[pyfunction]
 fn load_collision_meshes(py: Python<'_>, folder: PathBuf) -> PyResult<PyMeshReport> {
@@ -136,6 +195,102 @@ fn demonstrations_bytes<'py>(
     samples_dict(py, name, settings_json, softness, || {
         nitro_core::rlpr::read(data)
     })
+}
+
+/// A recorded game scored with the rewards of the core settings `settings_json` (`nitro_core::score`): the
+/// recording at `path` (`.rlpr`, `.rlpr.zst`), or, with `columns`, a converted replay's replicar columns
+/// (cars, frames, usable, car_floats, car_flags, ball_floats; the layout of `replay_samples`). A dict with
+/// `labels`, `teams` (0 Blue, 1 Orange, Blue first), `frames` (viewer frames, f32 bytes), `step_frames`,
+/// `pay` (f32 bytes, [step, reward, car]) and `pads`.
+#[pyfunction]
+#[pyo3(signature = (settings_json, every, max_ticks, path = None, columns = None))]
+#[allow(clippy::type_complexity)]
+fn score_recording<'py>(
+    py: Python<'py>,
+    settings_json: &str,
+    every: u32,
+    max_ticks: usize,
+    path: Option<PathBuf>,
+    columns: Option<(usize, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let config = pool_config(settings_json)?;
+    let report = nitro_core::meshes::load(&config.collision_meshes)
+        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?;
+    if !report.is_complete() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "the collision meshes in {} are not complete",
+            report.folder.display()
+        )));
+    }
+    let scored = py
+        .detach(|| -> Result<_, String> {
+            let (recording, replicar_rows, teams) = match (&path, &columns) {
+                (Some(path), None) => (nitro_core::rlpr::read_file(path)?, false, None),
+                (None, Some((cars, frames, usable, car_floats, car_flags, ball_floats))) => {
+                    let columns = nitro_core::replicar::Columns {
+                        cars: *cars,
+                        frames,
+                        usable,
+                        car_floats,
+                        car_flags,
+                        ball_floats,
+                    };
+                    // Blue first, half each (`replays.core_columns`).
+                    let teams = (0..*cars)
+                        .map(|car| {
+                            if car < cars / 2 {
+                                nitro_core::snapshot::Team::Blue
+                            } else {
+                                nitro_core::snapshot::Team::Orange
+                            }
+                        })
+                        .collect();
+                    (
+                        nitro_core::replicar::recording(&columns)?.recording,
+                        true,
+                        Some(teams),
+                    )
+                }
+                _ => return Err("give a recording's path or a replay's columns".to_owned()),
+            };
+            nitro_core::score::score(
+                &recording,
+                &nitro_core::score::ScoreRules {
+                    rewards: &config.rewards,
+                    tick_skip: config.tick_skip,
+                    every,
+                    replicar_rows,
+                    max_ticks,
+                    teams,
+                },
+            )
+        })
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let floats = |values: &[f32]| {
+        values
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<u8>>()
+    };
+    let out = pyo3::types::PyDict::new(py);
+    let labels: Vec<&str> = config
+        .rewards
+        .iter()
+        .map(|term| term.kind.label())
+        .collect();
+    out.set_item("labels", labels)?;
+    out.set_item(
+        "teams",
+        scored.teams.iter().map(|t| t.index()).collect::<Vec<_>>(),
+    )?;
+    out.set_item(
+        "frames",
+        pyo3::types::PyBytes::new(py, &floats(&scored.frames)),
+    )?;
+    out.set_item("step_frames", scored.step_frames)?;
+    out.set_item("pay", pyo3::types::PyBytes::new(py, &floats(&scored.pay)))?;
+    out.set_item("pads", scored.pads)?;
+    Ok(out)
 }
 
 /// The large replay mode's samples of one replay straight from its replicar columns (the layout in
@@ -399,6 +554,40 @@ fn observation_layout_of(
 
 /// The rewards of one's own compiled into this build: (name, description, paid every step,
 /// file, [(setting, Rust type, optional, description)]).
+/// A built reward's settings as JSON (title, vars, terms) checked by the core: (problem or "", paid
+/// every step, numbers remembered per car).
+#[pyfunction]
+fn built_check(settings: &str) -> (String, bool, usize) {
+    match nitro_core::built::check(settings) {
+        Ok((every_step, memory)) => (String::new(), every_step, memory),
+        Err(problem) => (problem, false, 0),
+    }
+}
+
+/// The words built rewards' formulas know: (car fields, ball fields, named values, functions).
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+fn built_words() -> (
+    Vec<&'static str>,
+    Vec<&'static str>,
+    Vec<&'static str>,
+    Vec<&'static str>,
+) {
+    nitro_core::built::expr::words()
+}
+
+/// The building blocks of built rewards: (plain conditions, numbered conditions, [(measure, of the state
+/// alone)]).
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+fn built_blocks() -> (
+    Vec<&'static str>,
+    Vec<&'static str>,
+    Vec<(&'static str, bool)>,
+) {
+    nitro_core::built::blocks()
+}
+
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 fn custom_rewards() -> Vec<(
@@ -429,12 +618,18 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("MeshLoadError", m.py().get_type::<MeshLoadError>())?;
     m.add_class::<PyMeshReport>()?;
     m.add_function(wrap_pyfunction!(load_collision_meshes, m)?)?;
+    m.add_function(wrap_pyfunction!(csv_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(csv_numbers, m)?)?;
     m.add_function(wrap_pyfunction!(custom_rewards, m)?)?;
+    m.add_function(wrap_pyfunction!(built_blocks, m)?)?;
+    m.add_function(wrap_pyfunction!(built_check, m)?)?;
+    m.add_function(wrap_pyfunction!(built_words, m)?)?;
     m.add_function(wrap_pyfunction!(action_controls, m)?)?;
     m.add_function(wrap_pyfunction!(num_actions, m)?)?;
     m.add_function(wrap_pyfunction!(demonstrations, m)?)?;
     m.add_function(wrap_pyfunction!(demonstrations_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(replay_samples, m)?)?;
+    m.add_function(wrap_pyfunction!(score_recording, m)?)?;
     m.add_function(wrap_pyfunction!(observation_layout, m)?)?;
     m.add_function(wrap_pyfunction!(observation_layout_of, m)?)?;
     m.add_function(wrap_pyfunction!(ball_prediction_decisions, m)?)?;

@@ -27,6 +27,7 @@ from nitro import (
     fp16_sums,
     multigpu,
     pretrain,
+    selector,
     tracking,
     transfer,
 )
@@ -50,6 +51,8 @@ from nitro.runs import (
     numbered,
     setting_changes,
 )
+from nitro.selector import Engine, SelectorEnvs, Specialist
+from nitro.selector_learning import ModelLearning, model_columns, model_row
 from nitro.selfplay import Frozen, SelfPlay
 from nitro.trainer import Envs, StageTimes, Trainer, release_memory
 
@@ -219,11 +222,18 @@ def arena_seed(run_seed: int, checkpoint: int) -> int:
     return (x ^ (x >> 31)) & ((1 << 63) - 1)
 
 
-def build_envs(config: NitroConfig, checkpoint: int, device: torch.device) -> EnvPool:
-    """The arenas of checkpoint `checkpoint`."""
+def build_envs(
+    config: NitroConfig, checkpoint: int, device: torch.device, views: Sequence[dict[str, Any]] = ()
+) -> EnvPool:
+    """The arenas of checkpoint `checkpoint`; `views`: a multi-model bot's models' views of them."""
     seed = arena_seed(config.run.seed, checkpoint)
     seeded = dataclasses.replace(config, run=dataclasses.replace(config.run, seed=seed))
-    return EnvPool(seeded, pin_memory=device.type == "cuda")
+    return EnvPool(seeded, pin_memory=device.type == "cuda", views=views)
+
+
+def selector_seed(run_seed: int, checkpoint: int) -> int:
+    """Seed of a multi-model bot's models' sampling in the games built at checkpoint `checkpoint`."""
+    return arena_seed(run_seed, checkpoint) ^ 0x5E1EC7
 
 
 @dataclass(frozen=True)
@@ -233,6 +243,9 @@ class TrainingSetup:
     trainer: Trainer
     gamma: float
     selfplay: SelfPlay
+    selector: SelectorEnvs | None = None  # the games as a multi-model bot's selector sees them
+    models: Engine | None = None  # a multi-model bot's models
+    model_learning: ModelLearning | None = None  # their training and goal heads
 
 
 def build(
@@ -241,12 +254,14 @@ def build(
     pool_folder: Path | None = None,
     start: transfer.Source | None = None,
     frozen: Frozen | None = None,
+    specialists: Sequence[Specialist] = (),
 ) -> TrainingSetup:
     """A ready-to-train setup; from `state` (a checkpoint) it continues exactly where that left off.
 
     Self-play against past versions needs `pool_folder` (the run's `pool/`); without one it stays off. A new
     run (no `state`) starts from `start`'s networks when given (transfer learning). `frozen`: frozen networks
-    with games of their own (exploiters).
+    with games of their own (exploiters). With `selector.specialists` set, `specialists` are the bots the
+    selector chooses between (a multi-model bot).
     """
     device = resolve_device(config.run)
     fp16 = config.run.precision == "fp16" and device.type == "cuda"
@@ -254,13 +269,45 @@ def build(
     torch.manual_seed(config.run.seed)
     release_memory(device)  # what earlier runs in this process left behind (nitro ab, the task scripts)
     checkpoint = state["checkpoint"] if state else 0
-    if state and (problem := actions_problem(state["learner"]["model"])):
-        raise ValueError(f"{problem}.")
-    envs = build_envs(config, checkpoint, device)
+    multi = bool(config.selector.specialists)
+    if state and not multi and (problem := actions_problem(state["learner"]["model"])):
+        raise ValueError(f"{problem}.")  # a selector's choices are its models, not the action table
+    envs = build_envs(config, checkpoint, device, selector.views(specialists, config) if multi else ())
     games: Envs = envs
-    obs_size, num_actions = games.groups[0].obs.shape[1], games.groups[0].mask.shape[1]
-    model = build_networks(config, obs_size, num_actions).to(device)
+    chooser = None
+    models = None
     gamma = discount_from_half_life(config.ppo.discount_half_life, config.env.tick_skip)
+    if multi:
+        if len(specialists) != len(config.selector.specialists):
+            raise ValueError("a multi-model run needs its models (nitro.selector.load_specialists)")
+        models = selector.engine(
+            config,
+            envs,
+            specialists,
+            device,
+            fp16,
+            selector_seed(config.run.seed, checkpoint),
+            record=config.selector.train_models or config.selector.goal_heads,
+            pin_memory=device.type == "cuda",
+            saved=state.get("selector") if state else None,
+        )
+        chooser = games = models.games
+    obs_size, num_actions = games.groups[0].obs.shape[1], games.groups[0].mask.shape[1]
+    game_size = envs.groups[0].obs.shape[1]
+    model = (
+        selector.network(config, game_size, num_actions)
+        if multi
+        else build_networks(config, obs_size, num_actions)
+    ).to(device)
+    model_learning = None
+    if models is not None and (config.selector.train_models or config.selector.goal_heads):
+        model_learning = ModelLearning(
+            models.models, specialists, config, gamma, device, fp16, models.obs_sizes, models.goal_heads
+        )
+        if state and "selector" in state:
+            model_learning.load_state_dict(state["selector"].get("learning", {}))
+    if chooser is not None and state and "selector" in state:
+        chooser.load_state_dict(state["selector"].get("games", {}))
     learner = Learner(model, config.ppo, gamma, device, fp16)
     learner.goal_gamma = discount_from_half_life(config.ppo.goal_critic_half_life, config.env.tick_skip)
     sums = config.run.fp16_sums if fp16 else "off"
@@ -316,7 +363,7 @@ def build(
         card_starts=config.env.card_starts_games,
         fp16_sums=sums in fp16_sums.PLAYING,
     )
-    return TrainingSetup(envs, model, trainer, gamma, selfplay)
+    return TrainingSetup(envs, model, trainer, gamma, selfplay, chooser, models, model_learning)
 
 
 # Per-setter figures, present when the settings list more than one way of starting.
@@ -474,6 +521,11 @@ class TrainingRun:
         for note in config.advice() if advise else []:
             log.warning(note)
         self.folder = folder
+        if config.selector.specialists and config.start_from.source and not state:
+            raise selector.SelectorError(
+                "a multi-model bot (selector.specialists) cannot start from another bot yet (start_from or "
+                "--from)"
+            )
         if config.pretrain.enabled and config.start_from.source and not state:
             raise transfer.TransferError(
                 "pretrain.enabled and start_from (or --from) both choose what the run starts from; use one"
@@ -514,13 +566,24 @@ class TrainingRun:
             log.warning(
                 "pretrain.value_warmup_steps acts only with pretrain.enabled = true; it does nothing here."
             )
+        # A multi-model bot keeps its models in its saves, so it never depends on their bots again.
+        if state and state.get("specialists"):
+            self.specialists: list[Specialist] = list(selector.from_state(state["specialists"]))
+        else:
+            self.specialists = list(selector.load_specialists(config, folder.root.parent))
+        if self.specialists:
+            log.info("A multi-model bot over: %s.", "; ".join(s.label for s in self.specialists))
         steps = state["agent_steps"] if state else 0
         frozen = exploiters.frozen_for(config, folder.root, steps)
-        setup = build(config, state, folder.root / "pool", source, frozen)
+        setup = build(config, state, folder.root / "pool", source, frozen, self.specialists)
         self.trainer = setup.trainer
         self.envs = setup.envs
         self.model = setup.model
         self.selfplay = setup.selfplay
+        self.selector = setup.selector
+        self.selector_labels = selector.labels(self.specialists)
+        self.models = setup.models
+        self.model_learning = setup.model_learning
         if config.env.team_sizes:
             log.info(sizes_note(self.envs.arena_team_sizes, 2))
             if not state and not source:
@@ -531,6 +594,8 @@ class TrainingRun:
                     max(config.env.team_sizes),
                 )
         self.checkpoint_index = state["checkpoint"] if state else 0
+        self.said_saves_over = False  # the saves disk cap warned once already
+        self.said_not_rated = False  # a multi-model bot's skipped ratings were said once already
         self.agent_steps = state["agent_steps"] if state else 0
         self.iterations = state["iterations"] if state else 0
         self.trainer.iterations = self.iterations  # train.log numbers iterations as metrics.csv does
@@ -605,10 +670,25 @@ class TrainingRun:
             *(EVEN_START_COLUMNS if self.even_starts is not None else []),
             *(f"{name}_{label}" for label in setter_labels(config) for name in SETTER_COLUMNS),
             *(KICKOFF_COLUMNS if kickoff_columns_on(config) else []),
+            *(["selector_switches_per_minute"] if self.selector else []),
+            *(f"selector_share_{label}" for label in self.selector_labels),
+            *(
+                f"selector_bonus_{label}"
+                for label in (self.selector_labels if any(config.selector.min_share) else [])
+            ),
+            *model_columns(
+                self.selector_labels,
+                config.selector.train_models,
+                config.selector.goal_heads and self.selector is not None,
+            ),
         ]  # fmt: skip
         self.setter_labels = setter_labels(config)
         self.metrics = MetricsLog(folder.metrics, columns, until=self.agent_steps)
-        self.warnings = TrendWarnings(config.selfplay.flat_rating_steps if self.selfplay.enabled else 0, 0.1)
+        # A selector's held steps have one allowed choice and no entropy, so its mean entropy is lower.
+        self.warnings = TrendWarnings(
+            config.selfplay.flat_rating_steps if self.selfplay.enabled else 0,
+            0.1 / self.selector.hold_steps if self.selector else 0.1,
+        )
         self.recent_warnings: list[str] = []
         self.console_warnings: list[str] = []  # new since the last console report
         for note in self.missing_notes:
@@ -678,11 +758,13 @@ class TrainingRun:
             self.replay_mix.start()  # its replays are made ready while the games play
         if self.cards is None:
             self.trainer.learner.restart_twins(trained_at)  # ppo.vdag_reinit_steps
+        models_rate = self._selector_turn()
         with self.cards.iteration(trained_at) if self.cards is not None else contextlib.nullcontext():
             # Several cards: once the helpers heard of this iteration, so they restart with it.
             if self.cards is not None:
                 self.trainer.learner.restart_twins(trained_at)
             report = self.trainer.iteration()
+        learned = self._models_learn(models_rate)
         # Every card played as many steps as this one; the games' columns below are this card's.
         cards = self.config.run.cards
         env = self.envs.take_stats()
@@ -769,6 +851,9 @@ class TrainingRun:
             row |= mix_columns(report.copy)
         if self.setter_labels:
             row |= per_setter(episodes, self.setter_labels)
+        if self.selector:
+            row |= self._selector_columns()
+            row |= learned
         if kickoff_columns_on(self.config):
             row |= kickoff_touches(episodes)
         matches = episodes
@@ -830,6 +915,64 @@ class TrainingRun:
         self.last_times = report.times
         return row
 
+    def _housekeeping(self) -> None:
+        """After a save: the saves' disk cap and metrics.csv's size cap (run.saves_disk_gb,
+        metrics_max_mb)."""
+        run = self.config.run
+        if run.saves_disk_gb > 0:
+            deleted, over = self.folder.cap_saves(run.saves_disk_gb, run.milestone_steps)
+            for line in deleted:
+                print(f"Disk cap: {line}.", flush=True)
+                log.info("Disk cap: %s", line)
+            if over and not self.said_saves_over:
+                self.said_saves_over = True
+                log.warning(
+                    "The saves still take more than run.saves_disk_gb = %g GB, but the ones left are never "
+                    "deleted (the newest, and saves marked to keep): raise the cap or free space by hand.",
+                    run.saves_disk_gb,
+                )
+        if run.metrics_max_mb > 0 and self.metrics.compact(run.metrics_max_mb * 1e6):
+            line = (
+                f"metrics.csv was over {run.metrics_max_mb:g} MB (run.metrics_max_mb): every other row "
+                "dropped (the first and newest kept)"
+            )
+            print(f"{line}.", flush=True)
+            log.info(line)
+
+    def _rate_strength(self, state: dict[str, Any], path: Path) -> None:
+        """The new save's rating against the pinned anchors (strength.anchors); a failure is logged and
+        training goes on."""
+        settings = self.config.strength
+        if settings.anchors <= 0 or (self.checkpoint_index - 1) % settings.rate_every:
+            return
+        if why := selector.not_yet(self.config, "rated against anchors"):
+            if not self.said_not_rated:
+                log.info("The strength chart (strength.anchors) is skipped for this bot: %s.", why)
+                self.said_not_rated = True
+            return
+        from nitro import strength
+
+        start = time.monotonic()
+        try:
+            entry = strength.rate_save(self.folder, state, self.config, path)
+        except Exception as err:  # a chart must never stop training
+            log.warning("The strength rating of this save was skipped: %s", err)
+            return
+        took = time.monotonic() - start
+        pinned = (path / strength.ANCHOR).is_file()
+        if entry is None:
+            log.info("Strength: this save is the first anchor (rating 0 by definition).")
+        else:
+            log.info(
+                "Strength: %.0f (95%% range %.0f to %.0f) against %d anchor(s), in %.1f s%s.",
+                entry["rating"],
+                entry["low"],
+                entry["high"],
+                len(entry["matches"]),
+                took,
+                "; pinned as a new anchor" if pinned else "",
+            )
+
     def checkpoint(self, continue_after: bool = True, kept: bool = False) -> Path:
         """Saves the run; when continuing, every game starts afresh and the past versions
         playing against the bot are re-drawn."""
@@ -845,26 +988,82 @@ class TrainingRun:
             kept=kept,
             copy_so_far=self.copy_so_far,
         )
+        self._housekeeping()
         self.checkpoint_index += 1
         self.saved_at_steps = self.agent_steps
         if self.replay_mix is not None and self.replay_mix.off:  # said again: it stays in the report's list
             log.warning(self.replay_mix.off)
             self.recent_warnings = [*self.recent_warnings[-4:], self.replay_mix.off]
             self.console_warnings.append(self.replay_mix.off)
+        self._rate_strength(state, path)
+        if run.skills_every > 0 and self.checkpoint_index % run.skills_every == 0:
+            self.score_skills(state)
         if continue_after:
             self.selfplay.rotate(rotation_rng(self.config.run.seed, self.checkpoint_index))
 
             def rebuild() -> Envs:
-                self.envs = build_envs(self.config, self.checkpoint_index, self.trainer.device)
-                return self.envs
+                self.envs = build_envs(
+                    self.config,
+                    self.checkpoint_index,
+                    self.trainer.device,
+                    selector.views(self.specialists, self.config) if self.specialists else (),
+                )
+                if self.selector is None:
+                    return self.envs
+                return self.selector.attach(
+                    self.envs, selector_seed(self.config.run.seed, self.checkpoint_index)
+                )
 
             del self.envs  # the trainer lets the old games go before `rebuild` makes the new ones
+            if self.selector is not None:
+                self.selector.release()
             self.trainer.restart(rebuild)
+            if self.model_learning is not None:
+                self.model_learning.games_rebuilt()  # the goal guessers' waiting states end with their games
             self._count_learner_cars_only()
             if self.cards is not None:  # the other cards build theirs before the next iteration
                 self.cards.rebuilt = self.checkpoint_index
             self.warming_up = True
         return path
+
+    def score_skills(self, state: dict[str, Any]) -> None:
+        """run.skills_every: the save just made through `nitro skills`' battery on the training device,
+        the same situations every time. Never stops training: a problem is reported and training goes on."""
+        from nitro.eval import Side
+        from nitro.skills import run_battery, save_results
+        from nitro.tasks import EVAL_SEEDS
+
+        if why := selector.not_yet(self.config, "scored on skills"):
+            if not self.said_not_rated:
+                log.info("Skills on a schedule (run.skills_every) are skipped for this bot: %s.", why)
+                self.said_not_rated = True
+            return
+        games, seed = self.config.run.skills_games, EVAL_SEEDS[0]
+        start = time.perf_counter()
+        skipped: list[str] = []
+        try:
+            config = self.folder.load_settings(state)
+            device = self.trainer.device
+            run = dataclasses.replace(config.run, device="cuda" if device.type == "cuda" else "cpu")
+            config = dataclasses.replace(config, run=run)
+            # The battery's own random draws leave training's exactly where they were.
+            with torch.random.fork_rng(devices=[device] if device.type == "cuda" else []):
+                side = Side(self.folder.root.name, self.agent_steps, state, config)
+                results = run_battery(side, games=games, seed=seed, skipped=skipped)
+            save_results(self.folder.root, self.agent_steps, results, seed, games)
+        except Exception as err:  # scoring must never end a run
+            log.warning(
+                "Could not score this save's skills (run.skills_every); training carries on. The problem: %s",
+                err,
+            )
+            return
+        log.info(
+            "Skills at %s agent steps (%d situations each, took %.0f s; saved in skills.csv):\n  %s",
+            f"{self.agent_steps:,}",
+            games,
+            time.perf_counter() - start,
+            "\n  ".join([r.line() for r in results] + skipped),
+        )
 
     def state(self) -> dict[str, Any]:
         """Everything a save holds: the run continues exactly from it."""
@@ -895,7 +1094,82 @@ class TrainingRun:
         mix = self.replay_mix.state_dict() if self.replay_mix is not None else self.replay_mix_state
         if mix is not None:
             state["replay_mix"] = mix  # the copy steps' optimizer and place in the replays
+        if self.specialists:
+            state["specialists"] = selector.to_state(self._current_specialists())
+            state["selector"] = {
+                "games": self.selector.state_dict() if self.selector is not None else {},
+                "learning": self.model_learning.state_dict() if self.model_learning is not None else {},
+            }
         return state
+
+    def _current_specialists(self) -> list[Specialist]:
+        """The models as they are now: trained ones (selector.train_models) with their new weights and the
+        weights they started from."""
+        learning = self.model_learning
+        if learning is None or not learning.learners:
+            return list(self.specialists)
+        out = []
+        for specialist, learner in zip(self.specialists, learning.learners, strict=True):
+            anchor = learner.anchor
+            assert anchor is not None
+            out.append(
+                dataclasses.replace(
+                    specialist,
+                    weights={k: v.detach().cpu().clone() for k, v in learner.model.state_dict().items()},
+                    start=specialist.start
+                    or {k: v.detach().cpu().clone() for k, v in anchor.state_dict().items()},
+                )
+            )
+        return out
+
+    def _learner_rows(self) -> torch.Tensor | None:
+        """The learner's own cars (bool per agent), or None for every car: not past versions."""
+        return self.selfplay.learner_rows if self.selfplay.in_use else None
+
+    def _selector_turn(self) -> float:
+        """Before a multi-model bot's collection: which cars are the learner's, recording started, and with
+        train_schedule = "alternate" whose turn it is. The share of model_lr the models learn with this
+        time: 0 when they do not (off, the selector's warm-up, or the selector's turn)."""
+        if self.selector is None:
+            return 0.0
+        self.selector.learner_rows = self._learner_rows()
+        self.selector.begin(self.trainer.steps)
+        settings = self.config.selector
+        rate = settings.models_rate_at(self.agent_steps)
+        if rate == 0 or settings.train_schedule == "together":
+            return rate  # in the warm-up the selector learns every iteration
+        models_turn = (self.iterations // settings.alternate_iterations) % 2 == 0
+        if models_turn:  # the selector's policy is held while the models learn; its value keeps learning
+            self.trainer.learner.policy_frozen = True
+        return rate if models_turn else 0.0
+
+    def _models_learn(self, models_rate: float) -> dict[str, Any]:
+        """The models' and goal guessers' update after a collection, as metrics columns."""
+        learning, chooser = self.model_learning, self.selector
+        if learning is None or chooser is None or chooser.recorded is None:
+            return {}
+        stats, accuracy = learning.learn(chooser.recorded, self._learner_rows(), models_rate)
+        return model_row(self.selector_labels, stats, accuracy, models_rate)
+
+    def _selector_columns(self) -> dict[str, Any]:
+        assert self.selector is not None
+        stats = self.selector.take_stats()
+        self.selector.end_collection(stats.driven)
+        steps = sum(stats.driven)
+        minutes = steps * self.config.env.tick_skip / 120 / 60  # car-minutes
+        row: dict[str, Any] = {
+            "selector_switches_per_minute": stats.switches / minutes if minutes else "",
+            **{
+                f"selector_share_{label}": driven / steps if steps else ""
+                for label, driven in zip(self.selector_labels, stats.driven, strict=True)
+            },
+        }
+        if self.selector.bonus is not None:
+            row |= {
+                f"selector_bonus_{label}": float(bonus)
+                for label, bonus in zip(self.selector_labels, self.selector.bonus.bonus.tolist(), strict=True)
+            }
+        return row
 
     def _count_learner_cars_only(self) -> None:
         """Keeps the frozen opponents' cars out of the reward statistics (metrics, warnings)."""

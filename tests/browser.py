@@ -3,6 +3,7 @@ one skips, saying what is missing, where Playwright or its Chromium is not insta
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pytest
@@ -23,7 +24,9 @@ def open_chromium(playwright: Any) -> Any:
     try:
         return playwright.chromium.launch(args=["--no-proxy-server"])
     except Exception as err:
-        try:  # an installed Google Chrome does as well
+        try:  # an installed Google Chrome does as well, or a Chromium named by NITRO_TEST_CHROMIUM
+            if path := os.environ.get("NITRO_TEST_CHROMIUM"):
+                return playwright.chromium.launch(executable_path=path, args=["--no-proxy-server"])
             return playwright.chromium.launch(channel="chrome", args=["--no-proxy-server"])
         except Exception:
             reason = (str(err).strip().splitlines() or [type(err).__name__])[0]

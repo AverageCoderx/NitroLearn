@@ -31,13 +31,14 @@ from typing import Any
 import torch
 from torch import nn
 
-from nitro import _core, prebuilt, toolchain
+from nitro import _core, prebuilt, selector, toolchain
 from nitro.config import NitroConfig
 from nitro.doctor import ADD_RUST
 from nitro.fused_norm import AppliedReLU
 from nitro.model import (
     ActorCritic,
     EntityEncoder,
+    InputMap,
     ResidualBlock,
     TalkingEncoder,
     TransformerEncoder,
@@ -57,6 +58,8 @@ SKIP_FORMAT = 3  # an attention encoder with the own part passed beside it (mode
 TALK_FORMAT = 4  # encoder = 'attention_communication'
 TRANSFORMER_FORMAT = 6  # encoder = 'transformer'
 RESIDUAL_FORMAT = 8  # residual blocks (model.residual)
+INPUT_MAP_FORMAT = 9  # an imported network's input map (model.input_map)
+MULTI_FORMAT = 10  # a multi-model bot: the selector and its models
 BOT_CRATE = "nitro_bot"
 PROGRAM = f"{BOT_CRATE}.exe" if sys.platform == "win32" else BOT_CRATE  # the bot program on this computer
 # Cargo's folders, which source paths in a program's panic messages would show.
@@ -72,11 +75,25 @@ class ExportError(RuntimeError):
     """The save cannot be exported; the message says why."""
 
 
-def _layer_records(model: ActorCritic) -> tuple[list[dict[str, Any]], list[torch.Tensor]]:
-    """Every layer of the shared trunk and the policy head, in order, with its weights."""
+def _layer_records(
+    model: ActorCritic, head: str = "policy"
+) -> tuple[list[dict[str, Any]], list[torch.Tensor]]:
+    """Every layer of the shared trunk and the policy head (or the value network: with value heads, the
+    critic trunk and the main head; the other heads never ship), in order, with its weights."""
     layers: list[dict[str, Any]] = []
     weights: list[torch.Tensor] = []
-    for module in [*model.shared, *model.policy]:
+    mapped = getattr(model, "input_map", None)
+    if isinstance(mapped, InputMap):
+        clip = float(mapped.clip)
+        layers.append(
+            {"kind": "input_map", "inputs": mapped.inputs, "outputs": len(mapped.index), "clip": clip}
+        )
+        weights += [mapped.index.float(), mapped.scale, mapped.offset, mapped.divisor]
+    modules = [*model.shared, *getattr(model, head)]
+    main = model.value_heads["main"] if head == "value" and len(model.value_heads) else None
+    if isinstance(main, nn.Sequential):
+        modules += list(main)
+    for module in modules:
         if isinstance(module, ResidualBlock):
             inner, inner_weights = _module_records(list(module.branch))
             layers += [{"kind": "residual_start"}, *inner, {"kind": "residual_add"}]
@@ -200,8 +217,46 @@ def write_policy(
     )
     if any(layer["kind"] == "residual_start" for layer in layers):
         version = RESIDUAL_FORMAT  # its reader takes every other format's layers too
+    if any(layer["kind"] == "input_map" for layer in layers):
+        version = INPUT_MAP_FORMAT  # its reader takes every other format's layers too
     header = _header(version, config, obs_size, num_actions, run, steps)
     _write(path, {**header, "layers": layers}, weights)
+
+
+def write_selector(
+    path: Path, bundle: selector.Saved, hold_steps: int, config: NitroConfig, run: str, steps: int
+) -> None:
+    """Writes a multi-model bot: `bundle`'s selector's networks, then per model its policy, its value and its
+    goal head; `hold_steps` decisions a choice holds at least."""
+    layers, weights = _layer_records(bundle.selector)
+    kept = []
+    for index, (name, network) in enumerate(zip(bundle.labels, bundle.models, strict=True)):
+        policy, policy_weights = _layer_records(network, "policy")
+        value, value_weights = _layer_records(network, "value")
+        entry: dict[str, Any] = {"name": name, "policy": policy, "value": value}
+        weights += policy_weights + value_weights
+        if (view := bundle.views[index]) is not None:
+            entry["view"] = view
+        shift, scale = bundle.value_shift[index], bundle.value_scale[index]
+        if (shift, scale) != (0.0, 1.0):
+            entry |= {"value_shift": shift, "value_scale": scale}
+        if bundle.goal_heads is not None:
+            head = bundle.goal_heads.heads[index]
+            assert isinstance(head, nn.Sequential)
+            goal, goal_weights = _module_records(list(head))
+            entry["goal"] = goal
+            weights += goal_weights
+        kept.append(entry)
+    header = _header(MULTI_FORMAT, config, bundle.game_size, bundle.models[0].num_actions, run, steps)
+    header["layers"] = layers
+    header["selector"] = {
+        "hold_steps": hold_steps,
+        "held_cap_seconds": selector.HELD_CAP_SECONDS,
+        "specialists": kept,
+        **({"extras_at": bundle.extras_at} if bundle.extras_at != bundle.game_size else {}),
+        **({"goal_heads": True} if bundle.goal_heads is not None else {}),
+    }
+    _write(path, header, weights)
 
 
 def _header(
@@ -339,6 +394,8 @@ def _readme(
     config: NitroConfig,
     built: bool,
     skipped: bool = False,
+    chooser: tuple[list[str], float] | None = None,
+    models_predict: bool = False,
 ) -> str:
     if built:
         missing = ""
@@ -353,17 +410,32 @@ again without `--no-build` to build `{PROGRAM}` and copy it here.
 printed says why). Run `nitro export` again once that is fixed (for example once Rust is installed): it
 builds the program and copies it here.
 """
+    selecting = (
+        ""
+        if chooser is None
+        else f"""
+## A multi-model bot
+At every decision each of its {len(chooser[0])} models ({", ".join(f"`{bot}`" for bot in chooser[0])}) picks
+an action and its selector picks whose is played; a choice holds at least {chooser[1]:.2f} s and starts afresh
+at every kickoff. It plays the game size it trained at, or a smaller match when its selector has room for it
+and every model can see it; in any other match it sits still and says why.
+"""
+    )
+    seeing = (
+        f"it sees where the ball will be in {_seconds(config.env.ball_prediction)}"
+        if config.env.ball_prediction
+        else "one or more of its models see where the ball will be"
+    )
     predicting = (
         f"""
 ## Ball prediction
-This bot was trained with ball prediction: it sees where the ball will be in
-{_seconds(config.env.ball_prediction)}. The bot program asks RLBot for RLBot's own ball prediction, which,
-like training's, comes from RocketSim's physics; the two can differ slightly. If RLBot sends none, the bot
-sits still (and says so) unless `--meshes <folder>` in `run_command` points it at a folder of Rocket League
-collision meshes (the `collision_meshes` folder of your NitroLearn install), from which it predicts the ball
-itself.
+This bot was trained with ball prediction: {seeing}. The bot program asks RLBot for RLBot's own
+ball prediction, which, like training's, comes from RocketSim's physics; the two can differ slightly. If
+RLBot sends none, the bot sits still (and says so) unless `--meshes <folder>` in `run_command` points it at a
+folder of Rocket League collision meshes (the `collision_meshes` folder of your NitroLearn install), from
+which it predicts the ball itself.
 """
-        if config.env.ball_prediction
+        if config.env.ball_prediction or models_predict
         else ""
     )
     sizes = config.env.sizes_label + (" side by side" if config.env.team_sizes else "")
@@ -373,6 +445,7 @@ itself.
 A Rocket League bot trained with NitroLearn (run `{run}`, {steps:,} agent steps; {sizes},
 tick skip {config.env.tick_skip}, action delay {delay} tick{"" if delay == 1 else "s"}).
 
+{selecting}
 ## Fair play
 Play it offline only: RLBot matches, private matches against your own bots, and bot tournaments. Never use it
 in online matches against real players: that is cheating, and it breaks Rocket League's terms of service.
@@ -625,14 +698,21 @@ def export_run(
     }
     config = dataclasses.replace(config, env=dataclasses.replace(config.env, **trained))
     table = _core.num_actions()
-    if problem := actions_problem(state["learner"]["model"], f"'{folder.root.name}'"):
-        raise ExportError(problem)
-    model, obs_size, num_actions = model_from_state(state, config)
-    if num_actions != table:
-        raise ExportError(
-            f"'{folder.root.name}' chooses among {num_actions} actions, but this version of NitroLearn has "
-            f"{table}: it was made by another version and cannot be exported"
-        )
+    bundle = None
+    if config.selector.specialists:  # a selector's choices are its models; theirs are the game's actions
+        try:
+            bundle = selector.saved(state, config, table, torch.device("cpu"))
+        except selector.SelectorError as err:
+            raise ExportError(f"'{folder.root.name}' cannot be exported: {err}") from None
+    else:
+        if problem := actions_problem(state["learner"]["model"], f"'{folder.root.name}'"):
+            raise ExportError(problem)
+        model, obs_size, num_actions = model_from_state(state, config)
+        if num_actions != table:
+            raise ExportError(
+                f"'{folder.root.name}' chooses among {num_actions} actions, but this version of NitroLearn "
+                f"has {table}: it was made by another version and cannot be exported"
+            )
 
     run = folder.root.name
     steps = int(state["agent_steps"])
@@ -640,7 +720,15 @@ def export_run(
     agent_id = f"nitrolearn/{_SAFE_NAME.sub('-', run).strip('-').lower() or 'nitro-bot'}"
     out.mkdir(parents=True, exist_ok=True)
     files = []
-    write_policy(out / "policy.nwt", model, config, obs_size, num_actions, run, steps)
+    chooser = None
+    if bundle is not None:
+        seconds = saved.get("selector.min_hold_seconds", config.selector.min_hold_seconds)
+        held = dataclasses.replace(config.selector, min_hold_seconds=float(seconds))
+        hold = selector.hold_steps(held, config.env.tick_skip)
+        write_selector(out / "policy.nwt", bundle, hold, config, run, steps)
+        chooser = (bundle.labels, hold * config.env.tick_skip / 120)
+    else:
+        write_policy(out / "policy.nwt", model, config, obs_size, num_actions, run, steps)
     files.append(out / "policy.nwt")
     description = f"Trained with NitroLearn: run {run}, {steps:,} agent steps"
     for file, text in (
@@ -658,7 +746,11 @@ def export_run(
     if exe is not None:
         shutil.copy2(exe, out / exe.name)
         files.append(out / exe.name)
-    (out / "README.md").write_text(_readme(name, run, steps, config, built, not build), encoding="utf-8")
+    models_predict = bundle is not None and any(
+        view is not None and view.get("ball_prediction") for view in bundle.views
+    )
+    readme = _readme(name, run, steps, config, built, not build, chooser, models_predict)
+    (out / "README.md").write_text(readme, encoding="utf-8")
     files.append(out / "README.md")
     (out / NOTICES_FILE).write_text(notices(project), encoding="utf-8")
     files.append(out / NOTICES_FILE)

@@ -15,6 +15,7 @@ import threading
 import time
 import zipfile
 from array import array
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from nitro import exploiter_folders as exploiters  # no PyTorch
 from nitro.config.loader import ConfigError
 from nitro.config.schema import NitroConfig, StartFromConfig
 from nitro.dashboard import livery
-from nitro.runs import RunFolder, source_paths
+from nitro.runs import PRETRAIN_COPY, RunFolder, read_copy_progress, source_paths
 
 RUNNING = "running.json"  # written by `nitro train` / `nitro resume` while they run (nitro.cli._run)
 STOP_REQUEST = "stop.request"  # asks a running bot to save and stop, as Ctrl+C once does
@@ -176,21 +177,25 @@ class Metrics:
     """A bot's metrics.csv as the dashboard needs it: the newest row whole, the columns its reward shares and
     training time read, as numbers (nan where empty), and every other column for the charts: every
     `stride`-th row (at most _THIN_ROWS, the stride doubling as the run grows) and every row from `tail_first`
-    on. Read again only from where it stopped as the file grows (a day's training writes hundreds of MB:
-    reading it all every few seconds took seconds and GB); read anew when it was written anew (a resume trims
-    it)."""
+    on, as single-precision numbers. Opening a bot finds only where each row starts (one streamed pass of the
+    core over the bytes) and reads a row's numbers the first time something asks for them, a few rows at a
+    time: reading a long run's whole file took many seconds and GB. Read again only from where it stopped as
+    the file grows; read anew when it was written anew (a resume trims it)."""
 
     header: list[str] = field(default_factory=list)
-    columns: dict[str, array[float]] = field(default_factory=dict)
+    columns: dict[str, Column] = field(default_factory=dict)
     last: list[str] = field(default_factory=list)
     count: int = 0
     offset: int = 0  # bytes read: up to the end of the last whole line
     identity: tuple[int, int, float, int] = (0, 0, 0.0, 0)  # the file read: device, inode, mtime, size
     thin_rows: list[int] = field(default_factory=list)
-    thin: dict[str, array[float]] = field(default_factory=dict)
+    charted: dict[str, int] = field(default_factory=dict)  # a chart column -> its place in a row
     stride: int = 1
     tail_first: int = 0
-    tail: dict[str, array[float]] = field(default_factory=dict)
+    file: Path | None = None
+    starts: array[int] = field(default_factory=lambda: array("q"))  # each counted row's first byte
+    ends: array[int] = field(default_factory=lambda: array("q"))  # and the byte after its text
+    parsed: dict[int, array[float]] = field(default_factory=dict)  # row -> its cells as numbers
 
     def value(self, column: str, row: int) -> float | None:
         """The column's number in `row`, None where empty, or where only a thinned copy is kept and `row`
@@ -198,16 +203,17 @@ class Metrics:
         values = self.columns.get(column)
         if values is not None:
             value = values[row]
-        elif column in self.tail and row >= self.tail_first:
-            value = self.tail[column][row - self.tail_first]
-        elif column in self.thin:
-            at = bisect.bisect_left(self.thin_rows, row)
-            if at == len(self.thin_rows) or self.thin_rows[at] != row:
-                return None
-            value = self.thin[column][at]
+        elif column in self.charted and self._charted(row):
+            value = _single(self.numbers(row)[self.charted[column]])
         else:
             return None
         return value if math.isfinite(value) else None
+
+    def _charted(self, row: int) -> bool:
+        if row >= self.tail_first:
+            return 0 <= row < self.count
+        at = bisect.bisect_left(self.thin_rows, row)
+        return at < len(self.thin_rows) and self.thin_rows[at] == row
 
     def rows_from(self, first: int) -> list[int]:
         """The rows from `first` on that every column has: the thinned ones, then every newest one."""
@@ -215,36 +221,104 @@ class Metrics:
         newest = range(max(first, self.tail_first), self.count)
         return [r for r in older if r < self.tail_first] + list(newest)
 
-    def _keep(self, row: int, values: list[float]) -> None:
-        """Keeps row `row`'s (the next one's) `values` of the chart columns, in `thin`'s order."""
+    def numbers(self, row: int) -> array[float]:
+        """Row `row`'s cells as numbers (0 = the oldest counted row)."""
+        with _PARSING:  # another call's prefetch may clear `parsed` between the fetch and the read
+            if not 0 <= row < self.count:
+                raise IndexError(row)
+            cells = self.parsed.get(row)
+            if cells is None:
+                near = row + 1 in self.parsed or row - 1 in self.parsed
+                first, end = (max(0, row - _RUN + 1), min(self.count, row + _RUN)) if near else (row, row + 1)
+                self.prefetch(range(first, end))
+                cells = self.parsed[row]
+            return cells
+
+    def cells(self, row: int) -> list[str]:
+        """Row `row`'s cells as written."""
+        return self._read(row, row + 1)[0]
+
+    def _read(self, first: int, end: int) -> list[list[str]]:
+        if self.file is None:
+            raise IndexError(first)
+        width = len(self.header)
+        with self.file.open("rb") as handle:
+            handle.seek(self.starts[first])
+            data = handle.read(self.ends[end - 1] - self.starts[first])
+        base, out = self.starts[first], []
+        for i in range(first, end):
+            text = data[self.starts[i] - base : self.ends[i] - base].decode("utf-8", errors="replace")
+            cells = next(csv.reader([text]), [])
+            out.append(cells if len(cells) == width else [""] * width)  # rewritten under us: empty
+        return out
+
+    def prefetch(self, rows: Iterable[int]) -> None:
+        """Reads the numbers of `rows` not read yet in one pass of the core; a row it leaves to Python (a
+        quote, a cell that is not plain number text) is read by csv."""
+        global _PARSED
+        with _PARSING:  # one parse at a time: the window's calls run in threads of their own
+            if self.file is None:
+                raise IndexError(rows)
+            if _PARSED is not self and _PARSED is not None:
+                _PARSED.parsed.clear()  # one bot's rows at a time: a page shows one bot
+            _PARSED = self
+            wanted = sorted({r for r in rows if r not in self.parsed})
+            if not wanted:
+                return
+            if len(self.parsed) + len(wanted) > _ROWS_KEPT:
+                self.parsed.clear()
+            from nitro import _core
+
+            width = len(self.header)
+            starts = array("q", (self.starts[r] for r in wanted))
+            ends = array("q", (self.ends[r] for r in wanted))
+            values, unsure = _core.csv_numbers(self.file, starts.tobytes(), ends.tobytes(), width)
+            numbers = array("d", values)
+            for i, row in enumerate(wanted):
+                self.parsed[row] = numbers[i * width : (i + 1) * width]
+            for i in unsure:
+                row = wanted[i]
+                self.parsed[row] = array("d", map(_float, self._read(row, row + 1)[0]))
+
+    def _keep(self, row: int) -> None:
+        """Row `row` (the next one) is kept for the charts: thinned in on the stride, and among the newest."""
         if row % self.stride == 0:
             self.thin_rows.append(row)
-            for kept, value in zip(self.thin.values(), values, strict=True):
-                kept.append(value)
             if len(self.thin_rows) > _THIN_ROWS:
                 self.thin_rows = self.thin_rows[::2]
-                self.thin = {column: kept[::2] for column, kept in self.thin.items()}
                 self.stride *= 2
-        for kept, value in zip(self.tail.values(), values, strict=True):
-            kept.append(value)
         if row + 1 - self.tail_first >= 2 * _TAIL_ROWS:
-            for kept in self.tail.values():
-                del kept[:_TAIL_ROWS]
             self.tail_first += _TAIL_ROWS
 
     def _skip(self, row: int) -> None:
         """Row `row` (the next one) is not kept for the charts: the newest rows kept start after it."""
-        if row >= self.tail_first:
-            for kept in self.tail.values():
-                del kept[:]
         self.tail_first = row + 1
 
 
+class Column:
+    """One kept column of a `Metrics`, every row: `column[row]` is the cell as a number, nan where empty or
+    not a number."""
+
+    def __init__(self, metrics: Metrics, index: int) -> None:
+        self._metrics, self._index = metrics, index
+
+    def __getitem__(self, row: int) -> float:
+        return self._metrics.numbers(row)[self._index]
+
+    def __len__(self) -> int:
+        return self._metrics.count
+
+
+_RUN = 16  # rows read at once on a miss next to a read row (the shares and time spans walk back)
+# Rows' numbers kept, of the one file read last (the bot whose page is open): all the rows the charts read.
+_ROWS_KEPT = _THIN_ROWS + 2 * _TAIL_ROWS + 2 * _RUN
+_PARSED: Metrics | None = None
 _CACHE: dict[Path, Metrics] = {}
 # The window's calls run at once, each in a thread of its own: two reading on from the same place would both
 # add the new rows. One reads a file at a time.
 _READING: dict[Path, threading.Lock] = {}
 _LOCKS = threading.Lock()
+_PARSING = threading.RLock()  # parsed rows: read and cleared by one call at a time
 
 
 def metrics(folder: RunFolder) -> Metrics:
@@ -265,43 +339,75 @@ def _read(folder: RunFolder) -> Metrics:
     if found and found.identity == identity:
         return found
     if found is None or found.identity[:2] != identity[:2] or stat.st_size < found.offset:
-        found = Metrics()  # a new or rewritten file
-    with file.open("rb") as handle:
-        handle.seek(found.offset)
-        data = handle.read()
-    whole = data.rfind(b"\n") + 1
-    lines = data[:whole].decode("utf-8", errors="replace").splitlines()
-    if not found.header and lines:
-        found.header = next(csv.reader(lines[:1]), [])
-        found.columns = {column: array("d") for column in found.header if _kept(column)}
-        charted = [c for c in found.header if c not in found.columns and c != "iteration"]
-        found.thin = {column: array("f") for column in charted}
-        found.tail = {column: array("f") for column in charted}
-        lines = lines[1:]
-    if found.header:
-        width = len(found.header)
-        kept = [(found.columns[c], i) for i, c in enumerate(found.header) if c in found.columns]
-        others = [found.header.index(c) for c in found.thin]
-        # A long file read at once: rows neither thinned in nor among the newest are not read for the charts.
-        newest = found.count + len(lines) - 2 * _TAIL_ROWS
-        for row in csv.reader(lines):
-            if len(row) != width:
-                continue
-            for values, i in kept:
-                values.append(_float(row[i]))
-            if found.count < newest and found.count % found.stride:
-                found._skip(found.count)
-            else:
-                try:
-                    found._keep(found.count, [float(row[i]) for i in others])
-                except ValueError:  # an empty cell
-                    found._keep(found.count, [_float(row[i]) for i in others])
-            found.last = row
-            found.count += 1
-    found.offset += whole
+        found = Metrics(file=file)  # a new or rewritten file
+    if not found.header and not _read_header(found, file):
+        found.identity = identity
+        _CACHE[file] = found
+        return found
+    from nitro import _core
+
+    before = found.count
+    starts, ends, quoted, found.offset = _core.csv_rows(file, found.offset, len(found.header))
+    _add_rows(found, array("q", starts), array("q", ends), set(quoted))
+    # A long file read at once: rows neither thinned in nor among the newest are not kept for the charts.
+    newest = found.count - 2 * _TAIL_ROWS
+    for row in range(before, found.count):
+        if row < newest and row % found.stride:
+            found._skip(row)
+        else:
+            found._keep(row)
+    if found.count > before:
+        found.last = found.cells(found.count - 1)
     found.identity = identity
     _CACHE[file] = found
     return found
+
+
+def _text(line: bytes) -> str:
+    return line.decode("utf-8", errors="replace").removesuffix("\r")
+
+
+def _read_header(found: Metrics, file: Path) -> bool:
+    """Reads the header line into `found` (False while the file has no whole line yet)."""
+    with file.open("rb") as handle:
+        line = handle.readline()
+    if not line.endswith(b"\n"):
+        return False
+    found.header = next(csv.reader([_text(line[:-1])]), [])
+    found.columns = {column: Column(found, i) for i, column in enumerate(found.header) if _kept(column)}
+    found.charted = {
+        column: i
+        for i, column in enumerate(found.header)
+        if column not in found.columns and column != "iteration"
+    }
+    found.offset = len(line)
+    return True
+
+
+def _add_rows(found: Metrics, starts: array[int], ends: array[int], quoted: set[int]) -> None:
+    """Keeps the rows the core found (those with the header's width by their commas), and of those holding a
+    quote, the ones csv reads with the header's width."""
+    if quoted:
+        assert found.file is not None
+        width = len(found.header)
+        with found.file.open("rb") as handle:
+            kept = []
+            for i in range(len(starts)):
+                if i in quoted:
+                    handle.seek(starts[i])
+                    if len(next(csv.reader([_text(handle.read(ends[i] - starts[i]))]), [])) != width:
+                        continue
+                kept.append(i)
+        starts = array("q", (starts[i] for i in kept))
+        ends = array("q", (ends[i] for i in kept))
+    found.starts.extend(starts)
+    found.ends.extend(ends)
+    found.count += len(starts)
+
+
+def _single(value: float) -> float:
+    """`value` as the charts keep it: in single precision."""
+    return array("f", (value,))[0]
 
 
 def _float(text: str) -> float:
@@ -720,10 +826,8 @@ def _start_words(out: dict[str, Any], start: StartFromConfig | None, agent_steps
 def copy_view(folder: RunFolder) -> dict[str, Any] | None:
     """The bot's copy of replays for its page: the progress the copy writes as it goes, or for a copy
     finished before it wrote one, what its pretrain.json kept; None when it has none."""
-    from nitro import pretrain
-
-    work = folder.root / pretrain.COPY
-    data = pretrain.read_live(work)
+    work = folder.root / PRETRAIN_COPY
+    data = read_copy_progress(work)
     if data is not None:
         return data
     try:
@@ -731,6 +835,8 @@ def copy_view(folder: RunFolder) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     large = details.get("large") or {}
+    from nitro import pretrain  # loads PyTorch: only for a copy older than its progress file
+
     progress = {
         "history": details.get("epochs", []),
         "before": details.get("before"),
@@ -864,7 +970,10 @@ MOST_A_SIDE = 4
 def watch_sizes(config: NitroConfig) -> list[int]:
     """The team sizes a bot can play: its own; with a padded observation every size up to its room;
     with an attention encoder every size the simulator plays, since it reads any number of cars (how well
-    beyond the sizes it trained at is not measured). Other sizes would change what a network reads."""
+    beyond the sizes it trained at is not measured). Other sizes would change what a network reads. A
+    multi-model bot plays its own size: its models' views are of that game."""
+    if config.selector.specialists:
+        return [config.env.team_size]
     if config.model.uses_attention:
         return list(range(1, MOST_A_SIDE + 1))
     if config.env.obs_team_size:

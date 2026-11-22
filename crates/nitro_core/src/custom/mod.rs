@@ -130,6 +130,15 @@ impl CustomReward {
         })
     }
 
+    /// A reward built from blocks in the settings (`crate::built`): `name` is its title.
+    pub fn built(name: &'static str, settings: serde_json::Value, reward: Arc<dyn Reward>) -> Self {
+        Self {
+            name,
+            settings,
+            reward,
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         self.name
     }

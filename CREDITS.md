@@ -19,6 +19,10 @@ next to the release's ready-made programs, and in every exported bot folder (`NO
 - **RLBot v5 rust-interface** (`rlbot`, `rlbot_flat` 0.6.0) — RLBot contributors, MIT. The bot
   (`crates/nitro_bot`) uses it for the connection, the handshake and the packet types. The flatbuffers
   schema it builds on has no licence file, so it is used only through the MIT-licensed interface packages.
+- **High-Level Rocket League Replay Dataset** — Rolv Arild (`kaggle.com/datasets/rolvarild/high-level-rocket-league-replay-dataset`):
+  curated high-level ranked games and scrims from ballchasing.com. `nitro get-replays` downloads a copy of its 1v1
+  and 2v2 replays, re-hosted for download: the dataset is Rolv Arild's work, not NitroLearn's, and NitroLearn
+  ships none of the replays. (The copy is not online yet.)
 - **replicar** — Rolv Arild, MIT (Copyright (c) 2026 Rolv Arild). `github.com/Rolv-Arild/replicar`. Turns
   Rocket League replays into RocketSim states with the players' controls, for the replay copy
   (`crates/nitro_replicar` builds on its library). The release's ready-made programs include its own
@@ -83,6 +87,12 @@ next to the release's ready-made programs, and in every exported bot folder (`NO
   Newton-Schulz coefficients (3.4445, −4.7750, 2.0315) are the published ones.
 - **Game constants** shared with RLGym's common values: max car speed 2300, max ball speed 6000, back of the
   net y = 6000, goal height 642.775, km/h → uu/s factor 250/9.
+- **RLGym bot import** (`nitro import-rlgym`) — from rlgym-sim (AechPro/rocket-league-gym-sim) and rlgym-tools
+  (RLGym/rlgym-tools v1.8.3), both Apache-2.0: their observation builders, game-state classes, common values and
+  LookupAction, copied with their licences and a NOTICE.md of the small changes into
+  `python/nitro/rlgym_reference/` (used only to check an import); EventReward's parts and the Liu distance
+  rewards' formulas in `crates/nitro_core/src/custom/library/rlgym_common.rs`; the save formats and settings of
+  RLGym-PPO (AechPro/rlgym-ppo) and rlgym-learn read in `python/nitro/rlgym_import.py` (`LICENSES/RLGym-notice.md`).
 - **CartPole dynamics** (`python/nitro/cartpole.py`) — written to match Gymnasium's CartPole-v1 (Farama
   Foundation, MIT; the cart-pole problem of Barto, Sutton & Anderson, 1983) so the learning proof can be
   checked against it.

@@ -251,12 +251,25 @@ fn main() -> ExitCode {
              only at the sizes it trained at)."
         );
     }
+    if policy.is_selector() {
+        println!(
+            "nitro_bot: a multi-model bot over {}.",
+            policy.specialists().join(", ")
+        );
+    }
+    // The policy or any of its models' views (a multi-model bot) may read the prediction.
     let wants_prediction = nitro_bot::wants_ball_prediction(&policy);
     if wants_prediction {
-        println!(
-            "nitro_bot: trained with ball prediction: reading RLBot's prediction at {:?} s.",
-            header.game.ball_prediction
-        );
+        if header.game.ball_prediction.is_empty() {
+            println!(
+                "nitro_bot: a model was trained with ball prediction: reading RLBot's prediction."
+            );
+        } else {
+            println!(
+                "nitro_bot: trained with ball prediction: reading RLBot's prediction at {:?} s.",
+                header.game.ball_prediction
+            );
+        }
     }
     let mut meshes_loaded = false;
     if let Some(folder) = &settings.meshes {
@@ -281,7 +294,8 @@ fn main() -> ExitCode {
     }
     MESHES_LOADED.set(meshes_loaded).expect("set once");
     let policy = Arc::new(policy);
-    if !settings.no_decider {
+    // A multi-model bot decides on the packet's thread: its selector state lives with the car.
+    if !settings.no_decider && !policy.is_selector() {
         DECIDER
             .set(Decider::start(policy.clone(), settings.threads))
             .ok()

@@ -196,6 +196,55 @@ impl BallPath {
     }
 }
 
+/// Prediction times in seconds in a value that copies (a model's view in a multi-model bot): at most
+/// `MAX_TIMES`, read from a list.
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[serde(try_from = "Vec<f32>")]
+pub struct Times {
+    at: [f32; MAX_TIMES],
+    len: u8,
+}
+
+// Equal when the same numbers bit for bit, so a view can be told apart from another (and is `Eq`).
+impl PartialEq for Times {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len()
+            && self
+                .iter()
+                .zip(other.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+    }
+}
+
+impl Eq for Times {}
+
+impl TryFrom<Vec<f32>> for Times {
+    type Error = String;
+
+    fn try_from(times: Vec<f32>) -> Result<Self, String> {
+        if times.len() > MAX_TIMES {
+            return Err(format!(
+                "ball_prediction takes at most {MAX_TIMES} times, not {}",
+                times.len()
+            ));
+        }
+        let mut at = [0.0; MAX_TIMES];
+        at[..times.len()].copy_from_slice(&times);
+        Ok(Self {
+            at,
+            len: times.len() as u8,
+        })
+    }
+}
+
+impl std::ops::Deref for Times {
+    type Target = [f32];
+
+    fn deref(&self) -> &[f32] {
+        &self.at[..usize::from(self.len)]
+    }
+}
+
 /// Decisions ahead (as `decisions` gives them) in a value that copies: for settings that are copied about.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Steps {

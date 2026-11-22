@@ -27,8 +27,11 @@ def library() -> ctypes.CDLL:
     path = os.environ.get("NITRO_NVRTC")
     if path:
         return ctypes.CDLL(path)
+    import torch
     from torch.cuda._utils import _get_nvrtc_library
 
+    if torch.version.cuda is None:
+        raise OSError("this PyTorch is built without CUDA, so it ships no NVRTC")
     nvrtc: ctypes.CDLL = _get_nvrtc_library()
     return nvrtc
 

@@ -26,11 +26,12 @@ const TOOL_ICON = (() => {
 // (`dialog`) or outside the window.
 const TOOLS = [
   { id: "eval", icon: "flag", name: "Test against older saves", line: "Is the newest save really better? It plays an earlier one.", form: true, hint: "nitro eval", keywords: ["eval", "match", "versus", "older", "save", "better", "play against"] },
-  { id: "skills", icon: "bars", name: "Skill check", line: "Six short drills: touch, landing, boost, shot, save, aerial.", form: true, hint: "nitro skills", keywords: ["skills", "drills", "score", "practice"] },
+  { id: "skills", icon: "bars", name: "Skill check", line: "Nine short drills: touch, landing, boost, shot, save, aerial, kickoff, 50/50, wall read.", form: true, hint: "nitro skills", keywords: ["skills", "drills", "score", "practice"] },
   { id: "ab", icon: "versus", name: "Compare two settings", line: "Trains fresh bots with each and says if one is clearly better.", form: true, hint: "nitro ab", keywords: ["ab", "compare", "settings", "a/b", "speed", "experiment"] },
   { id: "surgery", icon: "grow", name: "Change the network's size", line: "A wider copy of the bot that plays the same and can learn more.", form: true, hint: "nitro surgery", keywords: ["surgery", "widen", "network", "size", "bigger", "parameters"] },
   { id: "export", icon: "rocket", name: "Make RLBot bot", line: "A folder RLBot can play in a real match on this PC.", form: true, hint: "nitro export", keywords: ["export", "rlbot", "match", "bot folder"] },
   { id: "settings", icon: "check", name: "Check a settings file", line: "Finds mistakes in a settings file and says how big its networks are.", form: true, hint: "nitro check-settings", keywords: ["check", "settings", "mistakes", "validate", "toml"] },
+  { id: "multimodel", icon: "folder", name: "Multi-model bot", line: "Make one bot of several of your bots: a selector picks which drives, moment by moment.", run: () => openMultiModel(), hint: "New bot", keywords: ["multi", "model", "selector", "combine", "switch"] },
   { id: "copy", icon: "copy", name: "New bot from this one", line: "The same settings, from scratch or from what this one learned.", dialog: true, run: () => copyModal(), hint: "New bot", keywords: ["copy", "clone", "new bot", "transfer"] },
   { id: "pack", icon: "box", name: "Pack for another computer", line: "One file with the bot, to carry on training elsewhere.", form: true, hint: "nitro pack", keywords: ["pack", "move", "cloud", "another computer", "zip"] },
   { id: "report", icon: "chart", name: "Progress report", line: "A page with every chart of its training, in your browser.", run: () => ACTIONS.report(), hint: "Opens in the browser", keywords: ["report", "charts", "progress"] },
@@ -146,7 +147,7 @@ const TOOL_FORMS = {
     title: b => `Skill check of ${b.name}`,
     go: "Run the drills",
     defaults: () => ({ save: 0, situations: 512, as_bot: false }),
-    about: b => `<p>Puts a save of <b>${esc(b.name)}</b> through six short drills against an opponent that stands still: touch a ball at rest, land on its wheels, collect boost, score in an empty net, save a shot, touch a ball in the air.</p><p>Each score is set against a bar: what a fresh bot trained on that one drill alone reaches. It says whether a skill is there, not how good the bot is. The scores are also added to <span class="mono">skills.csv</span> in the bot's folder.</p>`,
+    about: b => `<p>Puts a save of <b>${esc(b.name)}</b> through nine short drills. Six against an opponent that stands still: touch a ball at rest, land on its wheels, collect boost, score in an empty net, save a shot, touch a ball in the air. Three more: win kickoffs and 50/50s against a scripted opponent, and read a ball off the wall.</p><p>Each score is set against a bar: for the first six, what a fresh bot trained on that one drill alone reaches; for the last three, what a simple scripted player reaches. It says whether a skill is there, not how good the bot is. The scores are also added to <span class="mono">skills.csv</span> in the bot's folder.</p>`,
     fields: b => {
       const saves = savesOf(b.name);
       return optRow("Which save", optSelect("save", [[0, saves.length ? `Its newest save (${whole(saves[0])} steps)` : "It has no save yet"], ...saves.slice(1).map(s => [s, `Save at ${whole(s)} steps`])], "Which save"))

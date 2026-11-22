@@ -11,6 +11,7 @@ use crate::rewards::RewardTerm;
 use crate::setters::{SetterMix, WeightedSetter};
 use crate::snapshot::MAX_CARS;
 use crate::terminals::TerminalConfig;
+use crate::views::ViewConfig;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,6 +50,10 @@ pub struct PoolConfig {
     pub terminals: TerminalConfig,
     pub rewards: Vec<RewardTerm>,
     pub state_setters: Vec<WeightedSetter>,
+    /// Other bots' views of these games (a multi-model bot's models), which `EnvPool::views_into` writes
+    /// on request; none by default.
+    #[serde(default)]
+    pub views: Vec<ViewConfig>,
 }
 
 impl PoolConfig {
@@ -127,6 +132,16 @@ impl PoolConfig {
             if !self.observation.pads() {
                 return Err("ball_prediction needs the native or nitro_v2 observation".to_owned());
             }
+        }
+        if !self.views.is_empty() && !self.team_sizes.is_empty() {
+            return Err("other models' views need one game size (no team_sizes)".to_owned());
+        }
+        for view in &self.views {
+            if let Some(problem) = view.problem(self.team_size, self.opponents) {
+                return Err(format!("a model's view: {problem}"));
+            }
+            view.prediction(self.tick_skip)
+                .map_err(|err| format!("a model's view: {err}"))?;
         }
         Ok(())
     }
@@ -257,6 +272,14 @@ impl PoolConfig {
         let setters = SetterMix::new(self.state_setters.clone(), self.team_size, self.opponents)?;
         let ball_prediction =
             crate::ball_prediction::decisions(&self.ball_prediction, self.tick_skip)?;
+        // The games predict as far as the furthest reader: this observation or another model's view.
+        let mut prediction_len = ball_prediction.last().copied().unwrap_or(0);
+        for view in &self.views {
+            let steps = view
+                .prediction(self.tick_skip)
+                .map_err(|err| format!("a model's view: {err}"))?;
+            prediction_len = prediction_len.max(steps.last().copied().unwrap_or(0));
+        }
         Ok(EnvRules {
             team_size: self.team_size,
             opponents: self.opponents,
@@ -265,6 +288,7 @@ impl PoolConfig {
             obs: self.observation,
             obs_team_size: self.obs_team_size,
             ball_prediction,
+            prediction_len,
             masks: self.action_masks,
             terminals: self.terminals,
             rewards: self.rewards.clone(),

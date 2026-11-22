@@ -72,6 +72,11 @@ def find_source(settings: StartFromConfig, runs: Path) -> Source | None:
     if not settings.source:
         return None
     source = find_save(settings.source, settings.at, runs, "start_from.run")
+    if "specialists" in source.state:
+        raise TransferError(
+            f"start_from.run: {source.label} is a multi-model bot (selector run); a bot cannot start from "
+            "one yet"
+        )
     if settings.parts != "policy" and untrained_value(source.state):
         return dataclasses.replace(source, parts="policy")
     return source
